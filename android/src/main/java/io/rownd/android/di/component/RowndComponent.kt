@@ -2,7 +2,6 @@ package io.rownd.android.di.component
 
 import dagger.Component
 import io.ktor.client.engine.HttpClientEngine
-import io.rownd.android.authenticators.passkeys.PasskeysCommon
 import io.rownd.android.di.module.ApiModule
 import io.rownd.android.di.module.AuthRepoModule
 import io.rownd.android.di.module.NetworkModule
@@ -40,7 +39,6 @@ interface RowndGraph {
     fun signInRepo(): SignInRepo
     fun signInLinkApi(): SignInLinkApi
     fun rowndContext(): RowndContext
-    fun passkeyAuthenticator(): PasskeysCommon
     fun rowndEventEmitter(): RowndEventEmitter<RowndEvent>
     fun signInWithGoogle(): SignInWithGoogle
     fun telemetry(): Telemetry

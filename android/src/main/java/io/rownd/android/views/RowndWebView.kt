@@ -36,7 +36,6 @@ import io.rownd.android.models.EventMessage
 import io.rownd.android.models.HubResizeMessage
 import io.rownd.android.models.MessageType
 import io.rownd.android.models.RowndHubInteropMessage
-import io.rownd.android.models.SignInWithPasskeyMessage
 import io.rownd.android.models.TriggerSignInWithGoogleMessage
 import io.rownd.android.models.UserDataUpdateMessage
 import io.rownd.android.models.domain.AuthState
@@ -446,22 +445,6 @@ class RowndJavascriptInterface constructor(
                     CoroutineScope(Dispatchers.Main).launch {
                         parentWebView.loadUrl(Rownd.config.hubLoaderUrl())
                     }
-                }
-
-                MessageType.CreatePasskey -> {
-                    parentWebView.rowndClient.appHandleWrapper?.activity?.get()?.let {
-                        parentWebView.rowndClient.passkeyAuthenticator.registration.register(it)
-                    }
-                }
-
-                MessageType.AuthenticateWithPasskey -> {
-                    val signInWithPasskeyMessage = (interopMessage as SignInWithPasskeyMessage).payload
-                    parentWebView.rowndClient.requestSignIn(
-                        with = RowndSignInHint.Passkey,
-                        signInOptions = RowndSignInOptions(
-                            intent = signInWithPasskeyMessage?.intent
-                        )
-                    )
                 }
 
                 MessageType.HubResize -> {

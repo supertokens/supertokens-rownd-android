@@ -21,8 +21,6 @@ import io.ktor.client.plugins.auth.authProviders
 import io.ktor.client.plugins.auth.providers.BearerAuthProvider
 import io.rownd.android.di.component.DaggerRowndGraph
 import io.rownd.android.di.component.RowndGraph
-import io.rownd.android.models.AuthenticatorType
-import io.rownd.android.models.RowndAuthenticatorRegistrationOptions
 import io.rownd.android.models.Store
 import io.rownd.android.models.domain.AuthState
 import io.rownd.android.models.domain.User
@@ -71,7 +69,6 @@ class RowndClient(
     internal var signInRepo: SignInRepo = graph.signInRepo()
     internal var signInLinkApi: SignInLinkApi = graph.signInLinkApi()
     internal var rowndContext = graph.rowndContext()
-    internal var passkeyAuthenticator = graph.passkeyAuthenticator()
     internal var connectionAction = graph.connectionAction()
     internal var eventEmitter = graph.rowndEventEmitter()
     internal var signInWithGoogle = graph.signInWithGoogle()
@@ -229,11 +226,6 @@ class RowndClient(
         when (with) {
             RowndSignInHint.Google -> signInWithGoogle.signIn(intent = signInOptions.intent)
             RowndSignInHint.OneTap -> signInWithGoogle.showGoogleOneTap()
-            RowndSignInHint.Passkey -> {
-                appHandleWrapper?.activity?.get()
-                    ?.let { passkeyAuthenticator.authentication.authenticate(it) }
-            }
-
             RowndSignInHint.Guest -> {
                 displayHub(
                     HubPageSelector.SignIn,
@@ -246,22 +238,6 @@ class RowndClient(
     @Suppress("unused")
     fun requestSignIn() {
         displayHub(HubPageSelector.SignIn, RowndSignInOptions())
-    }
-
-    inner class auth {
-        @Suppress("unused")
-        inner class passkeys {
-            fun register() {
-                displayHub(
-                    targetPage = HubPageSelector.ConnectAuthenticator,
-                    jsFnOptions = RowndAuthenticatorRegistrationOptions(type = AuthenticatorType.Passkey)
-                )
-            }
-
-            fun authenticate() {
-                appHandleWrapper?.activity?.get()?.let { passkeyAuthenticator.authentication.authenticate(it) }
-            }
-        }
     }
 
     fun signOut(scope: RowndSignOutScope) {
@@ -288,13 +264,6 @@ class RowndClient(
 
     fun manageAccount() {
         displayHub(HubPageSelector.ManageAccount)
-    }
-
-    fun connectAuthenticator(with: RowndConnectAuthenticatorHint) {
-        displayHub(
-            targetPage = HubPageSelector.ConnectAuthenticator,
-            jsFnOptions = RowndAuthenticatorRegistrationOptions()
-        )
     }
 
     inner class Firebase {
@@ -490,12 +459,7 @@ internal data class RowndSignInJsOptions(
 enum class RowndSignInHint {
     Google,
     OneTap,
-    Passkey,
     Guest,
-}
-
-enum class RowndConnectAuthenticatorHint {
-    Passkey,
 }
 
 @Serializable
@@ -521,9 +485,6 @@ enum class RowndSignInUserType(var value: String) {
 
 @Serializable
 enum class RowndSignInType(var value: String) {
-    @SerialName("passkey")
-    Passkey("passkey"),
-
     @SerialName("anonymous")
     Anonymous("anonymous"),
 

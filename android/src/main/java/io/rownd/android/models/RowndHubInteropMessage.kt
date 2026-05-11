@@ -38,12 +38,6 @@ enum class MessageType {
     @SerialName("close_hub_view_controller")
     CloseHubView,
 
-    @SerialName("trigger_sign_up_with_passkey")
-    CreatePasskey,
-
-    @SerialName("trigger_sign_in_with_passkey")
-    AuthenticateWithPasskey,
-
     @SerialName("hub_loaded")
     HubLoaded,
 
@@ -108,12 +102,6 @@ data class TriggerSignInWithGooglePayload(
 )
 
 @Serializable
-data class TriggerSignInWithPasskeyPayload(
-    @SerialName("intent")
-    var intent: RowndSignInIntent? = null
-)
-
-@Serializable
 data class UserDataUpdateMessage(
     override var type: MessageType = MessageType.UserDataUpdate,
     var payload: User
@@ -122,17 +110,6 @@ data class UserDataUpdateMessage(
 @Serializable
 data class CloseHubViewMessage(
     override var type: MessageType = MessageType.CloseHubView
-) : RowndHubInteropMessage()
-
-@Serializable
-data class SignUpWithPasskeyMessage(
-    override var type: MessageType = MessageType.CreatePasskey
-) : RowndHubInteropMessage()
-
-@Serializable
-data class SignInWithPasskeyMessage(
-    override var type: MessageType = MessageType.AuthenticateWithPasskey,
-    var payload: TriggerSignInWithPasskeyPayload?
 ) : RowndHubInteropMessage()
 
 @Serializable
@@ -207,8 +184,6 @@ object RowndHubInteropMessageSerializer : JsonContentPolymorphicSerializer<Rownd
             "trigger_sign_in_with_google" -> TriggerSignInWithGoogleMessage.serializer()
             "user_data_update" -> UserDataUpdateMessage.serializer()
             "close_hub_view_controller" -> CloseHubViewMessage.serializer()
-            "trigger_sign_up_with_passkey" -> SignUpWithPasskeyMessage.serializer()
-            "trigger_sign_in_with_passkey" -> SignInWithPasskeyMessage.serializer()
             "hub_loaded" -> HubLoaded.serializer()
             "hub_resize" -> HubResizeMessage.serializer()
             "can_touch_background_to_dismiss" -> CanTouchBackgroundToDismissMessage.serializer()
