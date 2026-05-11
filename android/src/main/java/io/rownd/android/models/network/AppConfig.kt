@@ -10,6 +10,7 @@ import kotlinx.serialization.Serializable
 import javax.inject.Inject
 import io.rownd.android.models.domain.AnonymousSignInMethod as DomainAnonymousSignInMethod
 import io.rownd.android.models.domain.AppConfigConfig as DomainAppConfigConfig
+import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.domain.AppSchemaEncryptionState as DomainAppSchemaEncryptionState
 import io.rownd.android.models.domain.AppSchemaField as DomainAppSchemaField
 import io.rownd.android.models.domain.AppSchemaFieldEncryption as DomainAppSchemaFieldEncryption
@@ -98,13 +99,15 @@ enum class AppSchemaEncryptionState {
 data class AppConfigConfig(
     var hub: HubConfig = HubConfig(),
     var customizations: CustomizationsConfig = CustomizationsConfig(),
-    var subdomain: String? = null
+    var subdomain: String? = null,
+    var supertokens: SuperTokensConfig = SuperTokensConfig(),
 ) {
     fun asDomainModel(): DomainAppConfigConfig {
         return DomainAppConfigConfig(
             hub.asDomainModel(),
             customizations.asDomainModel(),
             subdomain,
+            supertokens,
         )
     }
 }
@@ -265,7 +268,9 @@ class AppConfigApi @Inject constructor() {
     lateinit var authenticatedApiClient: AuthenticatedApiClient
 
     suspend fun getAppConfig(): AppConfigResponse {
-        val appConfig: AppConfigResponse = authenticatedApiClient.client.get("hub/app-config").body()
+        val basePath = rowndContext.config.apiBasePath.trimEnd('/')
+        val appConfig: AppConfigResponse =
+            authenticatedApiClient.client.get("$basePath/plugin/rownd/app-config").body()
         return appConfig
     }
 

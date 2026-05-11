@@ -20,6 +20,7 @@ data class RowndConfig(
     var appKey: String? = null,
     var baseUrl: String = "https://hub.rownd.io",
     var apiUrl: String = "https://api.rownd.io",
+    var apiBasePath: String = "/auth",
     var postSignInRedirect: String? = "NATIVE_APP",
     var appleIdCallbackUrl: String? = "https://api.rownd.io/hub/auth/apple/callback",
     var customizations: RowndCustomizations = RowndCustomizations(),
