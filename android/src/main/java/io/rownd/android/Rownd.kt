@@ -33,6 +33,7 @@ import io.rownd.android.models.repos.StateRepo
 import io.rownd.android.models.repos.UserRepo
 import io.rownd.android.util.AppLifecycleListener
 import io.rownd.android.util.InvalidRefreshTokenException
+import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.NoAccessTokenPresentException
 import io.rownd.android.util.NoRefreshTokenPresentException
 import io.rownd.android.util.RowndEvent
@@ -105,6 +106,8 @@ class RowndClient(
         config.appKey = appKey
 
         store = stateRepo.setup(StateRepo.defaultDataStore(appContext))
+
+        SuperTokensSessionBridge.observeAndInitialize(appContext, stateRepo)
 
         // Clear webview cache on startup
         Handler(Looper.getMainLooper()).post {
