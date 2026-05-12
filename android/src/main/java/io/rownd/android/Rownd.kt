@@ -333,11 +333,10 @@ class RowndClient(
     }
 
     suspend fun _refreshToken(): String? {
-        return try {
-            val result = authRepo.refreshTokenAsync().await()
-            result?.accessToken
-        } catch (ex: RowndException) {
-            Log.d("Rownd.testing", "Refresh token flow failed: ${ex.message}")
+        val context = appHandleWrapper?.app?.get()?.applicationContext ?: return null
+        return if (SuperTokensSessionBridge.attemptRefresh(context)) {
+            SuperTokensSessionBridge.getAccessToken(context)
+        } else {
             null
         }
     }
