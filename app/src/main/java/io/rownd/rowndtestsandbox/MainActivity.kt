@@ -29,7 +29,6 @@ import androidx.compose.ui.unit.sp
 import androidx.constraintlayout.compose.ConstraintLayout
 import androidx.databinding.DataBindingUtil
 import io.rownd.android.Rownd
-import io.rownd.android.RowndConnectAuthenticatorHint
 import io.rownd.android.RowndSignInHint
 import io.rownd.android.RowndSignInOptions
 import io.rownd.rowndtestsandbox.databinding.ActivityMainBinding
@@ -170,19 +169,6 @@ class MainActivity : AppCompatActivity() {
                                     }
                                 }
 
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceEvenly
-                                ) {
-                                    Button(
-                                        modifier = Modifier.padding(horizontal = 5.dp),
-                                        onClick = {
-                                            Rownd.connectAuthenticator(RowndConnectAuthenticatorHint.Passkey)
-                                        }
-                                    ) {
-                                        Text("Register passkey")
-                                    }
-                                }
 //                }
                             }
                             Column(modifier = Modifier.fillMaxWidth()) {

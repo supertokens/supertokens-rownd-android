@@ -1,32 +1,21 @@
 package io.rownd.android.models.repos
 
+import android.content.Context
 import android.util.Log
 import com.auth0.android.jwt.JWT
 import io.ktor.client.call.body
-import io.ktor.client.plugins.ClientRequestException
-import io.ktor.client.plugins.ServerResponseException
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
-import io.ktor.http.HttpStatusCode
 import io.rownd.android.Rownd
 import io.rownd.android.RowndSignInIntent
-import io.rownd.android.RowndSignInJsOptions
-import io.rownd.android.RowndSignInLoginStep
-import io.rownd.android.RowndSignInUserType
 import io.rownd.android.models.domain.AuthState
-import io.rownd.android.models.domain.User
-import io.rownd.android.models.network.Auth
+import io.rownd.android.models.network.SignInUpResponse
 import io.rownd.android.models.network.SignOutRequestBody
 import io.rownd.android.models.network.SignOutResponse
-import io.rownd.android.models.network.TokenRequestBody
-import io.rownd.android.models.network.TokenResponse
-import io.rownd.android.util.AuthLevel
 import io.rownd.android.util.AuthenticatedApiClient
-import io.rownd.android.util.InvalidRefreshTokenException
 import io.rownd.android.util.LegacyTokenApiClient
 import io.rownd.android.util.RowndContext
 import io.rownd.android.util.RowndException
-import io.rownd.android.util.ServerException
 import io.rownd.android.util.SuperTokensSessionBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -67,23 +56,27 @@ class AuthRepo @Inject constructor() {
 
     internal suspend fun getAccessToken(): String? = getLatestAuthState()?.accessToken
 
-    internal suspend fun getAccessToken(idToken: String): TokenResponse? {
-        return getAccessToken(idToken, intent = null, type = AccessTokenType.default)
-    }
+    internal suspend fun exchangeGoogleIdToken(
+        idToken: String,
+        intent: RowndSignInIntent?,
+        context: Context = rowndContext.client?.appHandleWrapper?.app?.get()?.applicationContext
+            ?: throw RowndException("No application context available"),
+    ): SignInUpResponse {
+        val st = stateRepo.state.value.appConfig.config.supertokens
+        val apiDomain = st.appInfo.apiDomain
+        val apiBasePath = st.appInfo.apiBasePath ?: "/auth"
 
-    internal suspend fun getAccessToken(idToken: String, intent: RowndSignInIntent?, type: AccessTokenType): TokenResponse? {
-        val appId = stateRepo.getStore().currentState.appConfig.id
-        val tokenRequest = TokenRequestBody(
-            appId = appId,
-            idToken = idToken,
-            intent = intent
-        )
+        val response = authenticatedApiClient.client.post("$apiDomain$apiBasePath/signinup") {
+            setBody(GoogleSignInUpBody(
+                thirdPartyId = "google",
+                oAuthTokens = mapOf("id_token" to idToken),
+            ))
+        }.body<SignInUpResponse>()
 
-        if (stateRepo.state.value.user.authLevel == AuthLevel.Instant) {
-            tokenRequest.instantUserId = stateRepo.state.value.user.data["user_id"]?.toString()
-        }
+        SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(context, stateRepo.getStore())
+        signInRepo.setLastSignInMethod("google")
 
-        return fetchTokenAsync(tokenRequest, intent, type).await()
+        return response
     }
 
     fun signOutUser() {
@@ -92,14 +85,6 @@ class AuthRepo @Inject constructor() {
             signOutAll = true
         )
         signOutUserAsync(appId, signOutRequest)
-    }
-
-    @Serializable
-    internal enum class AccessTokenType {
-        @SerialName("default")
-        default,
-        @SerialName("google")
-        google,
     }
 
     @Synchronized
@@ -117,66 +102,6 @@ class AuthRepo @Inject constructor() {
         }
     }
 
-    @Synchronized
-    internal fun fetchTokenAsync(tokenRequest: TokenRequestBody, intent: RowndSignInIntent?, type: AccessTokenType): Deferred<TokenResponse?> {
-        return CoroutineScope(Dispatchers.IO).async {
-            try {
-                val tokenResponse = exchangeToken(tokenRequest)
-
-                if (type != AccessTokenType.default) {
-                    if (tokenResponse.userType === RowndSignInUserType.NewUser && intent === RowndSignInIntent.SignIn) {
-                        Rownd.requestSignIn(
-                            RowndSignInJsOptions(
-                                intent = intent,
-                                loginStep = RowndSignInLoginStep.NoAccount,
-                                token = tokenRequest.idToken
-                            )
-                        )
-                        return@async null
-                    }
-                    Rownd.requestSignIn(
-                        RowndSignInJsOptions(
-                            intent = intent,
-                            loginStep = RowndSignInLoginStep.Success,
-                            userType = tokenResponse.userType,
-                            appVariantUserType = tokenResponse.appVariantUserType
-                        )
-                    )
-                }
-
-                if (type === AccessTokenType.google) {
-                    signInRepo.setLastSignInMethod("google")
-                }
-
-                stateRepo.getStore().dispatch(
-                    StateAction.SetAuth(
-                        AuthState(
-                            accessToken = tokenResponse.accessToken,
-                            refreshToken = tokenResponse.refreshToken
-                        )
-                    )
-                )
-                userRepo?.loadUserAsync()
-                return@async tokenResponse
-            } catch (ex: ClientRequestException) {
-                Log.e("RowndAuthApi", "Fetching token failed: ${ex.message}")
-                if (ex.response.status == HttpStatusCode.BadRequest) {
-                    // The token refresh failed, so we need to sign-out
-                    Rownd.signOut()
-                    throw InvalidRefreshTokenException(ex.message)
-                }
-
-                throw ServerException(ex.message)
-                return@async null
-            } catch (ex: ServerResponseException) {
-                throw ServerException(ex.message)
-                return@async null
-            } catch (ex: Exception) {
-                return@async null
-            }
-        }
-    }
-
     internal fun isJwtExpiredWithMargin(jwt: JWT): Boolean {
         if (jwt.expiresAt == null) {
             return false
@@ -188,15 +113,15 @@ class AuthRepo @Inject constructor() {
         return currentDateWithMargin.after(jwt.expiresAt)
     }
 
-    suspend fun exchangeToken(requestBody: TokenRequestBody) : TokenResponse {
-        return legacyTokenApiClient.client.post("hub/auth/token") {
-            setBody(requestBody)
-        }.body()
-    }
-
     suspend fun signOutUser(appId: String, requestBody: SignOutRequestBody) : SignOutResponse {
         return authenticatedApiClient.client.post("me/applications/$appId/signout") {
             setBody(requestBody)
         }.body()
     }
+
+    @Serializable
+    private data class GoogleSignInUpBody(
+        val thirdPartyId: String,
+        val oAuthTokens: Map<String, String>,
+    )
 }

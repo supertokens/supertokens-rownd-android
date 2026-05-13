@@ -18,6 +18,7 @@ import org.junit.Before
 import org.junit.BeforeClass
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
 class SuperTokensInitInstrumentedTest {
@@ -63,6 +64,12 @@ class SuperTokensInitInstrumentedTest {
     @Before
     fun resetBridge() {
         SuperTokensSessionBridge.isInitialized.set(false)
+        SuperTokensSessionBridge.buildSuperTokens = { context, apiDomain, apiBasePath ->
+            SuperTokens.Builder(context, apiDomain)
+                .apiBasePath(apiBasePath)
+                .tokenTransferMethod("header")
+                .build()
+        }
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         runBlocking { SuperTokensSessionBridge.signOut(context) }
     }
@@ -124,5 +131,39 @@ class SuperTokensInitInstrumentedTest {
         Thread.sleep(500)
 
         assertTrue("isInitialized must remain true after a redundant call", SuperTokensSessionBridge.isInitialized.get())
+    }
+
+    @Test
+    fun concurrentObserversInitializeOnlyOnce() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val stateRepo = validStateRepo(harnessConfig.androidUrl)
+        val attempts = AtomicInteger(0)
+
+        SuperTokensSessionBridge.buildSuperTokens = { _, _, _ ->
+            attempts.incrementAndGet()
+            Thread.sleep(200)
+        }
+
+        SuperTokensSessionBridge.observeAndInitialize(context, stateRepo)
+        SuperTokensSessionBridge.observeAndInitialize(context, stateRepo)
+
+        awaitInitialized()
+        Thread.sleep(300)
+
+        assertTrue("isInitialized should be true after the first observer claims initialization", SuperTokensSessionBridge.isInitialized.get())
+        assertTrue("SuperTokens build path must be called once", attempts.get() == 1)
+    }
+
+    @Test
+    fun failedInitializationResetsGuardForRetry() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val stateRepo = validStateRepo(harnessConfig.androidUrl)
+
+        SuperTokensSessionBridge.buildSuperTokens = { _, _, _ -> throw IllegalStateException("boom") }
+
+        SuperTokensSessionBridge.observeAndInitialize(context, stateRepo)
+        Thread.sleep(500)
+
+        assertFalse("isInitialized must reset to false when SuperTokens build fails", SuperTokensSessionBridge.isInitialized.get())
     }
 }

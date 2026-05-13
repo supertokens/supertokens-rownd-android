@@ -25,6 +25,13 @@ object SuperTokensSessionBridge {
 
     val isInitialized = AtomicBoolean(false)
 
+    internal var buildSuperTokens: (Context, String, String) -> Unit = { context, apiDomain, apiBasePath ->
+        SuperTokens.Builder(context, apiDomain)
+            .apiBasePath(apiBasePath)
+            .tokenTransferMethod("header")
+            .build()
+    }
+
     // Called from configure(appKey) — observes state until app config is ready, then inits SuperTokens once.
     fun observeAndInitialize(context: Context, stateRepo: StateRepo) {
         CoroutineScope(Dispatchers.IO).launch {
@@ -32,22 +39,19 @@ object SuperTokensSessionBridge {
                 .filter { it.appConfig.id.isNotEmpty() && !it.appConfig.isLoading }
                 .take(1)
                 .collect { state ->
-                    if (isInitialized.get()) return@collect
-
                     val st = state.appConfig.config.supertokens
                     if (st.appInfo.apiDomain.isEmpty()) {
                         Log.e(TAG, "config.supertokens.appInfo.apiDomain is missing — SuperTokens cannot initialize")
                         return@collect
                     }
 
+                    if (!isInitialized.compareAndSet(false, true)) return@collect
+
                     try {
-                        SuperTokens.Builder(context, st.appInfo.apiDomain)
-                            .apiBasePath(st.appInfo.apiBasePath ?: "/auth")
-                            .tokenTransferMethod("header")
-                            .build()
-                        isInitialized.set(true)
+                        buildSuperTokens(context, st.appInfo.apiDomain, st.appInfo.apiBasePath ?: "/auth")
                         Log.d(TAG, "SuperTokens initialized with apiDomain=${st.appInfo.apiDomain}")
                     } catch (e: Exception) {
+                        isInitialized.set(false)
                         Log.e(TAG, "SuperTokens initialization failed: ${e.message}")
                     }
                 }

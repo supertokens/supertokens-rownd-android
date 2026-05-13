@@ -39,8 +39,9 @@ import io.rownd.android.RowndSignInIntent
 import io.rownd.android.RowndSignInJsOptions
 import io.rownd.android.RowndSignInLoginStep
 import io.rownd.android.RowndSignInType
+import io.rownd.android.RowndSignInUserType
 import io.rownd.android.models.domain.GoogleSignInMethod
-import io.rownd.android.models.network.TokenResponse
+import io.rownd.android.models.network.SignInUpResponse
 import io.rownd.android.models.repos.AuthRepo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -215,45 +216,29 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
             is CustomCredential -> {
                 if (credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                     try {
-                        // Use googleIdTokenCredential and extract id to validate and
-                        // authenticate on your server.
                         val googleIdTokenCredential =
                             GoogleIdTokenCredential.createFrom(credential.data)
 
-                        val tokenResp =
+                        val signInUpResp =
                             exchangeGoogleTokenForRowndToken(googleIdTokenCredential.idToken)
 
-                        tokenResp?.let {
-                            rowndContext.eventEmitter?.emit(RowndEvent(
-                                event = RowndEventType.SignInCompleted,
-                                data = mapOf(
-                                    "method" to RowndSignInType.Google.value,
-                                    "user_type" to it.userType?.value,
-                                    "app_variant_user_type" to it.appVariantUserType?.value,
-                                )
-                            ))
-
-                            currentSpan?.setStatus(StatusCode.OK)
-                            endSpan()
-                        }
+                        emitSignInResult(signInUpResp)
                     } catch (e: GoogleIdTokenParsingException) {
                         Log.e("Rownd", "Received an invalid google id token response", e)
                         currentSpan?.setStatus(StatusCode.ERROR, e.message ?: "Unknown error")
                         endSpan()
                     } catch (e: ApiException) {
                         Log.w("Rownd", "Google sign-in failed: code=" + e.statusCode)
-                        rowndContext.eventEmitter?.emit(RowndEvent(
-                            event = RowndEventType.SignInFailed,
-                            data = mapOf(
-                                "method" to RowndSignInType.Google.value,
-                                "error" to e.message
-                            )
-                        ))
+                        emitSignInFailed(e.message)
+                        currentSpan?.setStatus(StatusCode.ERROR, e.message ?: "Unknown error")
+                        endSpan()
+                    } catch (e: Exception) {
+                        Log.e("Rownd", "Google sign-in exchange failed", e)
+                        emitSignInFailed(e.message)
                         currentSpan?.setStatus(StatusCode.ERROR, e.message ?: "Unknown error")
                         endSpan()
                     }
                 } else {
-                    // Catch any unrecognized custom credential type here.
                     Log.e("Rownd", "Unexpected type of credential: '${credential.type}'")
                     currentSpan?.setStatus(StatusCode.ERROR, "Unexpected type of credential '${credential.type}'")
                     currentSpan?.setAttribute("was_error_presented_to_user", "false")
@@ -261,13 +246,40 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
                 }
             }
             else -> {
-                // Catch any unrecognized credential type here.
                 Log.e("Rownd", "Unexpected type of credential")
                 currentSpan?.setStatus(StatusCode.ERROR, "Unexpected type of credential")
                 currentSpan?.setAttribute("was_error_presented_to_user", "false")
                 endSpan()
             }
         }
+    }
+
+    private fun emitSignInResult(resp: SignInUpResponse) {
+        if (resp.rownd?.userType === RowndSignInUserType.NewUser && googleSignInIntent === RowndSignInIntent.SignIn) {
+            Rownd.requestSignIn(
+                RowndSignInJsOptions(
+                    intent = googleSignInIntent,
+                    loginStep = RowndSignInLoginStep.NoAccount,
+                )
+            )
+        } else {
+            Rownd.requestSignIn(
+                RowndSignInJsOptions(
+                    intent = googleSignInIntent,
+                    loginStep = RowndSignInLoginStep.Success,
+                    userType = resp.rownd?.userType,
+                )
+            )
+            rowndContext.eventEmitter?.emit(RowndEvent(
+                event = RowndEventType.SignInCompleted,
+                data = mapOf(
+                    "method" to RowndSignInType.Google.value,
+                    "user_type" to resp.rownd?.userType?.value,
+                )
+            ))
+        }
+        currentSpan?.setStatus(StatusCode.OK)
+        endSpan()
     }
 
     private fun handleSignInWithGoogleFailure(e: Exception, wasUserInitiated: Boolean? = true) {
@@ -315,13 +327,7 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
             errMessage = errMessage.substringAfterLast(':')
         }
 
-        rowndContext.eventEmitter?.emit(RowndEvent(
-            event = RowndEventType.SignInFailed,
-            data = mapOf(
-                "method" to RowndSignInType.Google.value,
-                "error" to errMessage
-            )
-        ))
+        emitSignInFailed(errMessage)
 
         // Google Play services may need an update, so let's check that prior to showing an error
         rowndContext.client?.appHandleWrapper?.activity?.get()?.let { activity ->
@@ -419,20 +425,8 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
             val account: GoogleSignInAccount = task.getResult(ApiException::class.java)
 
             account.idToken?.let { idToken ->
-                val tokenResp = exchangeGoogleTokenForRowndToken(idToken)
-
-                tokenResp?.let {
-                    rowndContext.eventEmitter?.emit(RowndEvent(
-                        event = RowndEventType.SignInCompleted,
-                        data = mapOf(
-                            "method" to RowndSignInType.Google.value,
-                            "user_type" to it.userType?.value,
-                            "app_variant_user_type" to it.userType?.value,
-                        )
-                    ))
-                    currentSpan?.setStatus(StatusCode.OK)
-                }
-                endSpan()
+                val signInUpResp = exchangeGoogleTokenForRowndToken(idToken)
+                emitSignInResult(signInUpResp)
                 return
             }
 
@@ -441,19 +435,26 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
             currentSpan?.setStatus(StatusCode.ERROR, "The Google ID token was missing.")
             endSpan()
         } catch (e: ApiException) {
-            // The ApiException status code indicates the detailed failure reason.
-            // Please refer to the GoogleSignInStatusCodes class reference for more information.
             Log.w("Rownd", "Google sign-in failed: code=" + e.statusCode)
-            rowndContext.eventEmitter?.emit(RowndEvent(
-                event = RowndEventType.SignInFailed,
-                data = mapOf(
-                    "method" to RowndSignInType.Google.value,
-                    "error" to e.message,
-                )
-            ))
+            emitSignInFailed(e.message)
+            currentSpan?.setStatus(StatusCode.ERROR, e.message ?: "Unknown error")
+            endSpan()
+        } catch (e: Exception) {
+            Log.e("Rownd", "Google sign-in exchange failed", e)
+            emitSignInFailed(e.message)
             currentSpan?.setStatus(StatusCode.ERROR, e.message ?: "Unknown error")
             endSpan()
         }
+    }
+
+    internal fun emitSignInFailed(error: String?) {
+        rowndContext.eventEmitter?.emit(RowndEvent(
+            event = RowndEventType.SignInFailed,
+            data = mapOf(
+                "method" to RowndSignInType.Google.value,
+                "error" to error,
+            )
+        ))
     }
 
     private fun showErrorToUser(message: String) {
@@ -467,12 +468,8 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
         currentSpan?.setAttribute("was_error_presented_to_user", "true")
     }
 
-    private suspend fun exchangeGoogleTokenForRowndToken(idToken: String): TokenResponse? {
-        return authRepo.getAccessToken(
-            idToken,
-            intent = googleSignInIntent,
-            type = AuthRepo.AccessTokenType.google
-        )
+    private suspend fun exchangeGoogleTokenForRowndToken(idToken: String): SignInUpResponse {
+        return authRepo.exchangeGoogleIdToken(idToken, intent = googleSignInIntent)
     }
 
     private fun getGoogleConfig(): GoogleSignInMethod? {

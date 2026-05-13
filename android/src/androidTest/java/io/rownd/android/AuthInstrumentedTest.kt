@@ -2,6 +2,7 @@ package io.rownd.android
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dagger.Component
+import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockEngineConfig
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
@@ -14,9 +15,13 @@ import io.rownd.android.di.module.AuthRepoModule
 import io.rownd.android.di.module.FakeNetworkModule
 import io.rownd.android.di.module.KtorMockEngineConfig
 import io.rownd.android.di.module.RowndConfigProvider
+import io.rownd.android.models.RowndConfig
 import io.rownd.android.models.domain.AuthState
+import io.rownd.android.models.network.AppConfigApi
 import io.rownd.android.models.repos.StateAction
+import io.rownd.android.util.AuthenticatedApiClient
 import io.rownd.android.util.JwtGenerator
+import io.rownd.android.util.RowndContext
 import junit.framework.Assert.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.test.runTest
@@ -110,6 +115,62 @@ class AuthInstrumentedTest {
         )))
 
         assertFalse(rownd.state.value.auth.isAccessTokenValid)
+    }
+
+    @Test
+    fun appConfigFetchUsesPluginEndpointAndKeepsAppKeyHeader() = runTest {
+        var capturedPath: String? = null
+        var capturedAppKey: String? = null
+
+        httpEngineConfig.addHandler { request ->
+            capturedPath = request.url.encodedPath
+            capturedAppKey = request.headers["x-rownd-app-key"]
+
+            respond(
+                content = ByteReadChannel(
+                    """
+                    {
+                      "app": {
+                        "id": "app_test",
+                        "icon": "",
+                        "user_verification_fields": [],
+                        "schema": {},
+                        "config": {
+                          "hub": { "auth": { "sign_in_methods": {} } },
+                          "customizations": {},
+                          "supertokens": {
+                            "appInfo": {
+                              "apiDomain": "https://api.example.com",
+                              "apiBasePath": "/auth"
+                            }
+                          }
+                        }
+                      }
+                    }
+                    """.trimIndent()
+                ),
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+
+        val rowndContext = RowndContext(
+            RowndConfig(
+                appKey = "app_key_test",
+                apiUrl = "https://api.example.com",
+                apiBasePath = "/auth",
+            )
+        )
+        val appConfigApi = AppConfigApi()
+        appConfigApi.rowndContext = rowndContext
+        appConfigApi.authenticatedApiClient = AuthenticatedApiClient(MockEngine(httpEngineConfig), rowndContext)
+
+        val response = appConfigApi.getAppConfig()
+
+        assertEquals("/auth/plugin/rownd/app-config", capturedPath)
+        assertFalse(capturedPath == "/hub/app-config")
+        assertEquals("app_key_test", capturedAppKey)
+        assertEquals("https://api.example.com", response.asDomainModel().config.supertokens.appInfo.apiDomain)
     }
 
 }

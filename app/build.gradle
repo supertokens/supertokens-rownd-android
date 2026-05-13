@@ -21,6 +21,23 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    flavorDimensions "environment"
+    productFlavors {
+        local {
+            dimension "environment"
+            applicationIdSuffix ".local"
+            buildConfigField "String", "API_URL", '"http://10.0.2.2:3137"'
+            buildConfigField "String", "HUB_URL", '"http://10.0.2.2:8787"'
+            buildConfigField "String", "APP_KEY", '"test_app_key"'
+        }
+        dev {
+            dimension "environment"
+            buildConfigField "String", "API_URL", '"https://api.dev.rownd.io"'
+            buildConfigField "String", "HUB_URL", '"https://hub.dev.rownd.io"'
+            buildConfigField "String", "APP_KEY", '"key_pko8eul59xz33hr21jgxvx6s"'
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
@@ -36,6 +53,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig true
         compose true
         dataBinding = true
         viewBinding = true
