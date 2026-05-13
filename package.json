@@ -1,6 +1,8 @@
 {
   "scripts": {
-    "release": "release-it"
+    "release": "release-it",
+    "test:integration:harness": "tsx test-server/run-harness.ts",
+    "test:integration": "HARNESS_URL=http://127.0.0.1:3137 ./gradlew :android:connectedAndroidTest"
   },
   "devDependencies": {
     "@commitlint/cli": "^17.4.0",
@@ -8,8 +10,19 @@
     "@release-it/bumper": "^4.0.2",
     "@release-it/conventional-changelog": "^5.1.0",
     "@release-it/keep-a-changelog": "^3.1.0",
+    "@supertokens-plugins/rownd-nodejs": "file:../../../supertokens-plugins/packages/rownd-nodejs",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.0.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "husky": "^8.0.3",
+    "jose": "^4.15.0",
     "release-it": "^15.4.0",
+    "supertokens-node": "^24.0.2",
+    "testcontainers": "^11.14.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.0",
     "yaml-cli": "^1.1.8"
   }
 }
