@@ -547,6 +547,23 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     res.json(capture);
   });
 
+  app.post('/test/st-session', async (req, res) => {
+    const userId = String(req.body?.userId || `test-user-${Date.now()}`);
+    const email = `${userId}@example.com`;
+
+    const user = await ensureSTUser(coreConnectionURI, userId, email);
+    const recipeUserId = user?.loginMethods[0]?.recipeUserId;
+    if (!recipeUserId) {
+      res.status(500).json({ status: 'GENERAL_ERROR', message: `No recipe user found for ${userId}` });
+      return;
+    }
+
+    await Session.createNewSession(req, res, 'public', recipeUserId, {}, {}, {});
+    const accessToken = typeof res.getHeader('st-access-token') === 'string' ? (res.getHeader('st-access-token') as string) : '';
+    const refreshToken = typeof res.getHeader('st-refresh-token') === 'string' ? (res.getHeader('st-refresh-token') as string) : '';
+    res.json({ access_token: accessToken, refresh_token: refreshToken, user_id: userId });
+  });
+
   app.get('/test/protected', verifySession() as any, async (req: any, res) => {
     res.json({
       userId: req.session.getUserId(),

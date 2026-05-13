@@ -38,6 +38,13 @@ object HarnessClient {
     )
 
     @Serializable
+    data class STSessionResponse(
+        @SerialName("access_token") val accessToken: String,
+        @SerialName("refresh_token") val refreshToken: String,
+        @SerialName("user_id") val userId: String,
+    )
+
+    @Serializable
     data class MagicLinkCapture(
         val email: String? = null,
         val phoneNumber: String? = null,
@@ -80,6 +87,12 @@ object HarnessClient {
             "expired" to expired,
         )
         val response = post("/test/legacy-session", body, namespace)
+        return json.decodeFromString(response)
+    }
+
+    fun createSTSession(userId: String = "test-user"): STSessionResponse {
+        val body: Map<String, Any> = mapOf("userId" to userId)
+        val response = post("/test/st-session", body, "default")
         return json.decodeFromString(response)
     }
 
