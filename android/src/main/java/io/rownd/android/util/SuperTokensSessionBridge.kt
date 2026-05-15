@@ -53,6 +53,13 @@ object SuperTokensSessionBridge {
                     } catch (e: Exception) {
                         isInitialized.set(false)
                         Log.e(TAG, "SuperTokens initialization failed: ${e.message}")
+                        return@collect
+                    }
+
+                    try {
+                        stateRepo.authRepo.migrateLegacySessionIfNeeded(context)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Legacy session migration failed: ${e.message}")
                     }
                 }
         }
