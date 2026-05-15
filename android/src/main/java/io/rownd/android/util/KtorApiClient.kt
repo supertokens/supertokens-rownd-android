@@ -14,7 +14,6 @@ import io.ktor.client.plugins.logging.LogLevel
 import io.ktor.client.plugins.logging.Logger
 import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.plugins.resources.Resources
-import io.ktor.client.request.headers
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
@@ -77,9 +76,6 @@ open class KtorApiClient @Inject constructor(engine: HttpClientEngine, rowndCont
         defaultRequest {
             url(rowndContext.config.apiUrl)
             contentType(ContentType.Application.Json)
-            headers {
-                rowndContext.config.appKey?.let { this.append("x-rownd-app-key", it) }
-            }
         }
     }
 

@@ -7,7 +7,6 @@ import io.rownd.android.di.module.AuthRepoModule
 import io.rownd.android.di.module.NetworkModule
 import io.rownd.android.di.module.RowndConfigProvider
 import io.rownd.android.models.RowndConfig
-import io.rownd.android.models.RowndConnectionAction
 import io.rownd.android.models.network.SignInLinkApi
 import io.rownd.android.models.repos.AuthRepo
 import io.rownd.android.models.repos.SignInRepo
@@ -35,7 +34,6 @@ interface RowndGraph {
     fun stateRepo(): StateRepo
     fun userRepo(): UserRepo
     fun authRepo(): AuthRepo
-    fun connectionAction(): RowndConnectionAction
     fun signInRepo(): SignInRepo
     fun signInLinkApi(): SignInLinkApi
     fun rowndContext(): RowndContext

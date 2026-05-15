@@ -118,7 +118,7 @@ class AuthInstrumentedTest {
     }
 
     @Test
-    fun appConfigFetchUsesPluginEndpointAndKeepsAppKeyHeader() = runTest {
+    fun appConfigFetchUsesPluginEndpointAndOmitsAppKeyHeader() = runTest {
         var capturedPath: String? = null
         var capturedAppKey: String? = null
 
@@ -169,7 +169,7 @@ class AuthInstrumentedTest {
 
         assertEquals("/auth/plugin/rownd/app-config", capturedPath)
         assertFalse(capturedPath == "/hub/app-config")
-        assertEquals("app_key_test", capturedAppKey)
+        assertNull(capturedAppKey)
         assertEquals("https://api.example.com", response.asDomainModel().config.supertokens.appInfo.apiDomain)
     }
 

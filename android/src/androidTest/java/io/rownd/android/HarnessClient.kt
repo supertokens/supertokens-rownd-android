@@ -45,6 +45,14 @@ object HarnessClient {
     )
 
     @Serializable
+    data class RequestCapture(
+        val method: String,
+        val path: String,
+        val authorizationHeaderCount: Int,
+        val hasAppKey: Boolean,
+    )
+
+    @Serializable
     data class MagicLinkCapture(
         val email: String? = null,
         val phoneNumber: String? = null,
@@ -98,6 +106,12 @@ object HarnessClient {
 
     fun getCounters(namespace: String = "default"): HarnessCounters {
         val response = get("/counters", namespace)
+        return json.decodeFromString(response)
+    }
+
+    fun getLastRequest(path: String, namespace: String = "default"): RequestCapture {
+        val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
+        val response = get("/test/last-request?path=$encodedPath", namespace)
         return json.decodeFromString(response)
     }
 

@@ -2,6 +2,7 @@ package io.rownd.android.models.network
 
 import io.ktor.client.call.body
 import io.ktor.client.request.get
+import io.ktor.client.request.headers
 import io.rownd.android.models.domain.AppConfigState
 import io.rownd.android.util.AuthenticatedApiClient
 import io.rownd.android.util.RowndContext
@@ -270,7 +271,9 @@ class AppConfigApi @Inject constructor() {
     suspend fun getAppConfig(): AppConfigResponse {
         val basePath = rowndContext.config.apiBasePath.trimEnd('/')
         val appConfig: AppConfigResponse =
-            authenticatedApiClient.client.get("$basePath/plugin/rownd/app-config").body()
+            authenticatedApiClient.client.get("$basePath/plugin/rownd/app-config") {
+                headers { remove("x-rownd-app-key") }
+            }.body()
         return appConfig
     }
 

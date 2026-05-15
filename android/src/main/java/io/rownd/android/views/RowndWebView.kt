@@ -7,6 +7,7 @@ import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
+import android.os.Looper
 import android.util.AttributeSet
 import android.util.Log
 import android.view.KeyEvent
@@ -402,24 +403,48 @@ class RowndJavascriptInterface constructor(
                     }
                     val appContext = parentWebView.context.applicationContext
 
-                    CoroutineScope(Dispatchers.IO).launch {
-                        SuperTokensSessionBridge.bootstrapSession(
-                            context = appContext,
-                            accessToken = authenticationMessage.payload.accessToken,
-                            refreshToken = refreshToken,
-                            frontToken = authenticationMessage.payload.frontToken,
-                        )
-                        SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
-                            context = appContext,
-                            store = parentWebView.rowndClient.stateRepo.getStore(),
-                        )
+                    fun launchPostBootstrap(includeBootstrap: Boolean) = CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            if (includeBootstrap) {
+                                SuperTokensSessionBridge.bootstrapSession(
+                                    context = appContext,
+                                    accessToken = authenticationMessage.payload.accessToken,
+                                    refreshToken = refreshToken,
+                                    frontToken = authenticationMessage.payload.frontToken,
+                                    replaceExisting = true,
+                                )
+                            }
+                            SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                                context = appContext,
+                                store = parentWebView.rowndClient.stateRepo.getStore(),
+                            )
 
-                        parentWebView.rowndClient.signInRepo.reset()
-                        parentWebView.rowndClient.userRepo.loadUserAsync()
+                            parentWebView.rowndClient.signInRepo.reset()
+                            parentWebView.rowndClient.userRepo.loadUserAsync()
 
-                        Executors.newSingleThreadScheduledExecutor().schedule({
-                            parentWebView.dismiss?.invoke()
-                        }, HUB_CLOSE_AFTER_MILLISECONDS, TimeUnit.MILLISECONDS)
+                            Executors.newSingleThreadScheduledExecutor().schedule({
+                                parentWebView.dismiss?.invoke()
+                            }, HUB_CLOSE_AFTER_MILLISECONDS, TimeUnit.MILLISECONDS)
+                        } catch (e: Exception) {
+                            Log.e("Rownd.hub", "Hub authentication bootstrap failed", e)
+                        }
+                    }
+
+                    if (Looper.myLooper() == Looper.getMainLooper()) {
+                        launchPostBootstrap(includeBootstrap = true)
+                    } else {
+                        try {
+                            SuperTokensSessionBridge.bootstrapSession(
+                                context = appContext,
+                                accessToken = authenticationMessage.payload.accessToken,
+                                refreshToken = refreshToken,
+                                frontToken = authenticationMessage.payload.frontToken,
+                                replaceExisting = true,
+                            )
+                            launchPostBootstrap(includeBootstrap = false)
+                        } catch (e: Exception) {
+                            Log.e("Rownd.hub", "Hub authentication bootstrap failed", e)
+                        }
                     }
                 }
 

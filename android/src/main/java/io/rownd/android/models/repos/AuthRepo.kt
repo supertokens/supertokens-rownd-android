@@ -164,6 +164,7 @@ class AuthRepo @Inject constructor() {
         return authenticatedApiClient.client.post("$apiDomain$apiBasePath/plugin/rownd/migrate") {
             expectSuccess = false
             headers {
+                remove("x-rownd-app-key")
                 append(HttpHeaders.Authorization, "Bearer $legacyAccessToken")
                 append("rid", "session")
                 append("fdi-version", "1.18")
@@ -244,6 +245,7 @@ class AuthRepo @Inject constructor() {
         val apiBasePath = st.appInfo.apiBasePath ?: "/auth"
 
         return authenticatedApiClient.client.post("$apiDomain$apiBasePath/plugin/rownd/signout") {
+            headers { remove("x-rownd-app-key") }
             setBody(requestBody)
         }.body()
     }

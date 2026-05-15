@@ -104,11 +104,20 @@ object SuperTokensSessionBridge {
     // directly so doesSessionExist() returns true immediately.
     // Must only be called off the main thread. Guards against double-injection.
 
-    fun bootstrapSession(context: Context, accessToken: String, refreshToken: String, frontToken: String? = null) {
+    fun bootstrapSession(
+        context: Context,
+        accessToken: String,
+        refreshToken: String,
+        frontToken: String? = null,
+        replaceExisting: Boolean = false,
+    ) {
         check(Looper.myLooper() != Looper.getMainLooper()) {
             "bootstrapSession must be called off the main thread"
         }
-        if (SuperTokens.doesSessionExist(context)) return
+        if (!replaceExisting && SuperTokens.doesSessionExist(context)) return
+        if (replaceExisting) {
+            clearLocalSession(context)
+        }
 
         val prefs = context.getSharedPreferences(
             "supertokens-android-shared-preferences",

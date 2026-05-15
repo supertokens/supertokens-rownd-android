@@ -17,8 +17,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStoreOwner
 import com.lyft.kronos.AndroidClockFactory
-import io.ktor.client.plugins.auth.authProviders
-import io.ktor.client.plugins.auth.providers.BearerAuthProvider
 import io.rownd.android.di.component.DaggerRowndGraph
 import io.rownd.android.di.component.RowndGraph
 import io.rownd.android.models.Store
@@ -71,7 +69,6 @@ class RowndClient(
     internal var signInRepo: SignInRepo = graph.signInRepo()
     internal var signInLinkApi: SignInLinkApi = graph.signInLinkApi()
     internal var rowndContext = graph.rowndContext()
-    internal var connectionAction = graph.connectionAction()
     internal var eventEmitter = graph.rowndEventEmitter()
     internal var signInWithGoogle = graph.signInWithGoogle()
     internal var telemetry = graph.telemetry()
@@ -280,10 +277,6 @@ class RowndClient(
             }
         }
 
-        // Remove any cached access/refresh tokens in authenticatedApi client
-        userRepo.authenticatedApiClient.client.authProviders.filterIsInstance<BearerAuthProvider>()
-            .firstOrNull()?.clearToken()
-
         val googleSignInMethodConfig =
             state.value.appConfig.config.hub.auth.signInMethods.google
         if (googleSignInMethodConfig.enabled) {
@@ -293,12 +286,6 @@ class RowndClient(
 
     fun manageAccount() {
         displayHub(HubPageSelector.ManageAccount)
-    }
-
-    inner class Firebase {
-        fun getIdToken(): Deferred<String?> {
-            return connectionAction.getFirebaseIdToken()
-        }
     }
 
     @Suppress("unused")

@@ -26,10 +26,19 @@ type HarnessCounters = {
   stRefresh: number;
 };
 
+type RequestCapture = {
+  method: string;
+  path: string;
+  authorizationHeaderCount: number;
+  hasAppKey: boolean;
+};
+
 type HarnessState = {
   captures: Map<string, MagicLinkCapture>;
   legacySessions: Map<string, LegacySessionRecord>;
   counters: HarnessCounters;
+  requestLog: RequestCapture[];
+  userData: Record<string, unknown>;
 };
 
 export type AndroidIntegrationHarness = {
@@ -75,7 +84,20 @@ function createEmptyState(): HarnessState {
     captures: new Map<string, MagicLinkCapture>(),
     legacySessions: new Map<string, LegacySessionRecord>(),
     counters: { legacyRefresh: 0, migrate: 0, stRefresh: 0 },
+    requestLog: [],
+    userData: { user_id: 'harness-user', email: 'harness-user@example.com' },
   };
+}
+
+function recordRequest(req: express.Request) {
+  const authorization = req.headers.authorization;
+  const authorizationHeaderCount = Array.isArray(authorization) ? authorization.length : authorization ? 1 : 0;
+  getState(req).requestLog.push({
+    method: req.method,
+    path: req.path,
+    authorizationHeaderCount,
+    hasAppKey: typeof req.headers['x-rownd-app-key'] === 'string',
+  });
 }
 
 function getNamespace(req: express.Request): string {
@@ -390,6 +412,9 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     if (req.method === 'POST' && req.path === '/auth/plugin/rownd/migrate') {
       state.counters.migrate += 1;
     }
+    if (req.path === '/auth/plugin/rownd/user') {
+      recordRequest(req as express.Request);
+    }
     next();
   });
 
@@ -493,20 +518,36 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     res.json({ sign_out_all: signOutAll });
   });
 
-  app.get('/health', (_req, res) => {
-    res.json({ status: 'OK' });
-  });
-
-  app.get('/me/applications/:appId/data', (_req, res) => {
+  app.get('/auth/plugin/rownd/user', verifySession() as any, (req, res) => {
     res.json({
       state: 'enabled',
       auth_level: 'verified',
-      data: {},
+      data: getState(req).userData,
       verified_data: {},
-      redacted: {},
+      redacted: [],
       groups: [],
       meta: {},
     });
+  });
+
+  app.put('/auth/plugin/rownd/user', verifySession() as any, (req, res) => {
+    const state = getState(req);
+    const data = typeof req.body?.data === 'object' && req.body.data !== null ? req.body.data : {};
+    state.userData = { ...state.userData, ...data };
+
+    res.json({
+      state: 'enabled',
+      auth_level: 'verified',
+      data: state.userData,
+      verified_data: {},
+      redacted: [],
+      groups: [],
+      meta: {},
+    });
+  });
+
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'OK' });
   });
 
   app.post('/reset', (req, res) => {
@@ -556,6 +597,18 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
 
   app.get('/counters/all', (_req, res) => {
     res.json(getAllCounters());
+  });
+
+  app.get('/test/last-request', (req, res) => {
+    const path = String(req.query.path || '');
+    const request = [...getState(req).requestLog].reverse().find((entry) => !path || entry.path === path);
+
+    if (!request) {
+      res.status(404).json({ error: 'Request not found' });
+      return;
+    }
+
+    res.json(request);
   });
 
   app.get('/captures/latest', (req, res) => {
