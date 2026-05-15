@@ -196,19 +196,18 @@ class AuthRepo @Inject constructor() {
     }
 
     fun signOutUser() {
-        val appId = stateRepo.getStore().currentState.appConfig.id
         val signOutRequest = SignOutRequestBody(
             signOutAll = true
         )
-        signOutUserAsync(appId, signOutRequest)
+        signOutUserAsync(signOutRequest)
     }
 
     @Synchronized
     @Throws(RowndException::class)
-    internal fun signOutUserAsync(appId: String, signOutRequest: SignOutRequestBody): Deferred<SignOutResponse?>{
+    internal fun signOutUserAsync(signOutRequest: SignOutRequestBody): Deferred<SignOutResponse?>{
         return CoroutineScope(Dispatchers.IO).async {
             try {
-                signOutUser(appId, signOutRequest)
+                signOutUser(signOutRequest)
                 Rownd.signOut()
                 return@async null
             } catch(ex: Exception) {
@@ -239,8 +238,12 @@ class AuthRepo @Inject constructor() {
         }.getOrDefault(false)
     }
 
-    suspend fun signOutUser(appId: String, requestBody: SignOutRequestBody) : SignOutResponse {
-        return authenticatedApiClient.client.post("me/applications/$appId/signout") {
+    suspend fun signOutUser(requestBody: SignOutRequestBody) : SignOutResponse {
+        val st = stateRepo.state.value.appConfig.config.supertokens
+        val apiDomain = st.appInfo.apiDomain
+        val apiBasePath = st.appInfo.apiBasePath ?: "/auth"
+
+        return authenticatedApiClient.client.post("$apiDomain$apiBasePath/plugin/rownd/signout") {
             setBody(requestBody)
         }.body()
     }

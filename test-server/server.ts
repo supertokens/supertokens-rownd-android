@@ -481,8 +481,32 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
 
   app.use(middleware());
 
+  app.post('/auth/plugin/rownd/signout', verifySession() as any, async (req: any, res) => {
+    const signOutAll = req.body?.sign_out_all === true;
+
+    if (signOutAll) {
+      await Session.revokeAllSessionsForUser(req.session.getUserId());
+    } else {
+      await Session.revokeSession(req.session.getHandle());
+    }
+
+    res.json({ sign_out_all: signOutAll });
+  });
+
   app.get('/health', (_req, res) => {
     res.json({ status: 'OK' });
+  });
+
+  app.get('/me/applications/:appId/data', (_req, res) => {
+    res.json({
+      state: 'enabled',
+      auth_level: 'verified',
+      data: {},
+      verified_data: {},
+      redacted: {},
+      groups: [],
+      meta: {},
+    });
   });
 
   app.post('/reset', (req, res) => {

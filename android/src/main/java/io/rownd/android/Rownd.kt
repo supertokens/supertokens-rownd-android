@@ -47,6 +47,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
@@ -245,7 +246,8 @@ class RowndClient(
 
     fun signOut(scope: RowndSignOutScope) {
         when (scope) {
-            RowndSignOutScope.all ->  authRepo.signOutUser()
+            RowndSignOutScope.Local -> signOut()
+            RowndSignOutScope.All -> authRepo.signOutUser()
         }
     }
 
@@ -253,6 +255,30 @@ class RowndClient(
         rowndContext.hubViewModel?.webView()?.postValue(null)
         store.dispatch(StateAction.SetAuth(AuthState()))
         store.dispatch(StateAction.SetUser(User()))
+
+        appHandleWrapper?.app?.get()?.applicationContext?.let { context ->
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        SuperTokensSessionBridge.signOut(context)
+                    } catch (ex: Exception) {
+                        Log.e("Rownd", "Failed to sign out of SuperTokens session", ex)
+                    } finally {
+                        SuperTokensSessionBridge.clearLocalSession(context)
+                    }
+                }
+            } else {
+                runBlocking {
+                    try {
+                        SuperTokensSessionBridge.signOut(context)
+                    } catch (ex: Exception) {
+                        Log.e("Rownd", "Failed to sign out of SuperTokens session", ex)
+                    } finally {
+                        SuperTokensSessionBridge.clearLocalSession(context)
+                    }
+                }
+            }
+        }
 
         // Remove any cached access/refresh tokens in authenticatedApi client
         userRepo.authenticatedApiClient.client.authProviders.filterIsInstance<BearerAuthProvider>()
@@ -520,5 +546,14 @@ enum class RowndSignInLoginStep {
 }
 
 enum class RowndSignOutScope {
-    all
+    @SerialName("local")
+    Local,
+
+    @SerialName("all")
+    All;
+
+    companion object {
+        @Deprecated("Use RowndSignOutScope.All instead.")
+        val all = All
+    }
 }

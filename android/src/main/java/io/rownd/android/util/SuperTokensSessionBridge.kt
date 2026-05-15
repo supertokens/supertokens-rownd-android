@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Looper
 import android.util.Log
 import java.util.Base64
+import com.supertokens.session.FrontToken
 import com.supertokens.session.SuperTokens
 import io.rownd.android.models.domain.AuthState
 import io.rownd.android.models.repos.StateAction
@@ -85,8 +86,16 @@ object SuperTokensSessionBridge {
 
     suspend fun signOut(context: Context) =
         withContext(Dispatchers.IO) {
-            SuperTokens.signOut(context)
+            try {
+                SuperTokens.signOut(context)
+            } finally {
+                clearLocalSession(context)
+            }
         }
+
+    fun clearLocalSession(context: Context) {
+        FrontToken.removeToken(context)
+    }
 
     // MARK: - Bootstrap (Hub-complete auth)
     //
@@ -105,12 +114,13 @@ object SuperTokensSessionBridge {
             "supertokens-android-shared-preferences",
             Context.MODE_PRIVATE
         )
+        val resolvedFrontToken = frontToken ?: buildFrontToken(accessToken)
         prefs.edit()
             .putString("st-storage-item-st-access-token", accessToken)
             .putString("st-storage-item-st-refresh-token", refreshToken)
-            .putString("supertokens-android-fronttoken-key", frontToken ?: buildFrontToken(accessToken))
             .putString("st-storage-item-st-last-access-token-update", "${System.currentTimeMillis()}")
             .apply()
+        FrontToken.setToken(context, resolvedFrontToken)
     }
 
     // MARK: - Rownd compatibility state sync
