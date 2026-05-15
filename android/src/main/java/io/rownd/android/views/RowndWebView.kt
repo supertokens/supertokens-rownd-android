@@ -38,9 +38,9 @@ import io.rownd.android.models.MessageType
 import io.rownd.android.models.RowndHubInteropMessage
 import io.rownd.android.models.TriggerSignInWithGoogleMessage
 import io.rownd.android.models.UserDataUpdateMessage
-import io.rownd.android.models.domain.AuthState
 import io.rownd.android.models.repos.StateAction
 import io.rownd.android.util.Constants
+import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.redactSensitiveKeys
 import io.rownd.android.views.html.noInternetHTML
 import kotlinx.collections.immutable.persistentListOf
@@ -394,21 +394,33 @@ class RowndJavascriptInterface constructor(
                         return
                     }
 
-                    Rownd.store.dispatch(
-                        StateAction.SetAuth(
-                            AuthState(
-                                accessToken = (interopMessage as AuthenticationMessage).payload.accessToken,
-                                refreshToken = interopMessage.payload.refreshToken
-                            )
+                    val authenticationMessage = interopMessage as AuthenticationMessage
+                    val refreshToken = authenticationMessage.payload.refreshToken
+                    if (refreshToken.isNullOrEmpty()) {
+                        Log.e("Rownd.hub", "Hub authentication message is missing refresh_token")
+                        return
+                    }
+                    val appContext = parentWebView.context.applicationContext
+
+                    CoroutineScope(Dispatchers.IO).launch {
+                        SuperTokensSessionBridge.bootstrapSession(
+                            context = appContext,
+                            accessToken = authenticationMessage.payload.accessToken,
+                            refreshToken = refreshToken,
+                            frontToken = authenticationMessage.payload.frontToken,
                         )
-                    )
+                        SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                            context = appContext,
+                            store = parentWebView.rowndClient.stateRepo.getStore(),
+                        )
 
-                    parentWebView.rowndClient.signInRepo.reset()
-                    parentWebView.rowndClient.userRepo.loadUserAsync()
+                        parentWebView.rowndClient.signInRepo.reset()
+                        parentWebView.rowndClient.userRepo.loadUserAsync()
 
-                    Executors.newSingleThreadScheduledExecutor().schedule({
-                        parentWebView.dismiss?.invoke()
-                    }, HUB_CLOSE_AFTER_MILLISECONDS, TimeUnit.MILLISECONDS)
+                        Executors.newSingleThreadScheduledExecutor().schedule({
+                            parentWebView.dismiss?.invoke()
+                        }, HUB_CLOSE_AFTER_MILLISECONDS, TimeUnit.MILLISECONDS)
+                    }
                 }
 
                 MessageType.signOut -> {

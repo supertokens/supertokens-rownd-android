@@ -88,7 +88,7 @@ object SuperTokensSessionBridge {
     // directly so doesSessionExist() returns true immediately.
     // Must only be called off the main thread. Guards against double-injection.
 
-    fun bootstrapSession(context: Context, accessToken: String, refreshToken: String) {
+    fun bootstrapSession(context: Context, accessToken: String, refreshToken: String, frontToken: String? = null) {
         check(Looper.myLooper() != Looper.getMainLooper()) {
             "bootstrapSession must be called off the main thread"
         }
@@ -101,7 +101,7 @@ object SuperTokensSessionBridge {
         prefs.edit()
             .putString("st-storage-item-st-access-token", accessToken)
             .putString("st-storage-item-st-refresh-token", refreshToken)
-            .putString("supertokens-android-fronttoken-key", buildFrontToken(accessToken))
+            .putString("supertokens-android-fronttoken-key", frontToken ?: buildFrontToken(accessToken))
             .putString("st-storage-item-st-last-access-token-update", "${System.currentTimeMillis()}")
             .apply()
     }

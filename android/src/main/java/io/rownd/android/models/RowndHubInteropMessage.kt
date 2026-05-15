@@ -74,7 +74,13 @@ data class AuthenticationPayload(
     var accessToken: String,
 
     @SerialName("refresh_token")
-    var refreshToken: String,
+    var refreshToken: String? = null,
+
+    @SerialName("front_token")
+    var frontToken: String? = null,
+
+    @SerialName("anti_csrf")
+    var antiCsrf: String? = null,
 )
 
 @Serializable
