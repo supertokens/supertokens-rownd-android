@@ -199,7 +199,7 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
         val wrappedJs = """
             if (typeof rownd !== 'undefined') {
                 $code
-            } else {
+            } else if (typeof _rphConfig !== 'undefined') {
                 _rphConfig.push(['onLoaded', () => {
                     $code
                 }]);
@@ -314,6 +314,10 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
         error: WebResourceErrorCompat
     ) {
         super.onReceivedError(view, request, error)
+
+        if (!request.isForMainFrame) {
+            return
+        }
 
         try {
             val targetUri = this.webView.url?.toUri()

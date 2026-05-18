@@ -6,6 +6,7 @@ import io.rownd.android.models.network.AppConfigResponse
 import io.rownd.android.models.network.AppVariant
 import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.domain.SuperTokensAppInfo
+import io.rownd.android.models.RowndConfig
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -99,5 +100,27 @@ class AppConfigModelTest {
 
         assertEquals("https://api.example.com", domain.config.supertokens.appInfo.apiDomain)
         assertNull(domain.config.supertokens.appInfo.apiBasePath)
+    }
+
+    @Test
+    fun `hub script query params use supertokens config`() {
+        val params = RowndConfig.buildHubScriptQueryParams(
+            appKey = "app_key_test",
+            supertokens = SuperTokensConfig(
+                appInfo = SuperTokensAppInfo(
+                    apiDomain = "https://api.example.com",
+                    apiBasePath = "/auth"
+                )
+            )
+        )
+
+        assertEquals(
+            listOf(
+                "appKey" to "app_key_test",
+                "apiDomain" to "https://api.example.com",
+                "apiBasePath" to "/auth"
+            ),
+            params
+        )
     }
 }

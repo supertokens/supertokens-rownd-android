@@ -4,6 +4,7 @@ import android.util.Base64
 import android.util.Log
 import androidx.core.net.toUri
 import io.rownd.android.models.domain.AuthState
+import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.repos.AuthRepo
 import io.rownd.android.models.repos.SignInRepo
 import io.rownd.android.models.repos.StateRepo
@@ -21,6 +22,7 @@ data class RowndConfig(
     var baseUrl: String = "https://hub.rownd.io",
     var apiUrl: String = "https://api.rownd.io",
     var apiBasePath: String = "/auth",
+    var supertokens: SuperTokensConfig = SuperTokensConfig(),
     var postSignInRedirect: String? = "NATIVE_APP",
     var appleIdCallbackUrl: String? = "https://api.rownd.io/hub/auth/apple/callback",
     var customizations: RowndCustomizations = RowndCustomizations(),
@@ -61,6 +63,9 @@ data class RowndConfig(
 
         val uriBuilder = "$baseUrl/mobile_app".toUri().buildUpon()
         uriBuilder.appendQueryParameter("config", base64Config)
+        hubScriptQueryParams().forEach { (key, value) ->
+            uriBuilder.appendQueryParameter(key, value)
+        }
 
         val signInState = signInRepo.get()
         val signInInitStr = signInState.toSignInInitHash()
@@ -75,5 +80,30 @@ data class RowndConfig(
         }
 
         return uriBuilder.build().toString()
+    }
+
+    internal fun hubScriptQueryParams(): List<Pair<String, String>> {
+        return buildHubScriptQueryParams(
+            appKey = appKey,
+            supertokens = supertokens
+        )
+    }
+
+    internal companion object {
+        fun buildHubScriptQueryParams(
+            appKey: String?,
+            supertokens: SuperTokensConfig,
+        ): List<Pair<String, String>> {
+            val params = mutableListOf(
+                "apiDomain" to supertokens.appInfo.apiDomain,
+                "apiBasePath" to (supertokens.appInfo.apiBasePath ?: "/auth")
+            )
+
+            appKey?.takeIf { it.isNotBlank() }?.let {
+                params.add(0, "appKey" to it)
+            }
+
+            return params
+        }
     }
 }

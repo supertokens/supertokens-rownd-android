@@ -431,6 +431,8 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
           hub: {
             auth: {
               sign_in_methods: {
+                email: { enabled: true },
+                phone: { enabled: true },
                 google: { enabled: false, client_id: '' },
                 anonymous: { enabled: false },
               },

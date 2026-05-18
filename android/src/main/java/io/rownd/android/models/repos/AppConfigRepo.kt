@@ -4,6 +4,7 @@ import android.util.Log
 import io.ktor.client.plugins.ClientRequestException
 import io.rownd.android.models.domain.AppConfigState
 import io.rownd.android.models.network.AppConfigApi
+import io.rownd.android.util.RowndContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -16,13 +17,18 @@ class AppConfigRepo @Inject constructor() {
     @Inject
     lateinit var appConfigApi: AppConfigApi
 
+    @Inject
+    lateinit var rowndContext: RowndContext
+
     internal fun loadAppConfigAsync(stateRepo: StateRepo): Deferred<AppConfigState?> {
         return CoroutineScope(Dispatchers.IO).async {
             try {
                 val result = appConfigApi.getAppConfig()
-                stateRepo.getStore().dispatch(StateAction.SetAppConfig(result.asDomainModel()))
+                val appConfig = result.asDomainModel()
+                rowndContext.config.supertokens = appConfig.config.supertokens
+                stateRepo.getStore().dispatch(StateAction.SetAppConfig(appConfig))
 
-                return@async result.app.asDomainModel()
+                return@async appConfig
             } catch (ex: ClientRequestException) {
                 Log.e(
                     "Rownd.AppConfig",

@@ -93,6 +93,10 @@ class UserRepo @Inject constructor() {
         return stateRepo.state.value.user
     }
 
+    fun refresh(): Deferred<User?> {
+        return loadUserAsync()
+    }
+
     fun <T> get(field: String): T? {
         val value = stateRepo.state.value.user.data[field] ?: return null
 

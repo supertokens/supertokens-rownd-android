@@ -163,7 +163,7 @@ class AuthInstrumentedTest {
         )
         val appConfigApi = AppConfigApi()
         appConfigApi.rowndContext = rowndContext
-        appConfigApi.authenticatedApiClient = AuthenticatedApiClient(MockEngine(httpEngineConfig), rowndContext)
+        appConfigApi.client = AuthenticatedApiClient(MockEngine(httpEngineConfig), rowndContext).client
 
         val response = appConfigApi.getAppConfig()
 
