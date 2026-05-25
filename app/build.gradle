@@ -6,6 +6,15 @@ plugins {
     id 'org.jetbrains.kotlin.plugin.compose'
 }
 
+def envOrDefault = { name, fallback ->
+    def value = System.getenv(name)
+    return value == null || value.trim().isEmpty() ? fallback : value
+}
+
+def buildConfigString = { value ->
+    return "\"${value.replace('\\', '\\\\').replace('"', '\\"')}\""
+}
+
 android {
     namespace 'io.rownd.rowndtestsandbox'
 
@@ -17,6 +26,8 @@ android {
         targetSdk 35
         versionCode 1
         versionName "1.0"
+        manifestPlaceholders = [rowndDeepLinkScheme: "rowndsupertokens"]
+        buildConfigField "String", "DEEP_LINK_SCHEME", '"rowndsupertokens"'
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -26,15 +37,15 @@ android {
         local {
             dimension "environment"
             applicationIdSuffix ".local"
-            buildConfigField "String", "API_URL", '"http://10.0.2.2:3137"'
-            buildConfigField "String", "HUB_URL", '"http://10.0.2.2:8787"'
-            buildConfigField "String", "APP_KEY", '"test_app_key"'
+            buildConfigField "String", "API_URL", '"https://trout-uncouple-geriatric.ngrok-free.dev"'
+            buildConfigField "String", "HUB_URL", '"https://staging.supertokens-rownd-hub.pages.dev"'
+            buildConfigField "String", "APP_KEY", '"key_pko8eul59xz33hr21jgxvx6s"'
         }
         dev {
             dimension "environment"
-            buildConfigField "String", "API_URL", '"https://api.dev.rownd.io"'
-            buildConfigField "String", "HUB_URL", '"https://hub.dev.rownd.io"'
-            buildConfigField "String", "APP_KEY", '"key_pko8eul59xz33hr21jgxvx6s"'
+            buildConfigField "String", "API_URL", '"https://trout-uncouple-geriatric.ngrok-free.dev"'
+            buildConfigField "String", "HUB_URL", '"https://staging.supertokens-rownd-hub.pages.dev"'
+            buildConfigField "String", "APP_KEY", '"key_m4n56mwdgys9yw0m7e2nd7zg"'
         }
     }
 

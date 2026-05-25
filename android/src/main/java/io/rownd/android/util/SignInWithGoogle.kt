@@ -46,6 +46,7 @@ import io.rownd.android.models.repos.AuthRepo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonPrimitive
 import java.util.UUID
 import javax.inject.Inject
 
@@ -273,8 +274,8 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
             rowndContext.eventEmitter?.emit(RowndEvent(
                 event = RowndEventType.SignInCompleted,
                 data = mapOf(
-                    "method" to RowndSignInType.Google.value,
-                    "user_type" to resp.rownd?.userType?.value,
+                    "method" to JsonPrimitive(RowndSignInType.Google.value),
+                    "user_type" to resp.rownd?.userType?.value?.let { JsonPrimitive(it) },
                 )
             ))
         }
@@ -451,8 +452,8 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
         rowndContext.eventEmitter?.emit(RowndEvent(
             event = RowndEventType.SignInFailed,
             data = mapOf(
-                "method" to RowndSignInType.Google.value,
-                "error" to error,
+                "method" to JsonPrimitive(RowndSignInType.Google.value),
+                "error" to error?.let { JsonPrimitive(it) },
             )
         ))
     }

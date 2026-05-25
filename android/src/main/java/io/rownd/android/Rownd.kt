@@ -21,6 +21,8 @@ import io.rownd.android.di.component.DaggerRowndGraph
 import io.rownd.android.di.component.RowndGraph
 import io.rownd.android.models.Store
 import io.rownd.android.models.domain.AuthState
+import io.rownd.android.models.domain.SuperTokensAppInfo
+import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.domain.User
 import io.rownd.android.models.network.SignInLinkApi
 import io.rownd.android.models.repos.AuthRepo
@@ -53,6 +55,14 @@ import kotlinx.serialization.json.Json
 
 // The default Rownd instance
 val Rownd = RowndClient(DaggerRowndGraph.create())
+
+data class RowndConfigureOptions(
+    val appKey: String,
+    val apiDomain: String,
+    val apiBasePath: String = "/auth",
+    val hubUrl: String? = null,
+    val deepLinkScheme: String = "rowndsupertokens",
+)
 
 class RowndClient(
     graph: RowndGraph,
@@ -89,7 +99,7 @@ class RowndClient(
         stateRepo.authRepo = authRepo
     }
 
-    private fun configure(appKey: String) {
+    private fun configure(options: RowndConfigureOptions) {
         telemetry.init()
 
         val appContext = appHandleWrapper?.app?.get()!!.applicationContext
@@ -101,7 +111,22 @@ class RowndClient(
         )
         rowndContext.kronosClock?.syncInBackground()
 
-        config.appKey = appKey
+        val apiDomain = options.apiDomain.trimEnd('/')
+        val apiBasePath = options.apiBasePath.let { if (it.startsWith('/')) it else "/$it" }.trimEnd('/')
+
+        require(apiDomain.isNotBlank()) { "apiDomain is required" }
+
+        config.appKey = options.appKey
+        config.apiUrl = apiDomain
+        config.apiBasePath = apiBasePath
+        config.deepLinkScheme = options.deepLinkScheme.trimEnd(':')
+        config.supertokens = SuperTokensConfig(
+            appInfo = SuperTokensAppInfo(
+                apiDomain = apiDomain,
+                apiBasePath = apiBasePath,
+            )
+        )
+        options.hubUrl?.trimEnd('/')?.let { config.baseUrl = it }
 
         store = stateRepo.setup(StateRepo.defaultDataStore(appContext))
 
@@ -143,19 +168,28 @@ class RowndClient(
             signInLinkApi.signInWithLinkIfPresentOnIntentOrClipboard(it)
         }
 
+        appHandleWrapper?.registerActivityListener(
+            states = persistentListOf(
+                Lifecycle.State.RESUMED
+            ),
+            immediate = true,
+        ) {
+            signInLinkApi.openDeepLinkIfPresentOnIntent(it)
+        }
+
         // Show the Google One Tap UI if applicable
         signInWithGoogle.showOneTapIfApplicable()
     }
 
-    fun configure(app: Application, appKey: String) {
+    fun configure(app: Application, options: RowndConfigureOptions) {
         _registerActivityLifecycle(app)
-        configure(appKey)
+        configure(options)
     }
 
     // Used by Flutter and React Native SDKs Don't make it private!
-    fun configure(activity: FragmentActivity, appKey: String) {
+    fun configure(activity: FragmentActivity, options: RowndConfigureOptions) {
         _registerActivityLifecycle(activity)
-        configure(appKey)
+        configure(options)
     }
 
     // Mainly for use by other Rownd SDKs (like Flutter)

@@ -19,9 +19,10 @@ val json = Json { encodeDefaults = true }
 @Serializable
 data class RowndConfig(
     var appKey: String? = null,
-    var baseUrl: String = "https://hub.rownd.io",
-    var apiUrl: String = "https://api.rownd.io",
+    var baseUrl: String = "https://rownd-hub.supertokens.com",
+    var apiUrl: String = "",
     var apiBasePath: String = "/auth",
+    var deepLinkScheme: String = "rowndsupertokens",
     var supertokens: SuperTokensConfig = SuperTokensConfig(),
     var postSignInRedirect: String? = "NATIVE_APP",
     var appleIdCallbackUrl: String? = "https://api.rownd.io/hub/auth/apple/callback",
@@ -39,7 +40,9 @@ data class RowndConfig(
 
     // Internals
     @Transient
-    internal var stateFileName: String = "rownd_state.json"
+    internal var stateFileName: String = "rownd_state.json",
+    @Transient
+    internal var pendingHubDeepLinkUrl: String? = null
 ) {
     @Inject
     @Transient
@@ -58,6 +61,8 @@ data class RowndConfig(
     lateinit var signInRepo: SignInRepo
 
     suspend fun hubLoaderUrl(): String {
+        consumePendingHubDeepLinkUrl()?.let { return it }
+
         val jsonConfig = json.encodeToString(serializer(), this)
         val base64Config = Base64.encodeToString(jsonConfig.encodeToByteArray(), Base64.NO_WRAP)
 
@@ -73,8 +78,9 @@ data class RowndConfig(
 
         try {
             val authState = authRepo.getLatestAuthState() ?: AuthState()
-            val rphInitStr = authState.toRphInitHash(userRepo)
-            uriBuilder.encodedFragment("rph_init=$rphInitStr")
+            authState.toRphInitHash(userRepo)?.let { rphInitStr ->
+                uriBuilder.encodedFragment("rph_init=$rphInitStr")
+            }
         } catch (error: Exception) {
             Log.d("Rownd.config", "Couldn't compute requested init hash: ${error.message}")
         }
@@ -82,28 +88,38 @@ data class RowndConfig(
         return uriBuilder.build().toString()
     }
 
+    internal fun consumePendingHubDeepLinkUrl(): String? {
+        val url = pendingHubDeepLinkUrl
+        pendingHubDeepLinkUrl = null
+        return url
+    }
+
     internal fun hubScriptQueryParams(): List<Pair<String, String>> {
         return buildHubScriptQueryParams(
-            appKey = appKey,
-            supertokens = supertokens
+            supertokens = supertokens,
+            fallbackApiDomain = apiUrl,
+            fallbackApiBasePath = apiBasePath
         )
     }
 
     internal companion object {
         fun buildHubScriptQueryParams(
-            appKey: String?,
             supertokens: SuperTokensConfig,
+            fallbackApiDomain: String = "",
+            fallbackApiBasePath: String = "/auth",
         ): List<Pair<String, String>> {
-            val params = mutableListOf(
-                "apiDomain" to supertokens.appInfo.apiDomain,
-                "apiBasePath" to (supertokens.appInfo.apiBasePath ?: "/auth")
-            )
+            val appInfo = supertokens.appInfo
+            val apiDomain = appInfo.apiDomain.ifBlank { fallbackApiDomain }
+            val apiBasePath = appInfo.apiBasePath?.ifBlank { fallbackApiBasePath } ?: fallbackApiBasePath
 
-            appKey?.takeIf { it.isNotBlank() }?.let {
-                params.add(0, "appKey" to it)
+            if (apiDomain.isBlank()) {
+                return emptyList()
             }
 
-            return params
+            return listOf(
+                "apiDomain" to apiDomain,
+                "apiBasePath" to apiBasePath
+            )
         }
     }
 }

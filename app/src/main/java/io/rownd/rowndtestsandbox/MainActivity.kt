@@ -1,64 +1,36 @@
 package io.rownd.rowndtestsandbox
 
 import android.os.Bundle
-import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.Button
-import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.MaterialTheme
-import androidx.compose.material.ModalBottomSheetLayout
-import androidx.compose.material.ModalBottomSheetValue
 import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.material.TextField
-import androidx.compose.material.primarySurface
-import androidx.compose.material.rememberModalBottomSheetState
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.constraintlayout.compose.ConstraintLayout
 import androidx.databinding.DataBindingUtil
 import io.rownd.android.Rownd
 import io.rownd.android.RowndSignInHint
 import io.rownd.android.RowndSignInOptions
+import io.rownd.android.RowndSignOutScope
+import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.rowndtestsandbox.databinding.ActivityMainBinding
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
-    private val _encKey = MutableStateFlow("")
-
-    private fun refreshTokenTest() {
-        CoroutineScope(Dispatchers.Default).launch {
-            val newToken = Rownd._refreshToken()
-            Log.d("Token 1:", newToken ?: "null")
-        }
-
-        CoroutineScope(Dispatchers.Default).launch {
-            val newToken = Rownd._refreshToken()
-            Log.d("Token 2:", newToken ?: "null")
-        }
-
-        CoroutineScope(Dispatchers.Default).launch {
-            val newToken = Rownd._refreshToken()
-            Log.d("Token 3:", newToken ?: "null")
-        }
-    }
-
-    @OptIn(ExperimentalMaterialApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -66,145 +38,142 @@ class MainActivity : AppCompatActivity() {
             DataBindingUtil.setContentView(this, R.layout.activity_main)
 
         binding.lifecycleOwner = this
-
         binding.rownd = Rownd
-
-        val parentActivity = this
 
         val composeView = findViewById<ComposeView>(R.id.compose_view)
         composeView.setContent {
             val state = Rownd.state.collectAsState()
-            val signInButtonText = if (state.value.auth.isAuthenticated) "Sign out" else "Sign in"
-
-            val modalBottomSheetState = rememberModalBottomSheetState(initialValue = ModalBottomSheetValue.Hidden)
             val scope = rememberCoroutineScope()
+            val scrollState = rememberScrollState()
+            val sessionExists = remember { mutableStateOf("unknown") }
+            val accessToken = remember { mutableStateOf("not loaded") }
+            val userDataResult = remember { mutableStateOf("not loaded") }
+            val updateValue = remember { mutableStateOf("Ada") }
+            val refreshResult = remember { mutableStateOf("not run") }
 
-            val encKeyState = _encKey.collectAsState(initial = "")
-            ModalBottomSheetLayout(
-                sheetContent = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(Dp(10F))
-                    ) {
-                        Text(
-                            fontSize = 20.sp,
-                                text = "Set encryption key"
-                        )
-                        TextField(
-                            modifier = Modifier.padding(vertical = Dp(5F)).fillMaxWidth(),
-                            value = encKeyState.value,
-                            onValueChange = { _encKey.value = it },
-                            label = { Text(text = "Enter key") }
-                        )
-                        Button(
-                            modifier = Modifier.fillMaxWidth()
-                                .padding(vertical = Dp(5F)),
-                            onClick = {
-//                                val keyId = Rownd.userRepo.getKeyId(state.value.user)
-//                                Encryption.deleteKey(keyId)
-//                                Encryption.storeKey(encKeyState.value, keyId)
+            Surface(
+                color = MaterialTheme.colors.background,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState)
+                        .padding(16.dp),
+                ) {
+                    Text("Rownd SuperTokens Sandbox")
+                    Text("Initialized: ${state.value.isInitialized}")
+                    Text("Authenticated: ${state.value.auth.isAuthenticated}")
+                    Text("Valid access token: ${state.value.auth.isAccessTokenValid}")
+                    Text("SuperTokens session exists: ${sessionExists.value}")
+                    Text("Access token: ${accessToken.value}")
+                    Text("User data: ${userDataResult.value}")
+                    Text("Refresh result: ${refreshResult.value}")
+
+                    Button(
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                        onClick = {
+                            if (state.value.auth.isAuthenticated) {
+                                Rownd.signOut()
+                            } else {
+                                Rownd.requestSignIn(RowndSignInOptions())
                             }
+                        },
+                    ) {
+                        Text(if (state.value.auth.isAuthenticated) "Sign out" else "Sign in")
+                    }
+
+                    if (!state.value.auth.isAuthenticated && state.value.appConfig.config.hub.auth.signInMethods.google.enabled) {
+                        Button(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            onClick = { Rownd.requestSignIn(RowndSignInHint.OneTap) },
                         ) {
-                            Text("Save key")
+                            Text("Show One Tap")
                         }
                     }
-                },
-                sheetState = modalBottomSheetState,
-            ) {
-                ConstraintLayout(modifier = Modifier.fillMaxHeight()) {
-                    val (column) = createRefs()
 
-                    Surface(
-                        color = MaterialTheme.colors.primarySurface,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .constrainAs(column) {
-                                bottom.linkTo(parent.bottom)
-                            }
-                            .padding(Dp(5F))
-                    ) {
-                        Column {
-                            Text("Initialized: ${state.value.isInitialized}")
-                            Text("Valid access token: ${state.value.auth.isAccessTokenValid}")
-
-                            if (state.value.auth.isAuthenticated) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text((state.value.user.data["super_secret_data"] ?: "") as String)
-                                }
-//                Row(modifier = Modifier.fillMaxWidth()) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceEvenly
-                                ) {
-                                    Button(
-                                        modifier = Modifier.padding(horizontal = Dp(5F)),
-                                        onClick = {
-                                            scope.launch {
-                                                modalBottomSheetState.show()
-                                            }
-                                        }
-                                    ) {
-                                        Text("Set encryption key")
-                                    }
-
-                                    Button(
-                                        modifier = Modifier.padding(horizontal = Dp(5F)),
-                                        onClick = {
-                                            Rownd.manageAccount()
-                                        }
-                                    ) {
-                                        Text("Edit profile")
-                                    }
-
-                                    Button(
-                                        modifier = Modifier.padding(horizontal = 5.dp),
-                                        onClick = {
-                                            refreshTokenTest()
-                                        }
-                                    ) {
-                                        Text("Refresh token")
-                                    }
-                                }
-
-//                }
-                            }
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                if (!state.value.auth.isAuthenticated && state.value.appConfig.config.hub.auth.signInMethods.google.enabled) {
-                                    Button(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        onClick = {
-                                            Rownd.requestSignIn(RowndSignInHint.OneTap)
-                                        }
-                                    ) {
-                                        Text("Show One Tap")
-                                    }
-                                }
-                                if (!state.value.auth.isAuthenticated && state.value.appConfig.config.hub.auth.signInMethods.anonymous.enabled) {
-                                    Button(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        onClick = {
-                                            Rownd.requestSignIn(RowndSignInHint.Guest)
-                                        }
-                                    ) {
-                                        Text("Sign in as a guest")
-                                    }
-                                }
-                                Button(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    onClick = {
-                                        if (state.value.auth.isAuthenticated) Rownd.signOut()
-                                        else Rownd.requestSignIn(RowndSignInOptions(
-//                                            postSignInRedirect = "rowndtestapp://test"
-                                        ))
-                                    }
-                                ) {
-                                    Text(signInButtonText)
-                                }
-                            }
+                    if (!state.value.auth.isAuthenticated && state.value.appConfig.config.hub.auth.signInMethods.anonymous.enabled) {
+                        Button(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            onClick = { Rownd.requestSignIn(RowndSignInHint.Guest) },
+                        ) {
+                            Text("Sign in as a guest")
                         }
+                    }
+
+                    Button(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        onClick = {
+                            scope.launch {
+                                sessionExists.value = SuperTokensSessionBridge
+                                    .doesSessionExist(applicationContext)
+                                    .toString()
+                                accessToken.value = Rownd.getAccessToken()
+                                    ?.take(24)
+                                    ?.let { "$it..." }
+                                    ?: "null"
+                            }
+                        },
+                    ) {
+                        Text("Check session")
+                    }
+
+                    Button(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        onClick = {
+                            scope.launch {
+                                refreshResult.value = SuperTokensSessionBridge
+                                    .attemptRefresh(applicationContext)
+                                    .toString()
+                            }
+                        },
+                    ) {
+                        Text("Force token refresh")
+                    }
+
+                    Button(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        onClick = {
+                            scope.launch {
+                                val user = Rownd.user.refresh().await()
+                                userDataResult.value = user?.data?.toString() ?: "null"
+                            }
+                        },
+                    ) {
+                        Text("Fetch user data")
+                    }
+
+                    TextField(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        value = updateValue.value,
+                        onValueChange = { updateValue.value = it },
+                        label = { Text("Test field value") },
+                    )
+
+                    Button(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        onClick = {
+                            scope.launch {
+                                val user = Rownd.user.set("maestro_test_field", updateValue.value).await()
+                                userDataResult.value = user?.data?.toString() ?: "null"
+                            }
+                        },
+                    ) {
+                        Text("Update user data")
+                    }
+
+                    Button(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        onClick = { Rownd.manageAccount() },
+                    ) {
+                        Text("Edit profile")
+                    }
+
+                    Button(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        onClick = { Rownd.signOut(RowndSignOutScope.All) },
+                    ) {
+                        Text("Sign out all sessions")
                     }
                 }
             }

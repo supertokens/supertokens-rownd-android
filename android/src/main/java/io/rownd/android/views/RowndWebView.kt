@@ -65,6 +65,7 @@ enum class HubPageSelector {
     QrCode,
     ManageAccount,
     ConnectAuthenticator,
+    DeepLink,
     Unknown
 }
 
@@ -162,6 +163,7 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
 
 class RowndWebViewClient(private val webView: RowndWebView, private val context: Context) : WebViewClientCompat() {
     private var timeout: Boolean = true
+    private var displayedTargetForUrl: String? = null
 
     init {
         CoroutineScope(Dispatchers.IO).launch {
@@ -270,6 +272,9 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
         super.onPageStarted(webView, url, favicon)
         Log.d("Rownd.hub", "Started loading $url")
         setIsLoading(true)
+        if (url?.startsWith(Rownd.config.baseUrl) == true) {
+            displayedTargetForUrl = null
+        }
 
         if (url?.startsWith(Rownd.config.baseUrl) == true) {
             view?.setBackgroundColor(0x00000000)
@@ -344,12 +349,19 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
     }
 
     private fun displayTargetPage(view: WebView) {
+        if (displayedTargetForUrl == view.url) {
+            setIsLoading(false)
+            return
+        }
+        displayedTargetForUrl = view.url
+
         when ((view as RowndWebView).targetPage) {
             HubPageSelector.SignIn, HubPageSelector.Unknown -> evaluateJavascript("rownd.requestSignIn(${webView.jsFunctionArgsAsJson})")
             HubPageSelector.SignOut -> evaluateJavascript("rownd.signOut({\"show_success\":true})")
             HubPageSelector.QrCode -> evaluateJavascript("rownd.generateQrCode(${webView.jsFunctionArgsAsJson})")
             HubPageSelector.ManageAccount -> evaluateJavascript("rownd.user.manageAccount()")
             HubPageSelector.ConnectAuthenticator -> evaluateJavascript("rownd.connectAuthenticator(${webView.jsFunctionArgsAsJson})")
+            HubPageSelector.DeepLink -> Unit
         }
 
         setIsLoading(false)
@@ -516,6 +528,10 @@ class RowndJavascriptInterface constructor(
                     } catch (ex: android.content.ActivityNotFoundException) {
                         Toast.makeText(parentWebView.rowndClient.appHandleWrapper?.activity?.get(), "No email clients installed.", Toast.LENGTH_SHORT).show()
                     }
+                }
+
+                MessageType.HubLoaded -> {
+                    // The hub sends this as a readiness signal; no native action is required.
                 }
 
                 MessageType.AuthChallengeInitiated -> {

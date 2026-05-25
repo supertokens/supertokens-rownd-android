@@ -38,7 +38,11 @@ data class AuthState @OptIn(ExperimentalSerializationApi::class) constructor(
             return !Rownd.authRepo.isJwtExpiredWithMargin(jwt)
         }
 
-    internal fun toRphInitHash(userRepo: UserRepo): String {
+    internal fun toRphInitHash(userRepo: UserRepo): String? {
+        if (accessToken.isNullOrBlank() || refreshToken.isNullOrBlank()) {
+            return null
+        }
+
         val userId: String? = userRepo.get("user_id") as? String
 
         val rphInit = RphInitObj(

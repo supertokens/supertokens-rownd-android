@@ -105,7 +105,6 @@ class AppConfigModelTest {
     @Test
     fun `hub script query params use supertokens config`() {
         val params = RowndConfig.buildHubScriptQueryParams(
-            appKey = "app_key_test",
             supertokens = SuperTokensConfig(
                 appInfo = SuperTokensAppInfo(
                     apiDomain = "https://api.example.com",
@@ -116,8 +115,24 @@ class AppConfigModelTest {
 
         assertEquals(
             listOf(
-                "appKey" to "app_key_test",
                 "apiDomain" to "https://api.example.com",
+                "apiBasePath" to "/auth"
+            ),
+            params
+        )
+    }
+
+    @Test
+    fun `hub script query params fall back to rownd API config`() {
+        val params = RowndConfig.buildHubScriptQueryParams(
+            supertokens = SuperTokensConfig(),
+            fallbackApiDomain = "http://10.0.2.2:3137",
+            fallbackApiBasePath = "/auth"
+        )
+
+        assertEquals(
+            listOf(
+                "apiDomain" to "http://10.0.2.2:3137",
                 "apiBasePath" to "/auth"
             ),
             params

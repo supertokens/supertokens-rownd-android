@@ -33,7 +33,7 @@ object SuperTokensSessionBridge {
             .build()
     }
 
-    // Called from configure(appKey) — observes state until app config is ready, then inits SuperTokens once.
+    // Called from configure(...) — observes state until app config is ready, then inits SuperTokens once.
     fun observeAndInitialize(context: Context, stateRepo: StateRepo) {
         CoroutineScope(Dispatchers.IO).launch {
             stateRepo.state

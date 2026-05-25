@@ -1,6 +1,7 @@
 {
   "scripts": {
     "release": "release-it",
+    "example:server": "tsx example-server/server.ts",
     "test:integration:harness": "tsx test-server/run-harness.ts",
     "test:integration": "HARNESS_URL=http://127.0.0.1:3137 ./gradlew :android:connectedAndroidTest"
   },
