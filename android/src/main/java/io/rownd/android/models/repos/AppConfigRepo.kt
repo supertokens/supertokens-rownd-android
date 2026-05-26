@@ -3,6 +3,7 @@ package io.rownd.android.models.repos
 import android.util.Log
 import io.ktor.client.plugins.ClientRequestException
 import io.rownd.android.models.domain.AppConfigState
+import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.network.AppConfigApi
 import io.rownd.android.util.RowndContext
 import kotlinx.coroutines.CoroutineScope
@@ -25,8 +26,18 @@ class AppConfigRepo @Inject constructor() {
             try {
                 val result = appConfigApi.getAppConfig()
                 val appConfig = result.asDomainModel()
-                rowndContext.config.supertokens = appConfig.config.supertokens
-                stateRepo.getStore().dispatch(StateAction.SetAppConfig(appConfig))
+                val resolvedSuperTokensConfig = resolveSuperTokensConfig(
+                    backendConfig = appConfig.config.supertokens,
+                    configuredConfig = rowndContext.config.supertokens,
+                )
+                rowndContext.config.supertokens = resolvedSuperTokensConfig
+                stateRepo.getStore().dispatch(
+                    StateAction.SetAppConfig(
+                        appConfig.copy(
+                            config = appConfig.config.copy(supertokens = resolvedSuperTokensConfig)
+                        )
+                    )
+                )
 
                 return@async appConfig
             } catch (ex: ClientRequestException) {
@@ -58,6 +69,15 @@ class AppConfigRepo @Inject constructor() {
                 )
                 return@async null
             }
+        }
+    }
+
+    internal companion object {
+        fun resolveSuperTokensConfig(
+            backendConfig: SuperTokensConfig,
+            configuredConfig: SuperTokensConfig,
+        ): SuperTokensConfig {
+            return if (backendConfig.appInfo.apiDomain.isBlank()) configuredConfig else backendConfig
         }
     }
 }

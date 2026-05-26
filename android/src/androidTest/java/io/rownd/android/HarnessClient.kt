@@ -1,5 +1,6 @@
 package io.rownd.android
 
+import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -18,7 +19,9 @@ import java.net.URL
  */
 object HarnessClient {
 
-    val HARNESS_URL: String = System.getenv("HARNESS_URL") ?: "http://10.0.2.2:3137"
+    val HARNESS_URL: String = InstrumentationRegistry.getArguments().getString("harnessUrl")
+        ?: System.getenv("HARNESS_URL")
+        ?: "http://10.0.2.2:3137"
 
     private val json = Json { ignoreUnknownKeys = true }
 

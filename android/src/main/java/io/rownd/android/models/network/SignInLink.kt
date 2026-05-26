@@ -29,6 +29,7 @@ import io.rownd.android.views.HubPageSelector
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
+import java.net.URI
 import javax.inject.Inject
 
 @Serializable
@@ -154,12 +155,11 @@ class SignInLinkApi @Inject constructor() {
         }
 
         val clipboardText = clipboard.primaryClip?.getItemAt(0)?.text.toString() ?: return
+        val potentialSignInLink = clipboardText.toUri() ?: return
 
-        if (!clipboardText.startsWith("${config.deepLinkScheme}://")) {
+        if (!isSupportedDeepLink(potentialSignInLink)) {
             return
         }
-
-        val potentialSignInLink = clipboardText.toUri() ?: return
 
         openDeepLink(potentialSignInLink)
         clipboard.setPrimaryClip(ClipData.newPlainText("", ""))
@@ -180,26 +180,98 @@ class SignInLinkApi @Inject constructor() {
     }
 
     private fun toHubUrl(uri: Uri?): String? {
-        if (!isConfiguredDeepLink(uri)) {
-            return null
-        }
-
-        val host = uri?.host?.trim('/') ?: return null
-        val path = uri.path?.trim('/')
-        val hubPath = if (path.isNullOrBlank()) "/$host" else "/$host/$path"
-        if (hubPath != "/account/login" && hubPath != "/account/verify-email") {
-            return null
-        }
-
-        return config.baseUrl.toUri().buildUpon()
-            .encodedPath(hubPath)
-            .encodedQuery(uri.encodedQuery)
-            .encodedFragment(uri.encodedFragment)
-            .build()
-            .toString()
+        return toHubUrl(
+            rawUrl = uri?.toString(),
+            deepLinkScheme = config.deepLinkScheme,
+            hubBaseUrl = config.baseUrl,
+        )
     }
 
     private fun isConfiguredDeepLink(uri: Uri?) : Boolean {
-        return uri?.scheme == config.deepLinkScheme
+        return isSupportedDeepLink(uri)
+    }
+
+    private fun isSupportedDeepLink(uri: Uri?): Boolean {
+        return isSupportedDeepLink(
+            rawUrl = uri?.toString(),
+            deepLinkScheme = config.deepLinkScheme,
+            hubBaseUrl = config.baseUrl,
+        )
+    }
+
+    internal companion object {
+        private val allowedHubDeepLinkPaths = setOf(
+            "/account/login",
+            "/account/verify-email",
+        )
+
+        private val stagingHubHosts = setOf(
+            "staging.supertokens-rownd-hub.pages.dev",
+            "supertokens-rownd-hub.pages.dev",
+        )
+
+        fun isSupportedDeepLink(
+            rawUrl: String?,
+            deepLinkScheme: String,
+            hubBaseUrl: String,
+        ): Boolean {
+            val uri = parseUri(rawUrl) ?: return false
+            return isConfiguredSchemeDeepLink(uri, deepLinkScheme) || isAllowedHubHttpsDeepLink(uri, hubBaseUrl)
+        }
+
+        fun toHubUrl(
+            rawUrl: String?,
+            deepLinkScheme: String,
+            hubBaseUrl: String,
+        ): String? {
+            val uri = parseUri(rawUrl) ?: return null
+            if (!isSupportedDeepLink(rawUrl, deepLinkScheme, hubBaseUrl)) {
+                return null
+            }
+
+            val hubPath = when {
+                isConfiguredSchemeDeepLink(uri, deepLinkScheme) -> {
+                    val host = uri.host?.trim('/') ?: return null
+                    val path = uri.rawPath?.trim('/')
+                    if (path.isNullOrBlank()) "/$host" else "/$host/$path"
+                }
+                isAllowedHubHttpsDeepLink(uri, hubBaseUrl) -> uri.rawPath ?: return null
+                else -> return null
+            }
+
+            if (hubPath !in allowedHubDeepLinkPaths) {
+                return null
+            }
+
+            val baseUri = parseUri(hubBaseUrl) ?: return null
+            return URI(
+                baseUri.scheme,
+                baseUri.authority,
+                hubPath,
+                uri.rawQuery,
+                uri.rawFragment,
+            ).toString()
+        }
+
+        private fun isConfiguredSchemeDeepLink(uri: URI, deepLinkScheme: String): Boolean {
+            return uri.scheme == deepLinkScheme
+        }
+
+        private fun isAllowedHubHttpsDeepLink(uri: URI, hubBaseUrl: String): Boolean {
+            if (uri.scheme != "https") return false
+
+            val host = uri.host ?: return false
+            val configuredHubHost = parseUri(hubBaseUrl)?.host
+
+            return host == configuredHubHost ||
+                host == "rownd-hub.supertokens.com" ||
+                host.endsWith(".rownd-hub.supertokens.com") ||
+                host in stagingHubHosts
+        }
+
+        private fun parseUri(rawUrl: String?): URI? {
+            if (rawUrl.isNullOrBlank()) return null
+            return runCatching { URI(rawUrl) }.getOrNull()
+        }
     }
 }

@@ -3,7 +3,7 @@
     "release": "release-it",
     "example:server": "tsx example-server/server.ts",
     "test:integration:harness": "tsx test-server/run-harness.ts",
-    "test:integration": "HARNESS_URL=http://127.0.0.1:3137 ./gradlew :android:connectedAndroidTest"
+    "test:integration": "ANDROID_HARNESS_PORT=${ANDROID_HARNESS_PORT:-3138} tsx test-server/with-harness.ts -- sh -c './gradlew :android:connectedAndroidTest -Pandroid.testInstrumentationRunnerArguments.harnessUrl=$ANDROID_HARNESS_URL'"
   },
   "devDependencies": {
     "@commitlint/cli": "^17.4.0",

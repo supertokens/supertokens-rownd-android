@@ -58,11 +58,11 @@ data class AppConfig(
 @Serializable
 data class AppSchemaField(
     @SerialName("display_name")
-    var displayName: String?,
-    var type: String?,
-    var required: Boolean?,
+    var displayName: String? = null,
+    var type: String? = null,
+    var required: Boolean? = null,
     @SerialName("owned_by")
-    var ownedBy: String?,
+    var ownedBy: String? = null,
     var encryption: AppSchemaFieldEncryption? = null
 ) {
     fun asDomainModel(): DomainAppSchemaField {
