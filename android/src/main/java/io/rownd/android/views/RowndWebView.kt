@@ -427,6 +427,7 @@ class RowndJavascriptInterface constructor(
                                     accessToken = authenticationMessage.payload.accessToken,
                                     refreshToken = refreshToken,
                                     frontToken = authenticationMessage.payload.frontToken,
+                                    antiCSRF = authenticationMessage.payload.antiCsrf,
                                     replaceExisting = true,
                                 )
                             }
@@ -455,6 +456,7 @@ class RowndJavascriptInterface constructor(
                                 accessToken = authenticationMessage.payload.accessToken,
                                 refreshToken = refreshToken,
                                 frontToken = authenticationMessage.payload.frontToken,
+                                antiCSRF = authenticationMessage.payload.antiCsrf,
                                 replaceExisting = true,
                             )
                             launchPostBootstrap(includeBootstrap = false)
@@ -487,7 +489,6 @@ class RowndJavascriptInterface constructor(
                             )
                         )
                     )
-                    parentWebView.rowndClient.userRepo.loadUserAsync()
                 }
 
                 MessageType.CloseHubView -> {

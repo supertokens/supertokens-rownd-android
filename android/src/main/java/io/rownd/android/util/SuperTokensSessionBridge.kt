@@ -21,6 +21,12 @@ import kotlinx.serialization.json.Json
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "Rownd.SuperTokens"
+private const val SUPER_TOKENS_PREFS = "supertokens-android-shared-preferences"
+private const val ACCESS_TOKEN_STORAGE_KEY = "st-storage-item-st-access-token"
+private const val REFRESH_TOKEN_STORAGE_KEY = "st-storage-item-st-refresh-token"
+private const val FRONT_TOKEN_STORAGE_KEY = "supertokens-android-fronttoken-key"
+private const val LAST_ACCESS_TOKEN_UPDATE_STORAGE_KEY = "st-storage-item-st-last-access-token-update"
+private const val ANTI_CSRF_STORAGE_KEY = "supertokens-android-anticsrf-key"
 
 object SuperTokensSessionBridge {
 
@@ -78,6 +84,15 @@ object SuperTokensSessionBridge {
             SuperTokens.getAccessToken(context)
         }
 
+    fun getRefreshToken(context: Context): String? =
+        sharedPrefs(context).getString(REFRESH_TOKEN_STORAGE_KEY, null)
+
+    fun getFrontToken(context: Context): String? =
+        sharedPrefs(context).getString(FRONT_TOKEN_STORAGE_KEY, null)
+
+    fun getAntiCSRF(context: Context): String? =
+        sharedPrefs(context).getString(ANTI_CSRF_STORAGE_KEY, null)
+
     suspend fun attemptRefresh(context: Context): Boolean =
         withContext(Dispatchers.IO) {
             runCatching { SuperTokens.attemptRefreshingSession(context) }.isSuccess
@@ -95,6 +110,13 @@ object SuperTokensSessionBridge {
 
     fun clearLocalSession(context: Context) {
         FrontToken.removeToken(context)
+        sharedPrefs(context).edit()
+            .remove(ACCESS_TOKEN_STORAGE_KEY)
+            .remove(REFRESH_TOKEN_STORAGE_KEY)
+            .remove(FRONT_TOKEN_STORAGE_KEY)
+            .remove(LAST_ACCESS_TOKEN_UPDATE_STORAGE_KEY)
+            .remove(ANTI_CSRF_STORAGE_KEY)
+            .apply()
     }
 
     // MARK: - Bootstrap (Hub-complete auth)
@@ -109,6 +131,7 @@ object SuperTokensSessionBridge {
         accessToken: String,
         refreshToken: String,
         frontToken: String? = null,
+        antiCSRF: String? = null,
         replaceExisting: Boolean = false,
     ) {
         check(Looper.myLooper() != Looper.getMainLooper()) {
@@ -119,16 +142,17 @@ object SuperTokensSessionBridge {
             clearLocalSession(context)
         }
 
-        val prefs = context.getSharedPreferences(
-            "supertokens-android-shared-preferences",
-            Context.MODE_PRIVATE
-        )
         val resolvedFrontToken = frontToken ?: buildFrontToken(accessToken)
-        prefs.edit()
-            .putString("st-storage-item-st-access-token", accessToken)
-            .putString("st-storage-item-st-refresh-token", refreshToken)
-            .putString("st-storage-item-st-last-access-token-update", "${System.currentTimeMillis()}")
-            .apply()
+        val editor = sharedPrefs(context).edit()
+            .putString(ACCESS_TOKEN_STORAGE_KEY, accessToken)
+            .putString(REFRESH_TOKEN_STORAGE_KEY, refreshToken)
+            .putString(LAST_ACCESS_TOKEN_UPDATE_STORAGE_KEY, "${System.currentTimeMillis()}")
+
+        if (!antiCSRF.isNullOrEmpty()) {
+            editor.putString(ANTI_CSRF_STORAGE_KEY, antiCSRF)
+        }
+
+        editor.apply()
         FrontToken.setToken(context, resolvedFrontToken)
     }
 
@@ -170,4 +194,7 @@ object SuperTokensSessionBridge {
         val frontTokenJson = """{"uid":"$uid","ate":$ate,"up":{}}"""
         return Base64.getEncoder().withoutPadding().encodeToString(frontTokenJson.toByteArray())
     }
+
+    private fun sharedPrefs(context: Context) =
+        context.getSharedPreferences(SUPER_TOKENS_PREFS, Context.MODE_PRIVATE)
 }

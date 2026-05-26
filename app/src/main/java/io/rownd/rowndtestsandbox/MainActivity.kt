@@ -39,12 +39,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.supertokens.session.SuperTokensInterceptor
 import io.rownd.android.Rownd
 import io.rownd.android.RowndSignInHint
 import io.rownd.android.RowndSignInOptions
 import io.rownd.android.RowndSignOutScope
 import io.rownd.android.util.SuperTokensSessionBridge
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -67,11 +73,18 @@ class MainActivity : AppCompatActivity() {
                 val state by Rownd.state.collectAsState()
                 val scope = rememberCoroutineScope()
                 val scrollState = rememberScrollState()
+                val superTokensClient = remember {
+                    OkHttpClient.Builder()
+                        .addInterceptor(SuperTokensInterceptor())
+                        .build()
+                }
                 var sessionExists by remember { mutableStateOf("unknown") }
                 var accessToken by remember { mutableStateOf("not loaded") }
                 var userDataResult by remember { mutableStateOf("not loaded") }
                 var updateValue by remember { mutableStateOf("Ada") }
                 var refreshResult by remember { mutableStateOf("not run") }
+                var isTestingRefresh by remember { mutableStateOf(false) }
+                var refreshSimulationCompleted by remember { mutableStateOf(false) }
                 var scenarioStatus by remember { mutableStateOf("idle") }
 
                 Surface(
@@ -88,9 +101,12 @@ class MainActivity : AppCompatActivity() {
                         StatusCard(
                             initialized = state.isInitialized,
                             authenticated = state.auth.isAuthenticated,
+                            verifiedUser = state.auth.isVerifiedUser,
                             accessTokenValid = state.auth.isAccessTokenValid,
                             sessionExists = sessionExists,
                             scenarioStatus = scenarioStatus,
+                            authLevel = state.user.authLevel?.name ?: "unknown",
+                            userId = state.user.data["user_id"]?.toString() ?: "not loaded",
                         )
 
                         if (state.auth.isAuthenticated) {
@@ -98,6 +114,13 @@ class MainActivity : AppCompatActivity() {
                                 accessToken = accessToken,
                                 userDataResult = userDataResult,
                                 refreshResult = refreshResult,
+                                refreshTestButtonTitle = if (isTestingRefresh) {
+                                    "Testing refresh..."
+                                } else if (refreshSimulationCompleted) {
+                                    "Reset refresh test"
+                                } else {
+                                    "Test session refresh"
+                                },
                                 updateValue = updateValue,
                                 onUpdateValueChange = { updateValue = it },
                                 onCheckSession = {
@@ -122,20 +145,101 @@ class MainActivity : AppCompatActivity() {
                                         scenarioStatus = "token_refresh_complete"
                                     }
                                 },
+                                onTestSessionRefresh = {
+                                    scope.launch {
+                                        isTestingRefresh = true
+                                        try {
+                                            if (refreshSimulationCompleted) {
+                                                scenarioStatus = "refresh_reset_requested"
+                                                val (statusCode, body) = withContext(Dispatchers.IO) {
+                                                    val request = Request.Builder()
+                                                        .url("${BuildConfig.API_URL}/test/refresh/reset")
+                                                        .post("".toRequestBody(null))
+                                                        .build()
+
+                                                    superTokensClient.newCall(request).execute().use { response ->
+                                                        response.code to (response.body?.string() ?: "")
+                                                    }
+                                                }
+
+                                                refreshSimulationCompleted = false
+                                                refreshResult = "HTTP $statusCode\n$body"
+                                                scenarioStatus = if (statusCode in 200..299) {
+                                                    "refresh_reset_complete"
+                                                } else {
+                                                    "refresh_reset_failed"
+                                                }
+                                            } else {
+                                                scenarioStatus = "refresh_test_requested"
+                                                val refreshTokenBefore = SuperTokensSessionBridge
+                                                    .getRefreshToken(applicationContext)
+                                                val (statusCode, body) = withContext(Dispatchers.IO) {
+                                                    val request = Request.Builder()
+                                                        .url("${BuildConfig.API_URL}/test/refresh")
+                                                        .build()
+
+                                                    superTokensClient.newCall(request).execute().use { response ->
+                                                        response.code to (response.body?.string() ?: "")
+                                                    }
+                                                }
+                                                val refreshTokenAfter = SuperTokensSessionBridge
+                                                    .getRefreshToken(applicationContext)
+                                                val refreshTokenChanged = refreshTokenBefore != null &&
+                                                    refreshTokenAfter != null &&
+                                                    refreshTokenBefore != refreshTokenAfter
+
+                                                refreshSimulationCompleted = true
+                                                refreshResult = "HTTP $statusCode\nRefresh token changed: $refreshTokenChanged\n$body"
+                                                scenarioStatus = if (statusCode in 200..299 && refreshTokenChanged) {
+                                                    "refresh_test_passed"
+                                                } else {
+                                                    "refresh_test_failed"
+                                                }
+                                            }
+                                        } catch (ex: Exception) {
+                                            refreshResult = ex.message ?: ex.toString()
+                                            scenarioStatus = if (refreshSimulationCompleted) {
+                                                "refresh_reset_failed"
+                                            } else {
+                                                "refresh_test_failed"
+                                            }
+                                        } finally {
+                                            isTestingRefresh = false
+                                        }
+                                    }
+                                },
                                 onFetchUserData = {
                                     scope.launch {
                                         scenarioStatus = "user_data_requested"
-                                        val user = Rownd.user.refresh().await()
-                                        userDataResult = user?.data?.toString() ?: "null"
-                                        scenarioStatus = "user_data_loaded"
+                                        try {
+                                            accessToken = Rownd.getAccessToken()
+                                                ?.take(24)
+                                                ?.let { "$it..." }
+                                                ?: "null"
+                                            val user = Rownd.user.refresh().await()
+                                            userDataResult = user?.data?.toString() ?: "null"
+                                            scenarioStatus = "user_data_loaded"
+                                        } catch (ex: Exception) {
+                                            userDataResult = ex.message ?: ex.toString()
+                                            scenarioStatus = "user_data_failed"
+                                        }
                                     }
                                 },
                                 onUpdateUserData = {
                                     scope.launch {
                                         scenarioStatus = "profile_update_requested"
-                                        val user = Rownd.user.set("maestro_test_field", updateValue).await()
-                                        userDataResult = user?.data?.toString() ?: "null"
-                                        scenarioStatus = "profile_update_complete"
+                                        try {
+                                            accessToken = Rownd.getAccessToken()
+                                                ?.take(24)
+                                                ?.let { "$it..." }
+                                                ?: "null"
+                                            val user = Rownd.user.set("first_name", updateValue).await()
+                                            userDataResult = user?.data?.toString() ?: "null"
+                                            scenarioStatus = "profile_update_complete"
+                                        } catch (ex: Exception) {
+                                            userDataResult = ex.message ?: ex.toString()
+                                            scenarioStatus = "profile_update_failed"
+                                        }
                                     }
                                 },
                                 onManageAccount = {
@@ -203,16 +307,22 @@ private fun HeroCard() {
 private fun StatusCard(
     initialized: Boolean,
     authenticated: Boolean,
+    verifiedUser: Boolean,
     accessTokenValid: Boolean,
     sessionExists: String,
     scenarioStatus: String,
+    authLevel: String,
+    userId: String,
 ) {
     SandboxCard {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             StatusRow("Host", if (initialized) "ready" else "loading")
             StatusRow("Auth", if (authenticated) "signed_in" else "signed_out")
+            StatusRow("Verified user", verifiedUser.toString())
+            StatusRow("Auth level", authLevel)
             StatusRow("Example", "all-authentication-methods-android")
             StatusRow("Scenario", scenarioStatus)
+            StatusRow("User", userId)
             StatusRow("Access token", if (accessTokenValid) "valid" else "invalid")
             StatusRow("SuperTokens session", sessionExists)
         }
@@ -251,10 +361,12 @@ private fun PostLoginCard(
     accessToken: String,
     userDataResult: String,
     refreshResult: String,
+    refreshTestButtonTitle: String,
     updateValue: String,
     onUpdateValueChange: (String) -> Unit,
     onCheckSession: () -> Unit,
     onForceRefresh: () -> Unit,
+    onTestSessionRefresh: () -> Unit,
     onFetchUserData: () -> Unit,
     onUpdateUserData: () -> Unit,
     onManageAccount: () -> Unit,
@@ -277,12 +389,13 @@ private fun PostLoginCard(
 
             FlowButton("Check session", onClick = onCheckSession)
             FlowButton("Force token refresh", onClick = onForceRefresh)
+            FlowButton(refreshTestButtonTitle, onClick = onTestSessionRefresh)
             FlowButton("Fetch user data", onClick = onFetchUserData)
 
             OutlinedTextField(
                 value = updateValue,
                 onValueChange = onUpdateValueChange,
-                label = { Text("Test field value") },
+                label = { Text("First name") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )

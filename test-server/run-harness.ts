@@ -36,11 +36,9 @@ void startIntegrationHarness()
     console.log(`  android: ${startedHarness.androidUrl}`);
     console.log(`  public:  ${startedHarness.publicUrl}`);
     console.log(`  hub:     ${startedHarness.hubUrl}`);
-    if (startedHarness.publicUrl !== startedHarness.androidUrl) {
-      console.log(
-        `  gradle:  ANDROID_API_URL=${startedHarness.publicUrl} ANDROID_HUB_URL=${startedHarness.hubUrl} ./gradlew :app:installLocalDebug`,
-      );
-    }
+    console.log(
+      `  gradle:  ANDROID_API_URL=${startedHarness.androidUrl} ANDROID_HUB_URL=${startedHarness.hubUrl} ANDROID_APP_KEY=${startedHarness.appKey} ./gradlew :app:installLocalDebug`,
+    );
   })
   .catch((error) => {
     console.error('Failed to start Android integration harness', error);

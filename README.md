@@ -520,3 +520,18 @@ Here's a list of events that the Rownd SDK emits and the corresponding data that
     </td>
   </tr>
 </table>
+
+## Integration tests
+
+The Android SDK integration tests use the local harness in `test-server/`. The harness starts SuperTokens Core and Postgres with Testcontainers, serves the Rownd plugin test API, and runs against an Android emulator.
+
+Run integration tests:
+
+```sh
+npm run test:integration
+```
+
+Useful overrides:
+
+- `ANDROID_HOST`: host address reachable from the Android device, default `10.0.2.2`
+- `ANDROID_HUB_URL`: remote hub URL, default staging hub

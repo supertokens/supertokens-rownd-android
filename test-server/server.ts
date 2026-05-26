@@ -46,6 +46,7 @@ type HarnessState = {
   legacySessions: Map<string, LegacySessionRecord>;
   counters: HarnessCounters;
   requestLog: RequestCapture[];
+  refreshSimulationCompleted: boolean;
   userData: Record<string, unknown>;
 };
 
@@ -70,7 +71,9 @@ export const HARNESS_PORT = Number(process.env.ANDROID_HARNESS_PORT || 3137);
 export const ANDROID_HOST = process.env.ANDROID_HOST || "10.0.2.2";
 
 const HUB_URL =
-  process.env.HUB_URL || "https://staging.supertokens-rownd-hub.pages.dev";
+  process.env.ANDROID_HUB_URL ||
+  process.env.HUB_URL ||
+  "https://staging.supertokens-rownd-hub.pages.dev";
 const ANDROID_PUBLIC_API_URL = process.env.ANDROID_PUBLIC_API_URL;
 
 const appName = "Rownd Android Integration Tests";
@@ -78,6 +81,7 @@ const APP_ID = "app_test_rownd_android";
 const APP_KEY = "test_app_key";
 const GOOGLE_CLIENT_ID =
   "302008722349-es448rmfhitknlc5thiomvg3s67o0llo.apps.googleusercontent.com";
+const GOOGLE_CLIENT_SECRET = "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";
 const ROWND_JWT_SECRET = new TextEncoder().encode(
   "rownd-e2e-secret-rownd-e2e-secret",
 );
@@ -101,6 +105,7 @@ function createEmptyState(): HarnessState {
     legacySessions: new Map<string, LegacySessionRecord>(),
     counters: { legacyRefresh: 0, migrate: 0, stRefresh: 0 },
     requestLog: [],
+    refreshSimulationCompleted: false,
     userData: { user_id: "harness-user", email: "harness-user@example.com" },
   };
 }
@@ -317,7 +322,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   const app = express();
 
   const started = await new Promise<{ server: Server; port: number }>(
-    (resolve) => {
+    (resolve, reject) => {
       // Bind to all interfaces so the emulator can reach the host at 10.0.2.2
       const listeningServer = app.listen(HARNESS_PORT, "0.0.0.0", () => {
         const address = listeningServer.address();
@@ -327,6 +332,18 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
           );
         }
         resolve({ server: listeningServer, port: address.port });
+      });
+      listeningServer.once("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "EADDRINUSE") {
+          reject(
+            new Error(
+              `Android integration harness port ${HARNESS_PORT} is already in use`,
+            ),
+          );
+          return;
+        }
+
+        reject(error);
       });
     },
   );
@@ -343,8 +360,8 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     supertokens: { connectionURI: coreConnectionURI },
     appInfo: {
       appName,
-      apiDomain: "https://trout-uncouple-geriatric.ngrok-free.dev",
-      websiteDomain: "https://staging.supertokens-rownd-hub.pages.dev",
+      apiDomain: publicUrl,
+      websiteDomain: hubUrl,
     },
     recipeList: [
       Session.init(),
@@ -358,7 +375,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
                 clients: [
                   {
                     clientId: GOOGLE_CLIENT_ID,
-                    clientSecret: "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",
+                    clientSecret: GOOGLE_CLIENT_SECRET,
                   },
                 ],
               },
@@ -384,19 +401,19 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       Passwordless.init({
         contactMethod: "EMAIL_OR_PHONE",
         flowType: "MAGIC_LINK",
-        // emailDelivery: {
-        //   service: {
-        //     sendEmail: async (input: any) => {
-        //       const state = harnessStates.get("default") || createEmptyState();
-        //       harnessStates.set("default", state);
-        //       state.captures.set(input.email, {
-        //         email: input.email,
-        //         urlWithLinkCode: input.urlWithLinkCode,
-        //         userInputCode: input.userInputCode,
-        //       });
-        //     },
-        //   },
-        // },
+        emailDelivery: {
+          service: {
+            sendEmail: async (input: any) => {
+              const state = harnessStates.get("default") || createEmptyState();
+              harnessStates.set("default", state);
+              state.captures.set(input.email, {
+                email: input.email,
+                urlWithLinkCode: input.urlWithLinkCode,
+                userInputCode: input.userInputCode,
+              });
+            },
+          },
+        },
         smsDelivery: {
           service: {
             sendSms: async (input: any) => {
@@ -418,8 +435,13 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
           enableDebugLogs: true,
           rowndAppKey: APP_KEY,
           rowndAppSecret: "rownd-e2e-secret-rownd-e2e-secret",
-          mobileDeepLinks: {
-            scheme: "rowndsupertokens",
+          mobileDeepLinkBaseUrl: "rowndsupertokens://",
+          schema: {
+            nickname: {
+              display_name: "Nickname",
+              type: "string",
+              user_visible: true,
+            },
           },
           appConfig: {
             id: APP_ID,
@@ -504,7 +526,15 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
         id: APP_ID,
         icon: "",
         user_verification_fields: [],
-        schema: {},
+        schema: {
+          nickname: {
+            display_name: "Nickname",
+            type: "string",
+            user_visible: true,
+            owned_by: "user",
+            read_only: false,
+          },
+        },
         config: {
           hub: {
             auth: {
@@ -602,8 +632,6 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   app.post("/auth/signinup", completeThirdPartySignInUp);
   app.post("/auth/public/signinup", completeThirdPartySignInUp);
 
-  app.use(middleware());
-
   app.post(
     "/auth/plugin/rownd/signout",
     verifySession() as any,
@@ -619,6 +647,8 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       res.json({ sign_out_all: signOutAll });
     },
   );
+
+  app.use(middleware());
 
   app.get("/auth/plugin/rownd/user", verifySession() as any, (req, res) => {
     res.json({
@@ -799,6 +829,38 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       accessTokenPayload: req.session.getAccessTokenPayload(),
     });
   });
+
+  app.post("/test/refresh/reset", (req, res) => {
+    const state = getState(req);
+    state.refreshSimulationCompleted = false;
+    res.json({ status: "OK", refreshSimulationCompleted: false });
+  });
+
+  app.get(
+    "/test/refresh",
+    (req, res, next) => {
+      const state = getState(req);
+      if (!state.refreshSimulationCompleted) {
+        state.refreshSimulationCompleted = true;
+        res.status(401).json({
+          status: "REFRESH_REQUIRED",
+          message: "Forced 401 to test SuperTokens session refresh",
+        });
+        return;
+      }
+
+      next();
+    },
+    verifySession() as any,
+    async (req: any, res) => {
+      res.json({
+        status: "OK",
+        userId: req.session.getUserId(),
+        accessTokenPayload: req.session.getAccessTokenPayload(),
+        refreshSimulationCompleted: getState(req).refreshSimulationCompleted,
+      });
+    },
+  );
 
   app.use(errorHandler());
 

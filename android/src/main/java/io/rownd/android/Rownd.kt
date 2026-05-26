@@ -120,6 +120,7 @@ class RowndClient(
         config.apiUrl = apiDomain
         config.apiBasePath = apiBasePath
         config.deepLinkScheme = options.deepLinkScheme.trimEnd(':')
+        config.applicationContext = appContext
         config.supertokens = SuperTokensConfig(
             appInfo = SuperTokensAppInfo(
                 apiDomain = apiDomain,

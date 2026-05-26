@@ -124,7 +124,7 @@ class UserRepo @Inject constructor() {
             data = userData
         )
         stateRepo.getStore().dispatch(StateAction.SetUser(updatedUser))
-        return saveUserAsync(updatedUser)
+        return saveUserAsync(User(data = mapOf(field to data)))
     }
 
     private fun rowndPluginUrl(path: String): String {

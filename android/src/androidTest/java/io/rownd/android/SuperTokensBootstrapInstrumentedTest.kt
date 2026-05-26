@@ -1,20 +1,28 @@
 package io.rownd.android
 
+import android.app.Application
 import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.supertokens.session.SuperTokens
+import io.rownd.android.models.domain.AppConfigState
+import io.rownd.android.models.domain.AuthState
+import io.rownd.android.models.domain.User
+import io.rownd.android.models.repos.StateAction
 import io.rownd.android.util.JwtGenerator
 import io.rownd.android.util.SuperTokensSessionBridge
 import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.BeforeClass
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.Base64
 
 @RunWith(AndroidJUnit4::class)
 class SuperTokensBootstrapInstrumentedTest {
@@ -44,6 +52,8 @@ class SuperTokensBootstrapInstrumentedTest {
     fun clearSession() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         runBlocking { SuperTokensSessionBridge.signOut(context) }
+        Rownd._registerActivityLifecycle(context.applicationContext as Application)
+        Rownd.store = Rownd.stateRepo.getStore()
     }
 
     @Test
@@ -105,9 +115,11 @@ class SuperTokensBootstrapInstrumentedTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val accessToken = jwtGenerator.generateTestJwt()
         val refreshToken = jwtGenerator.generateTestJwt()
+        val frontToken = SuperTokensSessionBridge.buildFrontToken(accessToken)
+        val antiCSRF = "anti-csrf-token"
 
         val beforeTimestamp = System.currentTimeMillis()
-        SuperTokensSessionBridge.bootstrapSession(context, accessToken, refreshToken)
+        SuperTokensSessionBridge.bootstrapSession(context, accessToken, refreshToken, frontToken, antiCSRF)
         val afterTimestamp = System.currentTimeMillis()
 
         val prefs = sharedPrefs(context)
@@ -126,12 +138,65 @@ class SuperTokensBootstrapInstrumentedTest {
             "supertokens-android-fronttoken-key must be written",
             prefs.getString("supertokens-android-fronttoken-key", null),
         )
+        assertEquals(
+            "supertokens-android-anticsrf-key must hold the anti-CSRF token",
+            antiCSRF,
+            prefs.getString("supertokens-android-anticsrf-key", null),
+        )
+        assertEquals(refreshToken, SuperTokensSessionBridge.getRefreshToken(context))
+        assertEquals(frontToken, SuperTokensSessionBridge.getFrontToken(context))
+        assertEquals(antiCSRF, SuperTokensSessionBridge.getAntiCSRF(context))
         val lastUpdate = prefs.getString("st-storage-item-st-last-access-token-update", null)?.toLongOrNull()
         assertNotNull("st-storage-item-st-last-access-token-update must be written", lastUpdate)
         assertTrue(
             "st-storage-item-st-last-access-token-update must be within the call window",
             lastUpdate!! in beforeTimestamp..afterTimestamp,
         )
+    }
+
+    @Test
+    fun clearLocalSessionRemovesStoredTokens() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        SuperTokensSessionBridge.bootstrapSession(
+            context,
+            jwtGenerator.generateTestJwt(),
+            jwtGenerator.generateTestJwt(),
+            "front-token",
+            "anti-csrf-token",
+        )
+
+        SuperTokensSessionBridge.clearLocalSession(context)
+
+        assertNull(SuperTokensSessionBridge.getRefreshToken(context))
+        assertNull(SuperTokensSessionBridge.getFrontToken(context))
+        assertNull(SuperTokensSessionBridge.getAntiCSRF(context))
+    }
+
+    @Test
+    fun rphInitFallsBackToStoredSuperTokensSessionTokens() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val accessToken = jwtGenerator.generateTestJwt()
+        val refreshToken = jwtGenerator.generateTestJwt()
+        val frontToken = SuperTokensSessionBridge.buildFrontToken(accessToken)
+        val antiCSRF = "anti-csrf-token"
+        val appId = "app-test"
+        val appUserId = "user-test"
+
+        SuperTokensSessionBridge.bootstrapSession(context, accessToken, refreshToken, frontToken, antiCSRF)
+        Rownd.store.dispatch(StateAction.SetAppConfig(AppConfigState(id = appId, isLoading = false)))
+        Rownd.store.dispatch(StateAction.SetUser(User(data = mapOf("user_id" to appUserId))))
+
+        val rphInit = AuthState(accessToken = accessToken, refreshToken = null)
+            .toRphInitHash(Rownd.userRepo, context)
+        assertNotNull("rph_init must be generated from SuperTokens stored refresh token", rphInit)
+
+        val decoded = JSONObject(String(Base64.getDecoder().decode(rphInit)))
+        assertEquals(accessToken, decoded.getString("access_token"))
+        assertEquals(refreshToken, decoded.getString("refresh_token"))
+        assertEquals(frontToken, decoded.getString("front_token"))
+        assertEquals(antiCSRF, decoded.getString("anti_csrf"))
+        assertEquals(appId, decoded.getString("app_id"))
+        assertEquals(appUserId, decoded.getString("app_user_id"))
     }
 
     @Test

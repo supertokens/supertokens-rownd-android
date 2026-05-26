@@ -111,7 +111,8 @@ class RowndWebViewAuthenticationInstrumentedTest {
         val accessToken = jwtGenerator.generateTestJwt()
         val refreshToken = jwtGenerator.generateTestJwt()
         val frontToken = SuperTokensSessionBridge.buildFrontToken(jwtGenerator.generateTestJwt())
-        val interop = buildAuthenticationMessage(accessToken, refreshToken, frontToken)
+        val antiCSRF = "anti-csrf-token"
+        val interop = buildAuthenticationMessage(accessToken, refreshToken, frontToken, antiCSRF)
 
         val bridge = createJavascriptInterface(HubPageSelector.SignIn)
         bridge.postMessage(interop)
@@ -121,6 +122,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
         }
 
         assertEquals(frontToken, sharedPrefs(context).getString("supertokens-android-fronttoken-key", null))
+        assertEquals(antiCSRF, SuperTokensSessionBridge.getAntiCSRF(context))
     }
 
     @Test
@@ -210,20 +212,28 @@ class RowndWebViewAuthenticationInstrumentedTest {
         accessToken: String,
         refreshToken: String,
         frontToken: String = SuperTokensSessionBridge.buildFrontToken(accessToken),
+        antiCSRF: String? = null,
     ): String =
         buildAuthenticationMessageWithRefreshJson(
             accessToken = accessToken,
             refreshTokenJson = "\"$refreshToken\"",
             frontTokenJson = "\"$frontToken\"",
+            antiCSRFJson = antiCSRF?.let { "\"$it\"" } ?: "null",
         )
 
-    private fun buildAuthenticationMessageWithRefreshJson(accessToken: String, refreshTokenJson: String, frontTokenJson: String): String = """
+    private fun buildAuthenticationMessageWithRefreshJson(
+        accessToken: String,
+        refreshTokenJson: String,
+        frontTokenJson: String,
+        antiCSRFJson: String = "null",
+    ): String = """
         {
           "type": "authentication",
           "payload": {
             "access_token": "$accessToken",
             "refresh_token": $refreshTokenJson,
-            "front_token": $frontTokenJson
+            "front_token": $frontTokenJson,
+            "anti_csrf": $antiCSRFJson
           }
         }
     """.trimIndent()

@@ -1,5 +1,6 @@
 package io.rownd.android.models
 
+import android.content.Context
 import android.util.Base64
 import android.util.Log
 import androidx.core.net.toUri
@@ -42,7 +43,9 @@ data class RowndConfig(
     @Transient
     internal var stateFileName: String = "rownd_state.json",
     @Transient
-    internal var pendingHubDeepLinkUrl: String? = null
+    internal var pendingHubDeepLinkUrl: String? = null,
+    @Transient
+    internal var applicationContext: Context? = null
 ) {
     @Inject
     @Transient
@@ -78,7 +81,7 @@ data class RowndConfig(
 
         try {
             val authState = authRepo.getLatestAuthState() ?: AuthState()
-            authState.toRphInitHash(userRepo)?.let { rphInitStr ->
+            authState.toRphInitHash(userRepo, applicationContext)?.let { rphInitStr ->
                 uriBuilder.encodedFragment("rph_init=$rphInitStr")
             }
         } catch (error: Exception) {
