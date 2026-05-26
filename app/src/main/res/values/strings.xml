@@ -1,4 +1,3 @@
 <resources>
     <string name="app_name">Rownd Test Sandbox</string>
-    <string name="hello_rownd_state_user_data">Hello %s!</string>
 </resources>

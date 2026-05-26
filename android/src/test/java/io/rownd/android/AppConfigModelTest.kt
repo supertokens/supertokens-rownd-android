@@ -7,6 +7,8 @@ import io.rownd.android.models.network.AppVariant
 import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.domain.SuperTokensAppInfo
 import io.rownd.android.models.RowndConfig
+import io.rownd.android.models.network.SignInLinkApi
+import io.rownd.android.models.repos.AppConfigRepo
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -103,6 +105,40 @@ class AppConfigModelTest {
     }
 
     @Test
+    fun `plugin schema fields can omit optional required flag`() {
+        val payload = """
+            {
+              "app": {
+                "id": "app_test123",
+                "icon": "",
+                "user_verification_fields": [],
+                "schema": {
+                  "zip_code": {
+                    "display_name": "Zip code",
+                    "type": "string",
+                    "owned_by": "user",
+                    "user_visible": true,
+                    "read_only": false,
+                    "show_empty": false
+                  }
+                },
+                "config": {
+                  "hub": { "auth": { "sign_in_methods": {} } },
+                  "customizations": {}
+                }
+              }
+            }
+        """.trimIndent()
+
+        val response = json.decodeFromString(AppConfigResponse.serializer(), payload)
+        val field = response.app.schema["zip_code"]
+
+        assertNotNull(field)
+        assertNull(field?.required)
+        assertNull(field?.encryption)
+    }
+
+    @Test
     fun `hub script query params use supertokens config`() {
         val params = RowndConfig.buildHubScriptQueryParams(
             supertokens = SuperTokensConfig(
@@ -137,5 +173,95 @@ class AppConfigModelTest {
             ),
             params
         )
+    }
+
+    @Test
+    fun `app config repo keeps configured supertokens when backend omits it`() {
+        val configured = SuperTokensConfig(
+            appInfo = SuperTokensAppInfo(
+                apiDomain = "https://api.example.com",
+                apiBasePath = "/auth",
+            )
+        )
+
+        val resolved = AppConfigRepo.resolveSuperTokensConfig(
+            backendConfig = SuperTokensConfig(),
+            configuredConfig = configured,
+        )
+
+        assertEquals("https://api.example.com", resolved.appInfo.apiDomain)
+        assertEquals("/auth", resolved.appInfo.apiBasePath)
+    }
+
+    @Test
+    fun `app config repo prefers backend supertokens when present`() {
+        val configured = SuperTokensConfig(
+            appInfo = SuperTokensAppInfo(apiDomain = "https://configured.example.com")
+        )
+        val backend = SuperTokensConfig(
+            appInfo = SuperTokensAppInfo(apiDomain = "https://backend.example.com")
+        )
+
+        val resolved = AppConfigRepo.resolveSuperTokensConfig(
+            backendConfig = backend,
+            configuredConfig = configured,
+        )
+
+        assertEquals("https://backend.example.com", resolved.appInfo.apiDomain)
+    }
+
+    @Test
+    fun `deep link helper rewrites custom scheme to configured hub`() {
+        val hubUrl = SignInLinkApi.toHubUrl(
+            rawUrl = "rowndsupertokens://account/login?token=abc#frag",
+            deepLinkScheme = "rowndsupertokens",
+            hubBaseUrl = "https://app.rownd-hub.supertokens.com",
+        )
+
+        assertEquals("https://app.rownd-hub.supertokens.com/account/login?token=abc#frag", hubUrl)
+    }
+
+    @Test
+    fun `deep link helper accepts production hub subdomains`() {
+        val hubUrl = SignInLinkApi.toHubUrl(
+            rawUrl = "https://tenant.rownd-hub.supertokens.com/account/verify-email?code=abc",
+            deepLinkScheme = "rowndsupertokens",
+            hubBaseUrl = "https://app.rownd-hub.supertokens.com",
+        )
+
+        assertEquals("https://app.rownd-hub.supertokens.com/account/verify-email?code=abc", hubUrl)
+    }
+
+    @Test
+    fun `deep link helper accepts staging hub urls`() {
+        val hubUrl = SignInLinkApi.toHubUrl(
+            rawUrl = "https://staging.supertokens-rownd-hub.pages.dev/account/login?link=abc",
+            deepLinkScheme = "rowndsupertokens",
+            hubBaseUrl = "https://staging.supertokens-rownd-hub.pages.dev",
+        )
+
+        assertEquals("https://staging.supertokens-rownd-hub.pages.dev/account/login?link=abc", hubUrl)
+    }
+
+    @Test
+    fun `deep link helper rejects unsupported hosts`() {
+        val hubUrl = SignInLinkApi.toHubUrl(
+            rawUrl = "https://evil.example.com/account/login?link=abc",
+            deepLinkScheme = "rowndsupertokens",
+            hubBaseUrl = "https://app.rownd-hub.supertokens.com",
+        )
+
+        assertNull(hubUrl)
+    }
+
+    @Test
+    fun `deep link helper rejects unsupported paths`() {
+        val hubUrl = SignInLinkApi.toHubUrl(
+            rawUrl = "https://tenant.rownd-hub.supertokens.com/admin?link=abc",
+            deepLinkScheme = "rowndsupertokens",
+            hubBaseUrl = "https://app.rownd-hub.supertokens.com",
+        )
+
+        assertNull(hubUrl)
     }
 }
