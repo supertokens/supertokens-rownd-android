@@ -64,7 +64,7 @@ class SuperTokensInitInstrumentedTest {
     @Before
     fun resetBridge() {
         SuperTokensSessionBridge.isInitialized.set(false)
-        SuperTokensSessionBridge.buildSuperTokens = { context, apiDomain, apiBasePath ->
+        SuperTokensSessionBridge.buildSuperTokens = { context, apiDomain, apiBasePath, _ ->
             SuperTokens.Builder(context, apiDomain)
                 .apiBasePath(apiBasePath)
                 .tokenTransferMethod("header")
@@ -139,7 +139,7 @@ class SuperTokensInitInstrumentedTest {
         val stateRepo = validStateRepo(harnessConfig.androidUrl)
         val attempts = AtomicInteger(0)
 
-        SuperTokensSessionBridge.buildSuperTokens = { _, _, _ ->
+        SuperTokensSessionBridge.buildSuperTokens = { _, _, _, _ ->
             attempts.incrementAndGet()
             Thread.sleep(200)
         }
@@ -159,11 +159,27 @@ class SuperTokensInitInstrumentedTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val stateRepo = validStateRepo(harnessConfig.androidUrl)
 
-        SuperTokensSessionBridge.buildSuperTokens = { _, _, _ -> throw IllegalStateException("boom") }
+        SuperTokensSessionBridge.buildSuperTokens = { _, _, _, _ -> throw IllegalStateException("boom") }
 
         SuperTokensSessionBridge.observeAndInitialize(context, stateRepo)
         Thread.sleep(500)
 
         assertFalse("isInitialized must reset to false when SuperTokens build fails", SuperTokensSessionBridge.isInitialized.get())
+    }
+
+    @Test
+    fun debugModeFlagIsPassedToSuperTokensBuildPath() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val stateRepo = validStateRepo(harnessConfig.androidUrl)
+        var observedDebugMode = false
+
+        SuperTokensSessionBridge.buildSuperTokens = { _, _, _, enableDebugMode ->
+            observedDebugMode = enableDebugMode
+        }
+
+        SuperTokensSessionBridge.observeAndInitialize(context, stateRepo, enableDebugMode = true)
+        awaitInitialized()
+
+        assertTrue("debug mode should be passed to SuperTokens initialization", observedDebugMode)
     }
 }

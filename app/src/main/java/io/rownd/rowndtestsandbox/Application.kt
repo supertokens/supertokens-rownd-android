@@ -22,6 +22,7 @@ class RowndTestSandbox: Application() {
         super.onCreate()
         instance = this
 
+        Rownd.config.enableDebugMode = true
         Rownd.configure(
             this,
             RowndConfigureOptions(

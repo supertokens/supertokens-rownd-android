@@ -131,7 +131,7 @@ class RowndClient(
 
         store = stateRepo.setup(StateRepo.defaultDataStore(appContext))
 
-        SuperTokensSessionBridge.observeAndInitialize(appContext, stateRepo)
+        SuperTokensSessionBridge.observeAndInitialize(appContext, stateRepo, config.enableDebugMode)
 
         // Clear webview cache on startup
         Handler(Looper.getMainLooper()).post {

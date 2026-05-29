@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Looper
 import android.util.Log
 import java.util.Base64
+import com.supertokens.session.EventHandler
 import com.supertokens.session.FrontToken
 import com.supertokens.session.SuperTokens
 import io.rownd.android.models.domain.AuthState
@@ -31,16 +32,28 @@ private const val ANTI_CSRF_STORAGE_KEY = "supertokens-android-anticsrf-key"
 object SuperTokensSessionBridge {
 
     val isInitialized = AtomicBoolean(false)
+    private var enableDebugMode = false
 
-    internal var buildSuperTokens: (Context, String, String) -> Unit = { context, apiDomain, apiBasePath ->
-        SuperTokens.Builder(context, apiDomain)
+    internal var buildSuperTokens: (Context, String, String, Boolean) -> Unit = { context, apiDomain, apiBasePath, enableDebugMode ->
+        val builder = SuperTokens.Builder(context, apiDomain)
             .apiBasePath(apiBasePath)
             .tokenTransferMethod("header")
-            .build()
+
+        if (enableDebugMode) {
+            builder.eventHandler(object : EventHandler {
+                override fun handleEvent(eventType: EventHandler.EventType) {
+                    Log.d(TAG, "SuperTokens event: $eventType")
+                }
+            })
+        }
+
+        builder.build()
     }
 
     // Called from configure(...) — observes state until app config is ready, then inits SuperTokens once.
-    fun observeAndInitialize(context: Context, stateRepo: StateRepo) {
+    fun observeAndInitialize(context: Context, stateRepo: StateRepo, enableDebugMode: Boolean = false) {
+        this.enableDebugMode = enableDebugMode
+
         CoroutineScope(Dispatchers.IO).launch {
             stateRepo.state
                 .filter { it.appConfig.id.isNotEmpty() && !it.appConfig.isLoading }
@@ -55,7 +68,7 @@ object SuperTokensSessionBridge {
                     if (!isInitialized.compareAndSet(false, true)) return@collect
 
                     try {
-                        buildSuperTokens(context, st.appInfo.apiDomain, st.appInfo.apiBasePath ?: "/auth")
+                        buildSuperTokens(context, st.appInfo.apiDomain, st.appInfo.apiBasePath ?: "/auth", enableDebugMode)
                         Log.d(TAG, "SuperTokens initialized with apiDomain=${st.appInfo.apiDomain}")
                     } catch (e: Exception) {
                         isInitialized.set(false)
@@ -95,6 +108,7 @@ object SuperTokensSessionBridge {
 
     suspend fun attemptRefresh(context: Context): Boolean =
         withContext(Dispatchers.IO) {
+            debugLog("Attempting SuperTokens session refresh")
             runCatching { SuperTokens.attemptRefreshingSession(context) }.isSuccess
                 && SuperTokens.doesSessionExist(context)
         }
@@ -102,6 +116,7 @@ object SuperTokensSessionBridge {
     suspend fun signOut(context: Context) =
         withContext(Dispatchers.IO) {
             try {
+                debugLog("Signing out of SuperTokens session")
                 SuperTokens.signOut(context)
             } finally {
                 clearLocalSession(context)
@@ -141,6 +156,7 @@ object SuperTokensSessionBridge {
         if (replaceExisting) {
             clearLocalSession(context)
         }
+        debugLog("Bootstrapping SuperTokens session from Rownd Hub auth result")
 
         val resolvedFrontToken = frontToken ?: buildFrontToken(accessToken)
         val editor = sharedPrefs(context).edit()
@@ -197,4 +213,10 @@ object SuperTokensSessionBridge {
 
     private fun sharedPrefs(context: Context) =
         context.getSharedPreferences(SUPER_TOKENS_PREFS, Context.MODE_PRIVATE)
+
+    private fun debugLog(message: String) {
+        if (enableDebugMode) {
+            Log.d(TAG, message)
+        }
+    }
 }

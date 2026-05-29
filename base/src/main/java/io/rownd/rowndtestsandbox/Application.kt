@@ -10,6 +10,7 @@ class RowndBaseApp: Application() {
     override fun onCreate() {
         super.onCreate()
 
+        Rownd.config.enableDebugMode = true
         Rownd.configure(
             this,
             RowndConfigureOptions(
