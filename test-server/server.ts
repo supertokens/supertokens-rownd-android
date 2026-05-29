@@ -435,7 +435,9 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
           enableDebugLogs: true,
           rowndAppKey: APP_KEY,
           rowndAppSecret: "rownd-e2e-secret-rownd-e2e-secret",
-          mobileDeepLinkBaseUrl: "rowndsupertokens://",
+          clientDomains: {
+            mobile: "https://staging.supertokens-rownd-hub.pages.dev/",
+          },
           schema: {
             nickname: {
               display_name: "Nickname",

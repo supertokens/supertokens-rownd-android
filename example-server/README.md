@@ -25,7 +25,7 @@ GOOGLE_CLIENT_ID=<Google Web OAuth client ID>
 GOOGLE_CLIENT_SECRET=<Google Web OAuth client secret>
 ROWND_APP_KEY=<local app key>
 ROWND_APP_SECRET=<local app secret>
-ROWND_MOBILE_DEEP_LINK_BASE_URL=rowndsupertokens://
+ROWND_MOBILE_CLIENT_DOMAIN=https://staging.supertokens-rownd-hub.pages.dev/
 ```
 
 Run the backend from the repo root:

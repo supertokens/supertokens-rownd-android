@@ -11,7 +11,7 @@
     "@release-it/bumper": "^4.0.2",
     "@release-it/conventional-changelog": "^5.1.0",
     "@release-it/keep-a-changelog": "^3.1.0",
-    "@supertokens-plugins/rownd-nodejs": "0.3.0-beta.1",
+    "@supertokens-plugins/rownd-nodejs": "0.3.0-beta.2",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^22.0.0",

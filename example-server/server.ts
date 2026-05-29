@@ -142,9 +142,11 @@ SuperTokens.init({
         rowndAppKey: requireEnv("ROWND_APP_KEY"),
         rowndAppSecret: requireEnv("ROWND_APP_SECRET"),
         enableDebugLogs: process.env.ROWND_ENABLE_DEBUG_LOGS === "true",
-        ...(process.env.ROWND_MOBILE_DEEP_LINK_BASE_URL
+        ...(process.env.ROWND_MOBILE_CLIENT_DOMAIN
           ? {
-              mobileDeepLinkBaseUrl: process.env.ROWND_MOBILE_DEEP_LINK_BASE_URL,
+              clientDomains: {
+                mobile: process.env.ROWND_MOBILE_CLIENT_DOMAIN,
+              },
             }
           : {}),
         appConfig: {
