@@ -1,9 +1,17 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
-    id 'kotlin-kapt'
     id 'kotlinx-serialization'
     id 'org.jetbrains.kotlin.plugin.compose'
+}
+
+def envOrDefault = { name, fallback ->
+    def value = System.getenv(name)
+    return value == null || value.trim().isEmpty() ? fallback : value
+}
+
+def buildConfigString = { value ->
+    return "\"${value.replace('\\', '\\\\').replace('"', '\\"')}\""
 }
 
 android {
@@ -17,8 +25,27 @@ android {
         targetSdk 35
         versionCode 1
         versionName "1.0"
+        manifestPlaceholders = [rowndDeepLinkScheme: "rowndsupertokens"]
+        buildConfigField "String", "DEEP_LINK_SCHEME", '"rowndsupertokens"'
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    flavorDimensions "environment"
+    productFlavors {
+        local {
+            dimension "environment"
+            applicationIdSuffix ".local"
+            buildConfigField "String", "API_URL", '"https://trout-uncouple-geriatric.ngrok-free.dev"'
+            buildConfigField "String", "HUB_URL", '"https://staging.supertokens-rownd-hub.pages.dev"'
+            buildConfigField "String", "APP_KEY", '"key_pko8eul59xz33hr21jgxvx6s"'
+        }
+        dev {
+            dimension "environment"
+            buildConfigField "String", "API_URL", '"https://trout-uncouple-geriatric.ngrok-free.dev"'
+            buildConfigField "String", "HUB_URL", '"https://staging.supertokens-rownd-hub.pages.dev"'
+            buildConfigField "String", "APP_KEY", '"key_m4n56mwdgys9yw0m7e2nd7zg"'
+        }
     }
 
     buildTypes {
@@ -36,9 +63,8 @@ android {
     }
 
     buildFeatures {
+        buildConfig true
         compose true
-        dataBinding = true
-        viewBinding = true
     }
 
 //    composeOptions {
@@ -47,8 +73,7 @@ android {
 }
 
 dependencies {
-    implementation project(':android')
-//    implementation 'io.rownd:android:1.2.0'
+    implementation 'com.github.supertokens:supertokens-rownd-android:v0.0.1-beta.4'
 
     // Google Play instant
     implementation "com.google.android.gms:play-services-instantapps:17.0.0"
@@ -67,12 +92,10 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.3'
     implementation "androidx.constraintlayout:constraintlayout-compose:1.0.1"
     implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.3.3"
+    implementation "com.github.supertokens:supertokens-android:0.5.4"
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
 
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.3'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.4.0'
 }
-
-//kapt {
-//    generateStubs = true
-//}

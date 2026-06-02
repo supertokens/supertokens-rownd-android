@@ -12,8 +12,6 @@ import androidx.datastore.dataStoreFile
 import io.opentelemetry.api.trace.StatusCode
 import io.rownd.android.Rownd
 import io.rownd.android.RowndSignInIntent
-import io.rownd.android.RowndSignInJsOptions
-import io.rownd.android.RowndSignInLoginStep
 import io.rownd.android.RowndSignInOptions
 import io.rownd.android.models.Action
 import io.rownd.android.models.State
@@ -126,17 +124,17 @@ class StateRepo @Inject constructor() {
             // Fetch latest app config
             appConfigRepo.loadAppConfigAsync(this@StateRepo).await()
 
-            // Check to see if we were handling an existing auth challenge
-            // (maybe the app crashed or got OOM killed)
-            store.currentState.auth.let {
-                if (it.challengeId != null && it.userIdentifier != null) {
-                    Rownd.requestSignIn(
-                        RowndSignInJsOptions (
-                            loginStep = RowndSignInLoginStep.Completing,
-                            challengeId = it.challengeId,
-                            userIdentifier = it.userIdentifier
+            // Auth challenges are UI state. Do not reopen the sign-in sheet on SDK startup.
+            store.currentState.auth.let { auth ->
+                if (auth.challengeId != null || auth.userIdentifier != null) {
+                    store.dispatch(
+                        StateAction.SetAuth(
+                            auth.copy(
+                                challengeId = null,
+                                userIdentifier = null,
+                            )
                         )
-                    );
+                    )
                 }
             }
 

@@ -50,6 +50,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig true
         compose true
         viewBinding true
     }
@@ -116,9 +117,12 @@ dependencies {
     // Animation
     implementation 'com.airbnb.android:lottie-compose:6.6.6'
 
+    // SuperTokens Android SDK — bootstrapSession depends on internal storage keys, re-verify against source before bumping
+    implementation "com.github.supertokens:supertokens-android:0.5.4"
+
     // Network requests
     implementation "io.ktor:ktor-client-core:$ktor_version"
-    implementation "io.ktor:ktor-client-android:$ktor_version"
+    implementation "io.ktor:ktor-client-okhttp:$ktor_version"
     implementation "io.ktor:ktor-client-serialization:$ktor_version"
     implementation "io.ktor:ktor-serialization-kotlinx-json:$ktor_version"
     implementation "io.ktor:ktor-client-resources:$ktor_version"

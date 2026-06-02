@@ -1,9 +1,11 @@
 package io.rownd.android.models.domain
 
+import android.content.Context
 import com.auth0.android.jwt.JWT
 import io.rownd.android.Rownd
 import io.rownd.android.models.json
 import io.rownd.android.models.repos.UserRepo
+import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.toBase64
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
@@ -38,14 +40,21 @@ data class AuthState @OptIn(ExperimentalSerializationApi::class) constructor(
             return !Rownd.authRepo.isJwtExpiredWithMargin(jwt)
         }
 
-    internal fun toRphInitHash(userRepo: UserRepo): String {
+    internal fun toRphInitHash(userRepo: UserRepo, context: Context? = null): String? {
+        val resolvedRefreshToken = refreshToken ?: context?.let { SuperTokensSessionBridge.getRefreshToken(it) }
+        if (accessToken.isNullOrBlank() || resolvedRefreshToken.isNullOrBlank()) {
+            return null
+        }
+
         val userId: String? = userRepo.get("user_id") as? String
 
         val rphInit = RphInitObj(
-            accessToken,
-            refreshToken,
-            Rownd.store.currentState.appConfig.id,
-            userId
+            accessToken = accessToken,
+            refreshToken = resolvedRefreshToken,
+            frontToken = context?.let { SuperTokensSessionBridge.getFrontToken(it) },
+            antiCSRF = context?.let { SuperTokensSessionBridge.getAntiCSRF(it) },
+            appId = Rownd.store.currentState.appConfig.id,
+            appUserId = userId,
         )
 
         val encoded = json.encodeToString(RphInitObj.serializer(), rphInit)
@@ -59,6 +68,10 @@ data class RphInitObj(
     val accessToken: String?,
     @SerialName("refresh_token")
     val refreshToken: String?,
+    @SerialName("front_token")
+    val frontToken: String? = null,
+    @SerialName("anti_csrf")
+    val antiCSRF: String? = null,
     @SerialName("app_id")
     val appId: String?,
     @SerialName("app_user_id")

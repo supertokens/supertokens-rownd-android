@@ -10,10 +10,12 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven { url "https://jitpack.io" }
     }
 }
 rootProject.name = "Rownd Test Sandbox"
 include ':app'
+include ':app_rownd_reference'
 include ':android'
 include ':base'
 include ':app_instant'

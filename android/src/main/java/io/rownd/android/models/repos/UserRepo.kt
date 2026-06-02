@@ -4,6 +4,7 @@ import android.util.Log
 import io.ktor.client.call.body
 import io.ktor.client.plugins.ClientRequestException
 import io.ktor.client.request.get
+import io.ktor.client.request.headers
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.http.HttpStatusCode
@@ -38,7 +39,9 @@ class UserRepo @Inject constructor() {
         return CoroutineScope(Dispatchers.IO).async {
             try {
                 setIsLoading(value = true)
-                val user: NetworkUser = authenticatedApiClient.client.get("me/applications/${stateRepo.state.value.appConfig.id}/data").body()
+                val user: NetworkUser = authenticatedApiClient.client.get(rowndPluginUrl("user")) {
+                    headers { remove("x-rownd-app-key") }
+                }.body()
                 Log.i("RowndUsersApi", "Successfully loaded user data: $user")
                 stateRepo.getStore().dispatch(StateAction.SetUser(user.asDomainModel(stateRepo, this@UserRepo)))
                 setIsLoading(value = false)
@@ -68,7 +71,8 @@ class UserRepo @Inject constructor() {
             try {
                 setIsLoading(value = true)
                 val savedUser: NetworkUser =
-                    authenticatedApiClient.client.put("me/applications/${stateRepo.state.value.appConfig.id}/data") {
+                    authenticatedApiClient.client.put(rowndPluginUrl("user")) {
+                        headers { remove("x-rownd-app-key") }
                         setBody(
                             networkUser
                         )
@@ -87,6 +91,10 @@ class UserRepo @Inject constructor() {
 
     fun get(): User {
         return stateRepo.state.value.user
+    }
+
+    fun refresh(): Deferred<User?> {
+        return loadUserAsync()
     }
 
     fun <T> get(field: String): T? {
@@ -116,7 +124,15 @@ class UserRepo @Inject constructor() {
             data = userData
         )
         stateRepo.getStore().dispatch(StateAction.SetUser(updatedUser))
-        return saveUserAsync(updatedUser)
+        return saveUserAsync(User(data = mapOf(field to data)))
+    }
+
+    private fun rowndPluginUrl(path: String): String {
+        val st = stateRepo.state.value.appConfig.config.supertokens
+        val apiDomain = st.appInfo.apiDomain.trimEnd('/')
+        val apiBasePath = st.appInfo.apiBasePath?.trimEnd('/') ?: "/auth"
+
+        return "$apiDomain$apiBasePath/plugin/rownd/$path"
     }
 
 }

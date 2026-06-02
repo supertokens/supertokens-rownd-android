@@ -1,33 +1,16 @@
 package io.rownd.rowndtestsandbox
 
 import android.app.Application
-import android.content.res.Configuration
 import android.util.Log
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.rownd.android.Rownd
+import io.rownd.android.RowndConfigureOptions
 import io.rownd.android.models.RowndCustomizations
 import io.rownd.android.util.RowndEventType
 
 
-class AppCustomizations(app: Application) : RowndCustomizations() {
-    private var app: Application
-
-    init {
-        this.app = app
-    }
-
-    override val dynamicSheetBackgroundColor: Color
-    get() {
-            val uiMode = app.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
-            return if (uiMode == Configuration.UI_MODE_NIGHT_YES) {
-                Color(red = 30, green = 30, blue = 30)
-            } else {
-                Color(red = 30, green = 30, blue = 30)
-            }
-        }
-
+class AppCustomizations : RowndCustomizations() {
     override var sheetCornerBorderRadius: Dp = 25.dp
     //override var loadingAnimation: Int? = R.raw.loading_indicator_small
 }
@@ -39,13 +22,18 @@ class RowndTestSandbox: Application() {
         super.onCreate()
         instance = this
 
-        Rownd.configure(this, "key_pko8eul59xz33hr21jgxvx6s")
+        Rownd.config.enableDebugMode = true
+        Rownd.configure(
+            this,
+            RowndConfigureOptions(
+                appKey = BuildConfig.APP_KEY,
+                apiDomain = BuildConfig.API_URL,
+                apiBasePath = "/auth",
+                hubUrl = BuildConfig.HUB_URL,
+                deepLinkScheme = BuildConfig.DEEP_LINK_SCHEME,
+            )
+        )
         Log.d("App.onCreate", "Rownd initialized: ${Rownd.state.value.isInitialized}")
-        Rownd.config.apiUrl = "https://api.dev.rownd.io"
-        Rownd.config.baseUrl = "https://hub.dev.rownd.io"
-        Rownd.config.customizations = AppCustomizations(this)
-        Rownd.config.customizations.sheetBackgroundColor = Color(red = 50, green = 50, blue = 50)
-        Rownd.config.appleIdCallbackUrl = "https://api.us-east-2.dev.rownd.io/hub/auth/apple/callback"
 
         Rownd.addEventListener {
             when (it.event) {

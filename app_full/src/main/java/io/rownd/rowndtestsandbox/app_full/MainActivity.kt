@@ -1,4 +1,4 @@
-package io.rownd.rowndtestsandbox.app_instant
+package io.rownd.rowndtestsandbox.app_full
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity

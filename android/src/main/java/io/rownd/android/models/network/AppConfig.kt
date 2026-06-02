@@ -1,15 +1,24 @@
 package io.rownd.android.models.network
 
+import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.get
+import io.ktor.client.request.headers
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
 import io.rownd.android.models.domain.AppConfigState
-import io.rownd.android.util.AuthenticatedApiClient
 import io.rownd.android.util.RowndContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import io.rownd.android.models.domain.AnonymousSignInMethod as DomainAnonymousSignInMethod
 import io.rownd.android.models.domain.AppConfigConfig as DomainAppConfigConfig
+import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.domain.AppSchemaEncryptionState as DomainAppSchemaEncryptionState
 import io.rownd.android.models.domain.AppSchemaField as DomainAppSchemaField
 import io.rownd.android.models.domain.AppSchemaFieldEncryption as DomainAppSchemaFieldEncryption
@@ -49,11 +58,11 @@ data class AppConfig(
 @Serializable
 data class AppSchemaField(
     @SerialName("display_name")
-    var displayName: String?,
-    var type: String?,
-    var required: Boolean?,
+    var displayName: String? = null,
+    var type: String? = null,
+    var required: Boolean? = null,
     @SerialName("owned_by")
-    var ownedBy: String?,
+    var ownedBy: String? = null,
     var encryption: AppSchemaFieldEncryption? = null
 ) {
     fun asDomainModel(): DomainAppSchemaField {
@@ -98,13 +107,15 @@ enum class AppSchemaEncryptionState {
 data class AppConfigConfig(
     var hub: HubConfig = HubConfig(),
     var customizations: CustomizationsConfig = CustomizationsConfig(),
-    var subdomain: String? = null
+    var subdomain: String? = null,
+    var supertokens: SuperTokensConfig = SuperTokensConfig(),
 ) {
     fun asDomainModel(): DomainAppConfigConfig {
         return DomainAppConfigConfig(
             hub.asDomainModel(),
             customizations.asDomainModel(),
             subdomain,
+            supertokens,
         )
     }
 }
@@ -261,12 +272,32 @@ class AppConfigApi @Inject constructor() {
     @Inject
     lateinit var rowndContext: RowndContext
 
-    @Inject
-    lateinit var authenticatedApiClient: AuthenticatedApiClient
+    internal var client: HttpClient? = null
 
     suspend fun getAppConfig(): AppConfigResponse {
-        val appConfig: AppConfigResponse = authenticatedApiClient.client.get("hub/app-config").body()
+        val basePath = rowndContext.config.apiBasePath.trimEnd('/')
+        val appConfig: AppConfigResponse =
+            (client ?: buildClient()).get("$basePath/plugin/rownd/app-config") {
+                headers { remove("x-rownd-app-key") }
+            }.body()
         return appConfig
+    }
+
+    private fun buildClient(): HttpClient {
+        return HttpClient(OkHttp) {
+            install(ContentNegotiation) {
+                json(Json {
+                    prettyPrint = true
+                    isLenient = true
+                    ignoreUnknownKeys = true
+                })
+            }
+            expectSuccess = true
+            defaultRequest {
+                url(rowndContext.config.apiUrl)
+                contentType(ContentType.Application.Json)
+            }
+        }
     }
 
 }

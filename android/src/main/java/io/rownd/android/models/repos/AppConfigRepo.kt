@@ -3,7 +3,9 @@ package io.rownd.android.models.repos
 import android.util.Log
 import io.ktor.client.plugins.ClientRequestException
 import io.rownd.android.models.domain.AppConfigState
+import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.network.AppConfigApi
+import io.rownd.android.util.RowndContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -16,13 +18,28 @@ class AppConfigRepo @Inject constructor() {
     @Inject
     lateinit var appConfigApi: AppConfigApi
 
+    @Inject
+    lateinit var rowndContext: RowndContext
+
     internal fun loadAppConfigAsync(stateRepo: StateRepo): Deferred<AppConfigState?> {
         return CoroutineScope(Dispatchers.IO).async {
             try {
                 val result = appConfigApi.getAppConfig()
-                stateRepo.getStore().dispatch(StateAction.SetAppConfig(result.asDomainModel()))
+                val appConfig = result.asDomainModel()
+                val resolvedSuperTokensConfig = resolveSuperTokensConfig(
+                    backendConfig = appConfig.config.supertokens,
+                    configuredConfig = rowndContext.config.supertokens,
+                )
+                rowndContext.config.supertokens = resolvedSuperTokensConfig
+                stateRepo.getStore().dispatch(
+                    StateAction.SetAppConfig(
+                        appConfig.copy(
+                            config = appConfig.config.copy(supertokens = resolvedSuperTokensConfig)
+                        )
+                    )
+                )
 
-                return@async result.app.asDomainModel()
+                return@async appConfig
             } catch (ex: ClientRequestException) {
                 Log.e(
                     "Rownd.AppConfig",
@@ -52,6 +69,15 @@ class AppConfigRepo @Inject constructor() {
                 )
                 return@async null
             }
+        }
+    }
+
+    internal companion object {
+        fun resolveSuperTokensConfig(
+            backendConfig: SuperTokensConfig,
+            configuredConfig: SuperTokensConfig,
+        ): SuperTokensConfig {
+            return if (backendConfig.appInfo.apiDomain.isBlank()) configuredConfig else backendConfig
         }
     }
 }

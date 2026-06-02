@@ -48,10 +48,22 @@ enum class AppSchemaEncryptionState {
 }
 
 @Serializable
+data class SuperTokensAppInfo(
+    @SerialName("apiDomain") val apiDomain: String = "",
+    @SerialName("apiBasePath") val apiBasePath: String? = null,
+)
+
+@Serializable
+data class SuperTokensConfig(
+    val appInfo: SuperTokensAppInfo = SuperTokensAppInfo(),
+)
+
+@Serializable
 data class AppConfigConfig constructor(
     val hub: HubConfig = HubConfig(),
     val customizations: CustomizationsConfig = CustomizationsConfig(),
-    val subdomain: String? = null
+    val subdomain: String? = null,
+    val supertokens: SuperTokensConfig = SuperTokensConfig(),
 )
 
 @Serializable

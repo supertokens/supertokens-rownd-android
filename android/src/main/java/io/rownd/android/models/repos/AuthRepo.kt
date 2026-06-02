@@ -1,39 +1,34 @@
 package io.rownd.android.models.repos
 
+import android.content.Context
 import android.util.Log
 import com.auth0.android.jwt.JWT
 import io.ktor.client.call.body
 import io.ktor.client.plugins.ClientRequestException
-import io.ktor.client.plugins.ServerResponseException
+import io.ktor.client.plugins.expectSuccess
 import io.ktor.client.request.post
+import io.ktor.client.request.headers
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.opentelemetry.api.trace.StatusCode
 import io.rownd.android.Rownd
 import io.rownd.android.RowndSignInIntent
-import io.rownd.android.RowndSignInJsOptions
-import io.rownd.android.RowndSignInLoginStep
-import io.rownd.android.RowndSignInUserType
 import io.rownd.android.models.domain.AuthState
-import io.rownd.android.models.domain.User
-import io.rownd.android.models.network.Auth
+import io.rownd.android.models.network.SignInUpResponse
 import io.rownd.android.models.network.SignOutRequestBody
 import io.rownd.android.models.network.SignOutResponse
-import io.rownd.android.models.network.TokenRequestBody
-import io.rownd.android.models.network.TokenResponse
-import io.rownd.android.util.AuthLevel
 import io.rownd.android.util.AuthenticatedApiClient
-import io.rownd.android.util.InvalidRefreshTokenException
-import io.rownd.android.util.NetworkConnectionFailureException
-import io.rownd.android.util.NoRefreshTokenPresentException
+import io.rownd.android.util.LegacyTokenApiClient
 import io.rownd.android.util.RowndContext
 import io.rownd.android.util.RowndException
-import io.rownd.android.util.ServerException
-import io.rownd.android.util.TokenApiClient
+import io.rownd.android.util.SuperTokensSessionBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import java.util.Date
@@ -58,217 +53,167 @@ class AuthRepo @Inject constructor() {
     lateinit var authenticatedApiClient: AuthenticatedApiClient
 
     @Inject
-    lateinit var tokenApiClient: TokenApiClient
+    lateinit var legacyTokenApiClient: LegacyTokenApiClient
 
-    private var refreshTokenJob: Deferred<Auth?>? = null
+    private val legacyMigrationMutex = Mutex()
+    private var legacyMigrationJob: Deferred<Unit>? = null
 
     internal suspend fun getLatestAuthState(): AuthState? {
-        if (refreshTokenJob is Deferred<Auth?>) {
-            val resp = (refreshTokenJob as Deferred<Auth?>).await()
-            return resp?.asDomainModel()
-        }
-
-        val authState = stateRepo.getStore().currentState.auth
-        val accessToken = authState.accessToken ?: return null
-
-        val jwt = JWT(accessToken)
-
-        if (isJwtExpiredWithMargin(jwt)) {
-            val resp = refreshTokenAsync().await()
-            return resp?.asDomainModel()
-        }
-
-        return authState
+        val context = rowndContext.client?.appHandleWrapper?.app?.get()?.applicationContext
+            ?: return null
+        val accessToken = SuperTokensSessionBridge.getAccessToken(context) ?: return null
+        return stateRepo.state.value.auth.copy(accessToken = accessToken)
     }
 
-    internal suspend fun getAccessToken(): String? {
-        val authState = getLatestAuthState()
-        return authState?.accessToken
-    }
+    internal suspend fun getAccessToken(): String? = getLatestAuthState()?.accessToken
 
-    internal suspend fun getAccessToken(idToken: String): TokenResponse? {
-        return getAccessToken(idToken, intent = null, type = AccessTokenType.default)
-    }
-
-    internal suspend fun getAccessToken(idToken: String, intent: RowndSignInIntent?, type: AccessTokenType): TokenResponse? {
-        val appId = stateRepo.getStore().currentState.appConfig.id
-        val tokenRequest = TokenRequestBody(
-            appId = appId,
-            idToken = idToken,
-            intent = intent
-        )
-
-        if (stateRepo.state.value.user.authLevel == AuthLevel.Instant) {
-            tokenRequest.instantUserId = stateRepo.state.value.user.data["user_id"]?.toString()
+    internal suspend fun migrateLegacySessionIfNeeded(context: Context) {
+        val job = legacyMigrationMutex.withLock {
+            legacyMigrationJob?.takeIf { it.isActive }
+                ?: CoroutineScope(Dispatchers.IO).async { runLegacyMigration(context) }
+                    .also { legacyMigrationJob = it }
         }
 
-        return fetchTokenAsync(tokenRequest, intent, type).await()
+        job.await()
+    }
+
+    private suspend fun runLegacyMigration(context: Context) {
+        if (SuperTokensSessionBridge.doesSessionExist(context)) {
+            val auth = stateRepo.state.value.auth
+            if (auth.accessToken != null && !isLikelySuperTokensToken(auth.accessToken)) {
+                stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState()))
+            }
+            return
+        }
+
+        val currentAuth = stateRepo.state.value.auth
+        var legacyAccessToken = currentAuth.accessToken ?: return
+        if (isLikelySuperTokensToken(legacyAccessToken)) return
+
+        if (isJwtExpiredWithMargin(JWT(legacyAccessToken))) {
+            val refreshToken = currentAuth.refreshToken
+            if (refreshToken.isNullOrEmpty()) {
+                stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState()))
+                return
+            }
+
+            try {
+                val refreshed = legacyTokenApiClient.refreshLegacyToken(refreshToken)
+                legacyAccessToken = refreshed.accessToken
+                    ?: run {
+                        stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState()))
+                        return
+                    }
+            } catch (ex: Exception) {
+                Log.e("Rownd.Auth", "Failed to refresh legacy Rownd token during migration", ex)
+                stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState()))
+                return
+            }
+        }
+
+        migrateLegacyAccessToken(context, legacyAccessToken, retry = true)
+    }
+
+    private suspend fun migrateLegacyAccessToken(context: Context, legacyAccessToken: String, retry: Boolean) {
+        try {
+            val response = postLegacyMigration(legacyAccessToken)
+            when (response.status) {
+                HttpStatusCode.OK -> {
+                    val accessToken = response.headers["st-access-token"]
+                    val refreshToken = response.headers["st-refresh-token"]
+                    val frontToken = response.headers["front-token"]
+                    if (accessToken.isNullOrEmpty() || refreshToken.isNullOrEmpty() || frontToken.isNullOrEmpty()) {
+                        throw RowndException("Migration response missing SuperTokens session headers")
+                    }
+
+                    SuperTokensSessionBridge.bootstrapSession(context, accessToken, refreshToken, frontToken)
+                    SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(context, stateRepo.getStore())
+                }
+                HttpStatusCode.Conflict -> {
+                    SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(context, stateRepo.getStore())
+                }
+                HttpStatusCode.Unauthorized -> {
+                    stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState()))
+                }
+                else -> throw RowndException("Legacy session migration failed with HTTP ${response.status.value}")
+            }
+        } catch (ex: ClientRequestException) {
+            if (ex.response.status == HttpStatusCode.Unauthorized) {
+                stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState()))
+                return
+            }
+            if (ex.response.status == HttpStatusCode.Conflict) {
+                SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(context, stateRepo.getStore())
+                return
+            }
+            throw ex
+        } catch (ex: Exception) {
+            if (retry) {
+                migrateLegacyAccessToken(context, legacyAccessToken, retry = false)
+            } else {
+                Log.e("Rownd.Auth", "Legacy session migration failed", ex)
+            }
+        }
+    }
+
+    private suspend fun postLegacyMigration(legacyAccessToken: String): HttpResponse {
+        val st = stateRepo.state.value.appConfig.config.supertokens
+        val apiDomain = st.appInfo.apiDomain
+        val apiBasePath = st.appInfo.apiBasePath ?: "/auth"
+
+        return authenticatedApiClient.client.post("$apiDomain$apiBasePath/plugin/rownd/migrate") {
+            expectSuccess = false
+            headers {
+                remove("x-rownd-app-key")
+                append(HttpHeaders.Authorization, "Bearer $legacyAccessToken")
+                append("rid", "session")
+                append("fdi-version", "1.18")
+                append("st-auth-mode", "header")
+            }
+        }
+    }
+
+    internal suspend fun exchangeGoogleIdToken(
+        idToken: String,
+        intent: RowndSignInIntent?,
+        context: Context = rowndContext.client?.appHandleWrapper?.app?.get()?.applicationContext
+            ?: throw RowndException("No application context available"),
+    ): SignInUpResponse {
+        val st = stateRepo.state.value.appConfig.config.supertokens
+        val apiDomain = st.appInfo.apiDomain
+        val apiBasePath = st.appInfo.apiBasePath ?: "/auth"
+
+        val response = authenticatedApiClient.client.post("$apiDomain$apiBasePath/signinup") {
+            setBody(GoogleSignInUpBody(
+                thirdPartyId = "google",
+                oAuthTokens = mapOf("id_token" to idToken),
+            ))
+        }.body<SignInUpResponse>()
+
+        SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(context, stateRepo.getStore())
+        signInRepo.setLastSignInMethod("google")
+
+        return response
     }
 
     fun signOutUser() {
-        val appId = stateRepo.getStore().currentState.appConfig.id
         val signOutRequest = SignOutRequestBody(
             signOutAll = true
         )
-        signOutUserAsync(appId, signOutRequest)
-    }
-
-    @Serializable
-    internal enum class AccessTokenType {
-        @SerialName("default")
-        default,
-        @SerialName("google")
-        google,
+        signOutUserAsync(signOutRequest)
     }
 
     @Synchronized
     @Throws(RowndException::class)
-    internal fun signOutUserAsync(appId: String, signOutRequest: SignOutRequestBody): Deferred<SignOutResponse?>{
+    internal fun signOutUserAsync(signOutRequest: SignOutRequestBody): Deferred<SignOutResponse?>{
         return CoroutineScope(Dispatchers.IO).async {
             try {
-                signOutUser(appId, signOutRequest)
+                signOutUser(signOutRequest)
                 Rownd.signOut()
                 return@async null
             } catch(ex: Exception) {
                 Log.e("Rownd.Auth", "Failed to sign out user from all sessions:", ex)
                 throw RowndException("Failed to sign out user from all sessions: ${ex.message}")
-            }
-        }
-    }
-
-    @Synchronized
-    internal fun refreshTokenAsync(): Deferred<Auth?> {
-        if (refreshTokenJob is Deferred<Auth?>) {
-            return refreshTokenJob as Deferred<Auth?>
-        }
-
-        refreshTokenJob = CoroutineScope(Dispatchers.IO).async {
-            Log.d("Rownd.Auth", "Refreshing tokens: in progress")
-            val span = rowndContext.telemetry?.startSpan("refreshTokenAsync")
-            val refreshToken = stateRepo.state.value.auth.refreshToken ?: throw NoRefreshTokenPresentException("No refresh token was available")
-            val jwt = JWT(refreshToken)
-
-            try {
-                val authState: Auth = tokenApiClient.client.post("/hub/auth/token") {
-                    setBody(
-                        TokenRequestBody(
-                            refreshToken = refreshToken
-                        )
-                    )
-                }.body()
-
-                stateRepo.getStore().dispatch(StateAction.SetAuth(authState.asDomainModel()))
-
-                Log.d("Rownd.Auth", "Refreshing tokens: complete")
-                span?.setStatus(StatusCode.OK)
-                refreshTokenJob = null
-                return@async authState
-            } catch (ex: ClientRequestException) {
-                span?.recordException(ex)
-                span?.setStatus(StatusCode.ERROR, ex.message)
-                span?.setAttribute("http_status_code", ex.response.status.value.toString())
-                jwt.id?.let { span?.setAttribute("jti", it) }
-                jwt.subject?.let { span?.setAttribute("subject", it) }
-
-                if (ex.response.status != HttpStatusCode.BadRequest) {
-                    throw ServerException(ex.message)
-                }
-
-                Log.e(
-                    "Rownd.AuthRepo",
-                    "Failed to refresh tokens, likely because it has already been consumed:",
-                    ex
-                )
-                refreshTokenJob = null
-
-                // Sign out on HTTP 400s
-                stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState()))
-                stateRepo.getStore().dispatch(StateAction.SetUser(User()))
-
-                span?.addEvent("Permanent: Refresh token failure. User was signed out.")
-                span?.setAttribute("error", "invalid_refresh_token")
-                throw InvalidRefreshTokenException(ex.message)
-            } catch (ex: ServerResponseException) {
-                span?.recordException(ex)
-                span?.setStatus(StatusCode.ERROR, ex.message)
-                span?.setAttribute("http_status_code", ex.response.status.value.toString())
-                jwt.id?.let { span?.setAttribute("jti", it) }
-                jwt.subject?.let { span?.setAttribute("subject", it) }
-
-                throw ServerException(ex.message)
-            } catch (ex: Exception) {
-                refreshTokenJob = null
-                Log.e("Rownd.AuthRepo", "Failed to refresh tokens:", ex)
-                span?.recordException(ex)
-                span?.setStatus(StatusCode.ERROR, ex.message ?: "An unknown refresh token error occurred.")
-                jwt.id?.let { span?.setAttribute("jti", it) }
-                jwt.subject?.let { span?.setAttribute("subject", it) }
-
-                throw NetworkConnectionFailureException(ex.message ?: "An unknown refresh token error occurred.")
-            } finally {
-                span?.end()
-            }
-        }
-
-        return refreshTokenJob as Deferred<Auth?>
-    }
-
-    @Synchronized
-    internal fun fetchTokenAsync(tokenRequest: TokenRequestBody, intent: RowndSignInIntent?, type: AccessTokenType): Deferred<TokenResponse?> {
-        return CoroutineScope(Dispatchers.IO).async {
-            try {
-                val tokenResponse = exchangeToken(tokenRequest)
-
-                if (type != AccessTokenType.default) {
-                    if (tokenResponse.userType === RowndSignInUserType.NewUser && intent === RowndSignInIntent.SignIn) {
-                        Rownd.requestSignIn(
-                            RowndSignInJsOptions(
-                                intent = intent,
-                                loginStep = RowndSignInLoginStep.NoAccount,
-                                token = tokenRequest.idToken
-                            )
-                        )
-                        return@async null
-                    }
-                    Rownd.requestSignIn(
-                        RowndSignInJsOptions(
-                            intent = intent,
-                            loginStep = RowndSignInLoginStep.Success,
-                            userType = tokenResponse.userType,
-                            appVariantUserType = tokenResponse.appVariantUserType
-                        )
-                    )
-                }
-
-                if (type === AccessTokenType.google) {
-                    signInRepo.setLastSignInMethod("google")
-                }
-
-                stateRepo.getStore().dispatch(
-                    StateAction.SetAuth(
-                        AuthState(
-                            accessToken = tokenResponse.accessToken,
-                            refreshToken = tokenResponse.refreshToken
-                        )
-                    )
-                )
-                userRepo?.loadUserAsync()
-                return@async tokenResponse
-            } catch (ex: ClientRequestException) {
-                Log.e("RowndAuthApi", "Fetching token failed: ${ex.message}")
-                if (ex.response.status == HttpStatusCode.BadRequest) {
-                    // The token refresh failed, so we need to sign-out
-                    Rownd.signOut()
-                    throw InvalidRefreshTokenException(ex.message)
-                }
-
-                throw ServerException(ex.message)
-                return@async null
-            } catch (ex: ServerResponseException) {
-                throw ServerException(ex.message)
-                return@async null
-            } catch (ex: Exception) {
-                return@async null
             }
         }
     }
@@ -284,15 +229,30 @@ class AuthRepo @Inject constructor() {
         return currentDateWithMargin.after(jwt.expiresAt)
     }
 
-    suspend fun exchangeToken(requestBody: TokenRequestBody) : TokenResponse {
-        return tokenApiClient.client.post("hub/auth/token") {
+    private fun isLikelySuperTokensToken(token: String): Boolean {
+        return runCatching {
+            val jwt = JWT(token)
+            jwt.getClaim("sessionHandle").asString() != null ||
+                jwt.getClaim("tId").asString() != null ||
+                jwt.getClaim("refreshTokenHash1").asString() != null ||
+                jwt.getClaim("parentRefreshTokenHash1").asString() != null
+        }.getOrDefault(false)
+    }
+
+    suspend fun signOutUser(requestBody: SignOutRequestBody) : SignOutResponse {
+        val st = stateRepo.state.value.appConfig.config.supertokens
+        val apiDomain = st.appInfo.apiDomain
+        val apiBasePath = st.appInfo.apiBasePath ?: "/auth"
+
+        return authenticatedApiClient.client.post("$apiDomain$apiBasePath/plugin/rownd/signout") {
+            headers { remove("x-rownd-app-key") }
             setBody(requestBody)
         }.body()
     }
 
-    suspend fun signOutUser(appId: String, requestBody: SignOutRequestBody) : SignOutResponse {
-        return authenticatedApiClient.client.post("me/applications/$appId/signout") {
-            setBody(requestBody)
-        }.body()
-    }
+    @Serializable
+    private data class GoogleSignInUpBody(
+        val thirdPartyId: String,
+        val oAuthTokens: Map<String, String>,
+    )
 }

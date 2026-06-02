@@ -7,8 +7,8 @@ import io.rownd.android.models.repos.SignInRepo
 import io.rownd.android.models.repos.StateRepo
 import io.rownd.android.models.repos.UserRepo
 import io.rownd.android.util.AuthenticatedApiClient
+import io.rownd.android.util.LegacyTokenApiClient
 import io.rownd.android.util.RowndContext
-import io.rownd.android.util.TokenApiClient
 
 @Module
 class AuthRepoModule {
@@ -17,7 +17,7 @@ class AuthRepoModule {
         stateRepo: StateRepo,
         userRepo: UserRepo,
         signInRepo: SignInRepo,
-        tokenApiClient: TokenApiClient,
+        legacyTokenApiClient: LegacyTokenApiClient,
         authenticatedApiClient: AuthenticatedApiClient
     ): AuthRepo {
         val authRepo = AuthRepo()
@@ -25,7 +25,7 @@ class AuthRepoModule {
         authRepo.stateRepo = stateRepo
         authRepo.userRepo = userRepo
         authRepo.signInRepo = signInRepo
-        authRepo.tokenApiClient = tokenApiClient
+        authRepo.legacyTokenApiClient = legacyTokenApiClient
         authRepo.authenticatedApiClient = authenticatedApiClient
         return authRepo
     }

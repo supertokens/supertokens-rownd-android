@@ -25,11 +25,11 @@ import io.rownd.android.util.KtorApiClient
 import io.rownd.android.util.RowndContext
 import io.rownd.android.util.RowndEvent
 import io.rownd.android.util.RowndEventType
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import io.rownd.android.views.HubPageSelector
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonPrimitive
+import java.net.URI
 import javax.inject.Inject
 
 @Serializable
@@ -52,6 +52,8 @@ data class SignInAuthenticationResponse(
 )
 
 class SignInLinkApi @Inject constructor() {
+    private var lastHandledDeepLink: String? = null
+
     @Inject
     lateinit var userRepo: UserRepo
 
@@ -103,8 +105,8 @@ class SignInLinkApi @Inject constructor() {
                 RowndEvent(
                     event = RowndEventType.SignInCompleted,
                     data = mapOf(
-                        "method" to RowndSignInType.SignInLink.value,
-                        "user_type" to RowndSignInUserType.ExistingUser.value,
+                        "method" to JsonPrimitive(RowndSignInType.SignInLink.value),
+                        "user_type" to JsonPrimitive(RowndSignInUserType.ExistingUser.value),
                     )
                 )
             )
@@ -120,10 +122,8 @@ class SignInLinkApi @Inject constructor() {
             return
         }
 
-        val action: String? = ctx.intent?.action
-
-        if (action == ACTION_VIEW && isRowndSignInLink(ctx.intent?.data)) {
-            dispatchSignInWithLink(ctx.intent?.data)
+        if (openDeepLinkIfPresentOnIntent(ctx)) {
+            return
         } else if (config.enableSmartLinkPasteBehavior) {
             if (ctx.hasWindowFocus()) {
                 // Look on the clipboard
@@ -137,6 +137,17 @@ class SignInLinkApi @Inject constructor() {
         }
     }
 
+    internal fun openDeepLinkIfPresentOnIntent(ctx: Activity): Boolean {
+        val action: String? = ctx.intent?.action
+        val uri = ctx.intent?.data
+
+        if (action != ACTION_VIEW || !isConfiguredDeepLink(uri)) {
+            return false
+        }
+
+        return openDeepLink(uri)
+    }
+
     private fun signInWithLinkFromClipboardIfPresent(ctx: Activity) {
         val clipboard = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         if (clipboard.primaryClipDescription?.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) != true) {
@@ -144,26 +155,123 @@ class SignInLinkApi @Inject constructor() {
         }
 
         val clipboardText = clipboard.primaryClip?.getItemAt(0)?.text.toString() ?: return
+        val potentialSignInLink = clipboardText.toUri() ?: return
 
-        if (!clipboardText.contains("rownd.link")) {
+        if (!isSupportedDeepLink(potentialSignInLink)) {
             return
         }
 
-        val potentialSignInLink = clipboardText.toUri() ?: return
-
-        dispatchSignInWithLink(potentialSignInLink)
+        openDeepLink(potentialSignInLink)
         clipboard.setPrimaryClip(ClipData.newPlainText("", ""))
     }
 
-    private fun dispatchSignInWithLink(uri: Uri?) {
-        if (isRowndSignInLink(uri)) {
-            CoroutineScope(Dispatchers.IO).launch {
-                signInWithLink(uri.toString())
-            }
+    private fun openDeepLink(uri: Uri?): Boolean {
+        val deepLink = uri?.toString() ?: return false
+        if (deepLink == lastHandledDeepLink) {
+            return true
         }
+
+        val hubUrl = toHubUrl(uri) ?: return false
+        Log.d("Rownd.SignInLink", "Opening deep link in hub: ${uri.path}")
+        lastHandledDeepLink = deepLink
+        config.pendingHubDeepLinkUrl = hubUrl
+        Rownd.displayHub(HubPageSelector.DeepLink)
+        return true
     }
 
-    private fun isRowndSignInLink(uri: Uri?) : Boolean {
-        return uri?.host?.endsWith("rownd.link") == true
+    private fun toHubUrl(uri: Uri?): String? {
+        return toHubUrl(
+            rawUrl = uri?.toString(),
+            deepLinkScheme = config.deepLinkScheme,
+            hubBaseUrl = config.baseUrl,
+        )
+    }
+
+    private fun isConfiguredDeepLink(uri: Uri?) : Boolean {
+        return isSupportedDeepLink(uri)
+    }
+
+    private fun isSupportedDeepLink(uri: Uri?): Boolean {
+        return isSupportedDeepLink(
+            rawUrl = uri?.toString(),
+            deepLinkScheme = config.deepLinkScheme,
+            hubBaseUrl = config.baseUrl,
+        )
+    }
+
+    internal companion object {
+        private val allowedHubDeepLinkPaths = setOf(
+            "/account/login",
+            "/account/verify-email",
+        )
+
+        private val stagingHubHosts = setOf(
+            "staging.supertokens-rownd-hub.pages.dev",
+            "supertokens-rownd-hub.pages.dev",
+        )
+
+        fun isSupportedDeepLink(
+            rawUrl: String?,
+            deepLinkScheme: String,
+            hubBaseUrl: String,
+        ): Boolean {
+            val uri = parseUri(rawUrl) ?: return false
+            return isConfiguredSchemeDeepLink(uri, deepLinkScheme) || isAllowedHubHttpsDeepLink(uri, hubBaseUrl)
+        }
+
+        fun toHubUrl(
+            rawUrl: String?,
+            deepLinkScheme: String,
+            hubBaseUrl: String,
+        ): String? {
+            val uri = parseUri(rawUrl) ?: return null
+            if (!isSupportedDeepLink(rawUrl, deepLinkScheme, hubBaseUrl)) {
+                return null
+            }
+
+            val hubPath = when {
+                isConfiguredSchemeDeepLink(uri, deepLinkScheme) -> {
+                    val host = uri.host?.trim('/') ?: return null
+                    val path = uri.rawPath?.trim('/')
+                    if (path.isNullOrBlank()) "/$host" else "/$host/$path"
+                }
+                isAllowedHubHttpsDeepLink(uri, hubBaseUrl) -> uri.rawPath ?: return null
+                else -> return null
+            }
+
+            if (hubPath !in allowedHubDeepLinkPaths) {
+                return null
+            }
+
+            val baseUri = parseUri(hubBaseUrl) ?: return null
+            return URI(
+                baseUri.scheme,
+                baseUri.authority,
+                hubPath,
+                uri.rawQuery,
+                uri.rawFragment,
+            ).toString()
+        }
+
+        private fun isConfiguredSchemeDeepLink(uri: URI, deepLinkScheme: String): Boolean {
+            return uri.scheme == deepLinkScheme
+        }
+
+        private fun isAllowedHubHttpsDeepLink(uri: URI, hubBaseUrl: String): Boolean {
+            if (uri.scheme != "https") return false
+
+            val host = uri.host ?: return false
+            val configuredHubHost = parseUri(hubBaseUrl)?.host
+
+            return host == configuredHubHost ||
+                host == "rownd-hub.supertokens.com" ||
+                host.endsWith(".rownd-hub.supertokens.com") ||
+                host in stagingHubHosts
+        }
+
+        private fun parseUri(rawUrl: String?): URI? {
+            if (rawUrl.isNullOrBlank()) return null
+            return runCatching { URI(rawUrl) }.getOrNull()
+        }
     }
 }

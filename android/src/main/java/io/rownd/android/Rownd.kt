@@ -17,14 +17,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStoreOwner
 import com.lyft.kronos.AndroidClockFactory
-import io.ktor.client.plugins.auth.authProviders
-import io.ktor.client.plugins.auth.providers.BearerAuthProvider
 import io.rownd.android.di.component.DaggerRowndGraph
 import io.rownd.android.di.component.RowndGraph
-import io.rownd.android.models.AuthenticatorType
-import io.rownd.android.models.RowndAuthenticatorRegistrationOptions
 import io.rownd.android.models.Store
 import io.rownd.android.models.domain.AuthState
+import io.rownd.android.models.domain.SuperTokensAppInfo
+import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.domain.User
 import io.rownd.android.models.network.SignInLinkApi
 import io.rownd.android.models.repos.AuthRepo
@@ -35,6 +33,7 @@ import io.rownd.android.models.repos.StateRepo
 import io.rownd.android.models.repos.UserRepo
 import io.rownd.android.util.AppLifecycleListener
 import io.rownd.android.util.InvalidRefreshTokenException
+import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.NoAccessTokenPresentException
 import io.rownd.android.util.NoRefreshTokenPresentException
 import io.rownd.android.util.RowndEvent
@@ -48,6 +47,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
@@ -55,6 +55,14 @@ import kotlinx.serialization.json.Json
 
 // The default Rownd instance
 val Rownd = RowndClient(DaggerRowndGraph.create())
+
+data class RowndConfigureOptions(
+    val appKey: String,
+    val apiDomain: String,
+    val apiBasePath: String = "/auth",
+    val hubUrl: String? = null,
+    val deepLinkScheme: String = "rowndsupertokens",
+)
 
 class RowndClient(
     graph: RowndGraph,
@@ -71,8 +79,6 @@ class RowndClient(
     internal var signInRepo: SignInRepo = graph.signInRepo()
     internal var signInLinkApi: SignInLinkApi = graph.signInLinkApi()
     internal var rowndContext = graph.rowndContext()
-    internal var passkeyAuthenticator = graph.passkeyAuthenticator()
-    internal var connectionAction = graph.connectionAction()
     internal var eventEmitter = graph.rowndEventEmitter()
     internal var signInWithGoogle = graph.signInWithGoogle()
     internal var telemetry = graph.telemetry()
@@ -93,7 +99,7 @@ class RowndClient(
         stateRepo.authRepo = authRepo
     }
 
-    private fun configure(appKey: String) {
+    private fun configure(options: RowndConfigureOptions) {
         telemetry.init()
 
         val appContext = appHandleWrapper?.app?.get()!!.applicationContext
@@ -105,9 +111,27 @@ class RowndClient(
         )
         rowndContext.kronosClock?.syncInBackground()
 
-        config.appKey = appKey
+        val apiDomain = options.apiDomain.trimEnd('/')
+        val apiBasePath = options.apiBasePath.let { if (it.startsWith('/')) it else "/$it" }.trimEnd('/')
+
+        require(apiDomain.isNotBlank()) { "apiDomain is required" }
+
+        config.appKey = options.appKey
+        config.apiUrl = apiDomain
+        config.apiBasePath = apiBasePath
+        config.deepLinkScheme = options.deepLinkScheme.trimEnd(':')
+        config.applicationContext = appContext
+        config.supertokens = SuperTokensConfig(
+            appInfo = SuperTokensAppInfo(
+                apiDomain = apiDomain,
+                apiBasePath = apiBasePath,
+            )
+        )
+        options.hubUrl?.trimEnd('/')?.let { config.baseUrl = it }
 
         store = stateRepo.setup(StateRepo.defaultDataStore(appContext))
+
+        SuperTokensSessionBridge.observeAndInitialize(appContext, stateRepo, config.enableDebugMode)
 
         // Clear webview cache on startup
         Handler(Looper.getMainLooper()).post {
@@ -145,19 +169,28 @@ class RowndClient(
             signInLinkApi.signInWithLinkIfPresentOnIntentOrClipboard(it)
         }
 
+        appHandleWrapper?.registerActivityListener(
+            states = persistentListOf(
+                Lifecycle.State.RESUMED
+            ),
+            immediate = true,
+        ) {
+            signInLinkApi.openDeepLinkIfPresentOnIntent(it)
+        }
+
         // Show the Google One Tap UI if applicable
         signInWithGoogle.showOneTapIfApplicable()
     }
 
-    fun configure(app: Application, appKey: String) {
+    fun configure(app: Application, options: RowndConfigureOptions) {
         _registerActivityLifecycle(app)
-        configure(appKey)
+        configure(options)
     }
 
     // Used by Flutter and React Native SDKs Don't make it private!
-    fun configure(activity: FragmentActivity, appKey: String) {
+    fun configure(activity: FragmentActivity, options: RowndConfigureOptions) {
         _registerActivityLifecycle(activity)
-        configure(appKey)
+        configure(options)
     }
 
     // Mainly for use by other Rownd SDKs (like Flutter)
@@ -229,11 +262,6 @@ class RowndClient(
         when (with) {
             RowndSignInHint.Google -> signInWithGoogle.signIn(intent = signInOptions.intent)
             RowndSignInHint.OneTap -> signInWithGoogle.showGoogleOneTap()
-            RowndSignInHint.Passkey -> {
-                appHandleWrapper?.activity?.get()
-                    ?.let { passkeyAuthenticator.authentication.authenticate(it) }
-            }
-
             RowndSignInHint.Guest -> {
                 displayHub(
                     HubPageSelector.SignIn,
@@ -248,25 +276,10 @@ class RowndClient(
         displayHub(HubPageSelector.SignIn, RowndSignInOptions())
     }
 
-    inner class auth {
-        @Suppress("unused")
-        inner class passkeys {
-            fun register() {
-                displayHub(
-                    targetPage = HubPageSelector.ConnectAuthenticator,
-                    jsFnOptions = RowndAuthenticatorRegistrationOptions(type = AuthenticatorType.Passkey)
-                )
-            }
-
-            fun authenticate() {
-                appHandleWrapper?.activity?.get()?.let { passkeyAuthenticator.authentication.authenticate(it) }
-            }
-        }
-    }
-
     fun signOut(scope: RowndSignOutScope) {
         when (scope) {
-            RowndSignOutScope.all ->  authRepo.signOutUser()
+            RowndSignOutScope.Local -> signOut()
+            RowndSignOutScope.All -> authRepo.signOutUser()
         }
     }
 
@@ -275,9 +288,29 @@ class RowndClient(
         store.dispatch(StateAction.SetAuth(AuthState()))
         store.dispatch(StateAction.SetUser(User()))
 
-        // Remove any cached access/refresh tokens in authenticatedApi client
-        userRepo.authenticatedApiClient.client.authProviders.filterIsInstance<BearerAuthProvider>()
-            .firstOrNull()?.clearToken()
+        appHandleWrapper?.app?.get()?.applicationContext?.let { context ->
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        SuperTokensSessionBridge.signOut(context)
+                    } catch (ex: Exception) {
+                        Log.e("Rownd", "Failed to sign out of SuperTokens session", ex)
+                    } finally {
+                        SuperTokensSessionBridge.clearLocalSession(context)
+                    }
+                }
+            } else {
+                runBlocking {
+                    try {
+                        SuperTokensSessionBridge.signOut(context)
+                    } catch (ex: Exception) {
+                        Log.e("Rownd", "Failed to sign out of SuperTokens session", ex)
+                    } finally {
+                        SuperTokensSessionBridge.clearLocalSession(context)
+                    }
+                }
+            }
+        }
 
         val googleSignInMethodConfig =
             state.value.appConfig.config.hub.auth.signInMethods.google
@@ -288,19 +321,6 @@ class RowndClient(
 
     fun manageAccount() {
         displayHub(HubPageSelector.ManageAccount)
-    }
-
-    fun connectAuthenticator(with: RowndConnectAuthenticatorHint) {
-        displayHub(
-            targetPage = HubPageSelector.ConnectAuthenticator,
-            jsFnOptions = RowndAuthenticatorRegistrationOptions()
-        )
-    }
-
-    inner class Firebase {
-        fun getIdToken(): Deferred<String?> {
-            return connectionAction.getFirebaseIdToken()
-        }
     }
 
     @Suppress("unused")
@@ -355,17 +375,11 @@ class RowndClient(
             ?: throw NoAccessTokenPresentException("No access token was available. The user is likely not signed in.")
     }
 
-    @Throws(RowndException::class)
-    suspend fun getAccessToken(idToken: String): String? {
-        return authRepo.getAccessToken(idToken)?.accessToken
-    }
-
     suspend fun _refreshToken(): String? {
-        return try {
-            val result = authRepo.refreshTokenAsync().await()
-            result?.accessToken
-        } catch (ex: RowndException) {
-            Log.d("Rownd.testing", "Refresh token flow failed: ${ex.message}")
+        val context = appHandleWrapper?.app?.get()?.applicationContext ?: return null
+        return if (SuperTokensSessionBridge.attemptRefresh(context)) {
+            SuperTokensSessionBridge.getAccessToken(context)
+        } else {
             null
         }
     }
@@ -490,12 +504,7 @@ internal data class RowndSignInJsOptions(
 enum class RowndSignInHint {
     Google,
     OneTap,
-    Passkey,
     Guest,
-}
-
-enum class RowndConnectAuthenticatorHint {
-    Passkey,
 }
 
 @Serializable
@@ -521,9 +530,6 @@ enum class RowndSignInUserType(var value: String) {
 
 @Serializable
 enum class RowndSignInType(var value: String) {
-    @SerialName("passkey")
-    Passkey("passkey"),
-
     @SerialName("anonymous")
     Anonymous("anonymous"),
 
@@ -562,5 +568,14 @@ enum class RowndSignInLoginStep {
 }
 
 enum class RowndSignOutScope {
-    all
+    @SerialName("local")
+    Local,
+
+    @SerialName("all")
+    All;
+
+    companion object {
+        @Deprecated("Use RowndSignOutScope.All instead.")
+        val all = All
+    }
 }

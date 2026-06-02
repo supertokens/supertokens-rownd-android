@@ -23,12 +23,15 @@ class SignInLinksInstrumentedTest {
 
     @Test
     fun parseVariousUris() {
-        val httpUri = Uri.parse("http://test.rownd.link/foo")
-        val httpsUri = Uri.parse("https://test.rownd.link/bar")
-        val noSchemeUri = Uri.parse("test.rownd.link/baz")
+        val passwordlessUri = Uri.parse("rowndsupertokens://account/login?preAuthSessionId=pid#abc")
+        val emailVerificationUri = Uri.parse("rowndsupertokens://account/verify-email?token=token_123")
 
-        assertEquals("http", httpUri.scheme)
-        assertEquals("https", httpsUri.scheme)
-        assertEquals(null, noSchemeUri.scheme)
+        assertEquals("rowndsupertokens", passwordlessUri.scheme)
+        assertEquals("account", passwordlessUri.host)
+        assertEquals("/login", passwordlessUri.path)
+        assertEquals("abc", passwordlessUri.fragment)
+        assertEquals("rowndsupertokens", emailVerificationUri.scheme)
+        assertEquals("account", emailVerificationUri.host)
+        assertEquals("/verify-email", emailVerificationUri.path)
     }
 }

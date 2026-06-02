@@ -51,6 +51,19 @@ data class TokenResponse internal constructor(
 )
 
 @Serializable
+data class SignInUpResponse(
+    val status: String,
+    val rownd: RowndSignInUpMeta? = null,
+)
+
+@Serializable
+data class RowndSignInUpMeta(
+    @SerialName("user_type") val userType: RowndSignInUserType? = null,
+    @SerialName("app_id") val appId: String? = null,
+    @SerialName("app_user_id") val appUserId: String? = null,
+)
+
+@Serializable
 data class SignOutRequestBody internal constructor(
     @SerialName("sign_out_all")
     val signOutAll: Boolean
