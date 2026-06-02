@@ -119,11 +119,17 @@ afterEvaluate {
     }
 }
 
-signing {
-    useInMemoryPgpKeys(
-            rootProject.ext["signing.keyId"],
-            rootProject.ext["signing.key"],
-            rootProject.ext["signing.password"],
-    )
-    sign publishing.publications
+def hasSigningCredentials = rootProject.ext["signing.keyId"] &&
+        rootProject.ext["signing.key"] &&
+        rootProject.ext["signing.password"]
+
+if (hasSigningCredentials) {
+    signing {
+        useInMemoryPgpKeys(
+                rootProject.ext["signing.keyId"],
+                rootProject.ext["signing.key"],
+                rootProject.ext["signing.password"],
+        )
+        sign publishing.publications
+    }
 }
