@@ -31,7 +31,7 @@ data class RowndConfig(
     var defaultRequestTimeout: Long = 15000L,
     var defaultNumApiRetries: Int = 5,
     @Transient
-    var subdomainExtension: String = ".rownd.link",
+    var subdomainExtension: String = ".rownd-hub.supertokens.com",
     @Transient
     var forceInstantUserConversion: Boolean = false,
     @Transient

@@ -8,13 +8,49 @@ Once a user is authenticated, you can retrieve and update their profile informat
 
 ## Installation
 
-In Android Studio, open your app's module-level `build.gradle` file and add the following dependency:
+The SuperTokens Rownd Android SDK is published through JitPack. Add JitPack to your dependency repositories:
 
-```
-implementation 'io.rownd:android:4.1.1'
+```gradle
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url "https://jitpack.io" }
+    }
+}
 ```
 
-After adding, run a Gradle sync and the Rownd SDK/API should be available within your IDE.
+In your app module's `build.gradle`, add the SDK dependency:
+
+```gradle
+dependencies {
+    implementation 'com.github.supertokens:supertokens-rownd-android:v0.0.1-beta.4'
+}
+```
+
+The SDK requires AndroidX and `minSdk 26` or newer. The example app uses Java 17 and Kotlin JVM target 17:
+
+```properties
+android.useAndroidX=true
+```
+
+```gradle
+android {
+    defaultConfig {
+        minSdk 26
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+```
 
 ### ProGuard config
 
@@ -61,30 +97,138 @@ If you're using ProGuard to shrink, obfuscate, and/or optimize your app ([and yo
 
 ## Usage
 
-### Initializing the Rownd SDK
+### 1. Add SDK configuration values
+
+The SDK needs your Rownd app key, your SuperTokens API origin, the SuperTokens API base path, the Rownd Hub URL, and a deep link scheme. The example app provides them through `BuildConfig` fields:
+
+```gradle
+android {
+    defaultConfig {
+        manifestPlaceholders = [rowndDeepLinkScheme: "rowndsupertokens"]
+
+        buildConfigField "String", "ROWND_APP_KEY", '"<YOUR_APP_KEY>"'
+        buildConfigField "String", "ROWND_API_DOMAIN", '"<YOUR_API_DOMAIN>"'
+        buildConfigField "String", "ROWND_API_BASE_PATH", '"<YOUR_API_BASE_PATH>"'
+    }
+}
+```
+
+Use the values for your app:
+
+- `ROWND_APP_KEY` - Your Rownd app key.
+- `ROWND_API_DOMAIN` - The origin for your backend that exposes the SuperTokens APIs.
+- `ROWND_API_BASE_PATH` - The SuperTokens API base path. This is usually `/auth`.
+
+### 2. Configure deep links
+
+Add an HTTPS filter to match links used for magic link authentication and email verification.
+
+```xml
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+
+    <data
+        android:scheme="https"
+        android:host="{subdomain}.rownd-hub.supertokens.com" />
+</intent-filter>
+```
+
+Use your production Hub host when configuring a production app.
+
+### 3. Initialize the Rownd SDK
 
 The Rownd SDK needs access to your application's and current activity's context in order to properly manage state, display UI components, and so on.
 
 The most straightforward way of doing this is to subclass the Android `Application` class and pass the app's primary context.
 
-To initialize Rownd, call the configure method like this:
+Configure Rownd in `Application.onCreate()`:
 
 ```kotlin
-Rownd.configure(application, "REPLACE_WITH_YOUR_APP_KEY")
-```
+import android.app.Application
+import io.rownd.android.Rownd
+import io.rownd.android.RowndConfigureOptions
 
-Here's an example of what that might look like in the initial `Application` class:
-
-```kotlin
 class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        Rownd.configure(this, "REPLACE_WITH_YOUR_APP_KEY")
+
+        Rownd.config.enableDebugMode = BuildConfig.DEBUG
+        Rownd.configure(
+            this,
+            RowndConfigureOptions(
+                appKey = BuildConfig.ROWND_APP_KEY,
+                apiDomain = BuildConfig.ROWND_API_DOMAIN,
+                apiBasePath = BuildConfig.ROWND_API_BASE_PATH,
+            )
+        )
     }
 }
 ```
 
-After initialization, your app should typically call `Rownd.requestSignIn()` at some point, if the user is not already authenticated. This will display the Rownd interface for authenticating the user. Once they complete the sign-in process, an access token and the user's profile information will be available to your app.
+Register your `Application` class in `AndroidManifest.xml`:
+
+```xml
+<application
+    android:name=".MyApplication"
+    ...>
+</application>
+```
+
+`Rownd.configure(...)` automatically initializes the SuperTokens session integration once the Rownd app config has loaded. You do not need to manually initialize SuperTokens for the Rownd session bridge.
+
+### 4. Request sign in
+
+After initialization, call `Rownd.requestSignIn(...)` when the user should authenticate. This displays the Rownd interface and, after a successful sign-in, stores the Rownd auth state and bootstraps the SuperTokens session.
+
+```kotlin
+Rownd.requestSignIn(RowndSignInOptions())
+```
+
+You can also request a specific sign-in method when it is enabled for your Rownd app:
+
+```kotlin
+Rownd.requestSignIn(RowndSignInHint.OneTap)
+Rownd.requestSignIn(RowndSignInHint.Guest)
+```
+
+### 5. Call protected APIs
+
+Rownd manages the SuperTokens session automatically after sign-in. The SDK cannot attach SuperTokens headers to arbitrary HTTP clients your app creates, so protected backend calls still need a SuperTokens-aware client.
+
+For `OkHttp`, add `SuperTokensInterceptor` to the client that calls protected APIs:
+
+```kotlin
+import com.supertokens.session.SuperTokensInterceptor
+import okhttp3.OkHttpClient
+
+val client = OkHttpClient.Builder()
+    .addInterceptor(SuperTokensInterceptor())
+    .build()
+```
+
+Use `Rownd.getAccessToken()` when you need the current access token directly:
+
+```kotlin
+val accessToken = Rownd.getAccessToken()
+```
+
+You can explicitly inspect or refresh the SuperTokens session through `SuperTokensSessionBridge` when needed for diagnostics or test flows:
+
+```kotlin
+val sessionExists = SuperTokensSessionBridge.doesSessionExist(applicationContext)
+val refreshed = SuperTokensSessionBridge.attemptRefresh(applicationContext)
+```
+
+### Example app
+
+See `repositories/examples/supertokens-rownd-android-sandboxx` for a standalone Android app that follows these steps. From that folder, run:
+
+```bash
+./gradlew :app:assembleLocalDebug
+```
 
 ### Handling authentication
 
@@ -209,13 +353,13 @@ While most customizations are handled via the [Rownd dashboard](https://app.rown
 
 The `RowndCustomizations` class exists to facilitate these customizations. It provides the following properties that may be subclassed or overridden.
 
-* `sheetBackgroundColor: Color?` (default: `null`) - Allows setting a single color for Rownd-provided bottom sheet interfaces regardless of system theme. Use this or `dynamicSheetBackgroundColor`, but not both.
+- `sheetBackgroundColor: Color?` (default: `null`) - Allows setting a single color for Rownd-provided bottom sheet interfaces regardless of system theme. Use this or `dynamicSheetBackgroundColor`, but not both.
 
-* `dynamicSheetBackgroundColor: Color` (default: `light: #ffffff`, `dark: #1c1c1e`; requires subclassing) - Allows changing the background color underlying the bottom sheet that appears when signing in, managing the user account, etc. Based on the system color scheme.
+- `dynamicSheetBackgroundColor: Color` (default: `light: #ffffff`, `dark: #1c1c1e`; requires subclassing) - Allows changing the background color underlying the bottom sheet that appears when signing in, managing the user account, etc. Based on the system color scheme.
 
-* `sheetCornerBorderRadius: Dp` (default: `25.dp`) - Modifies the curvature radius of the bottom sheet's top corners.
+- `sheetCornerBorderRadius: Dp` (default: `25.dp`) - Modifies the curvature radius of the bottom sheet's top corners.
 
-* `loadingAnimation: Int` (default: null) - Replace Rownd's use of the system default loading spinner (i.e., `ProgressBar`) with a custom animation. Any animation resource compatible with [Lottie](https://airbnb.design/lottie/) should work, but will be scaled to fit a 1:1 aspect ratio (usually with a frame width/height of `100 Dp`) This should be a value like `R.raw.my_animation`
+- `loadingAnimation: Int` (default: null) - Replace Rownd's use of the system default loading spinner (i.e., `ProgressBar`) with a custom animation. Any animation resource compatible with [Lottie](https://airbnb.design/lottie/) should work, but will be scaled to fit a 1:1 aspect ratio (usually with a frame width/height of `100 Dp`) This should be a value like `R.raw.my_animation`
 
 To apply customizations, we recommend subclassing the `RowndCustomizations` class. Here's an example:
 
@@ -250,16 +394,24 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.rownd.android.Rownd
+import io.rownd.android.RowndConfigureOptions
 import io.rownd.android.models.RowndCustomizations
 
 class MyApplication: Application() {
-
     override fun onCreate() {
         super.onCreate()
 
-        Rownd.configure(this, "b60bc454-c45f-47a2-8f8a-12b2062f5a77")
         Rownd.config.customizations = AppCustomizations(this)
-
+        Rownd.configure(
+            this,
+            RowndConfigureOptions(
+                appKey = BuildConfig.ROWND_APP_KEY,
+                apiDomain = BuildConfig.ROWND_API_DOMAIN,
+                apiBasePath = BuildConfig.ROWND_API_BASE_PATH,
+                hubUrl = BuildConfig.ROWND_HUB_URL,
+                deepLinkScheme = BuildConfig.ROWND_DEEP_LINK_SCHEME,
+            )
+        )
     }
 }
 ```
@@ -272,38 +424,36 @@ In addition to the StateFlow APIs, Rownd provides imperative APIs that you can c
 
 Opens the Rownd sign-in dialog for authentication.
 
-### Rownd.requestSignIn(with = RowndSignInHint)
+### Rownd.requestSignIn(RowndSignInHint): Unit
 
-Initiates a sign-in using the method specified by the `with` argument, bypassing the authentication method selector. For example, this could be used to steer a new user toward a specific sign-in method.
+Initiates a sign-in using the specified hint, bypassing the authentication method selector. For example, this could be used to steer a new user toward a specific sign-in method.
 
 Supported options:
 
-* `RowndSignInHint.Google` - Prompt user to sign in with their Google account
+- `RowndSignInHint.Google` - Prompt user to sign in with their Google account
 
-* `RowndSignInHint.OneTap` - Prompt user to sign into their account with Google One Tap
+- `RowndSignInHint.OneTap` - Prompt user to sign into their account with Google One Tap
 
-* `RowndSignInHint.Passkey` - Prompt user to sign in with a passkey if they've previously set one up
-
-* `RowndSignInHint.Guest` - Sign in the user anonymously as a guest.
+- `RowndSignInHint.Guest` - Sign in the user anonymously as a guest.
 
 Example:
 
 ```kotlin
-Rownd.requestSignIn(with = RowndSignInHint.Google)
+Rownd.requestSignIn(RowndSignInHint.Google)
 ```
 
-### Rownd.requestSignIn(RowndSignInOpts(...)): Unit
+### Rownd.requestSignIn(RowndSignInOptions(...)): Unit
 
 Opens the Rownd sign-in dialog for authentication, as before, but allows passing additional context options as shown below.
 
-* `intent: RowndSignInIntent` - This option applies only when you have opted to split the sign-up/sign-in flow via the Rownd dashboard. Valid values are `.SignIn` or `.SignUp`. If you don’t set this value, the user will be presented with the unified sign-in/sign-up flow. Please reach out to [support@rownd.io](mailto:support@rownd.io) to enable.
+- `intent: RowndSignInIntent` - This option applies only when you have opted to split the sign-up/sign-in flow via the Rownd dashboard. Valid values are `.SignIn` or `.SignUp`. If you don’t set this value, the user will be presented with the unified sign-in/sign-up flow. Please reach out to [support@rownd.io](mailto:support@rownd.io) to enable.
 
-* `postSignInRedirect: String` (Not recommended) - If you've followed the steps to enable Android App Links, the redirect will be handled automatically. When the user completes the authentication challenge via email or SMS, they'll be redirected to the URL set for postSignInRedirect. If this is an [Android App Link](https://developer.android.com/training/app-links), it will redirect the user back to your app.
+- `postSignInRedirect: String` (Not recommended) - If you've followed the steps to enable Android App Links, the redirect will be handled automatically. When the user completes the authentication challenge via email or SMS, they'll be redirected to the URL set for postSignInRedirect. If this is an [Android App Link](https://developer.android.com/training/app-links), it will redirect the user back to your app.
 
 Example:
 
 ```kotlin
-Rownd.requestSignIn(RowndSignInOpts(
+Rownd.requestSignIn(RowndSignInOptions(
     intent = RowndSignInIntent.SignUp
 ))
 ```
@@ -318,7 +468,7 @@ Revokes all tokens for the specified user causing them to be signed out on all d
 
 Supported options:
 
-* `RowndSignOutScope.all`
+- `RowndSignOutScope.All`
 
   \- All devices
 
@@ -490,6 +640,7 @@ Here's a list of events that the Rownd SDK emits and the corresponding data that
       }
       ```
     </td>
+
   </tr>
 
   <tr>
@@ -505,6 +656,7 @@ Here's a list of events that the Rownd SDK emits and the corresponding data that
       }
       ```
     </td>
+
   </tr>
 
   <tr>
@@ -518,6 +670,7 @@ Here's a list of events that the Rownd SDK emits and the corresponding data that
       }
       ```
     </td>
+
   </tr>
 </table>
 

@@ -73,7 +73,7 @@ android {
 }
 
 dependencies {
-    implementation 'com.github.supertokens.supertokens-rownd-android:android:v0.0.1-beta.3'
+    implementation 'com.github.supertokens:supertokens-rownd-android:v0.0.1-beta.4'
 
     // Google Play instant
     implementation "com.google.android.gms:play-services-instantapps:17.0.0"
