@@ -9,6 +9,7 @@ import com.supertokens.session.SuperTokensInterceptor
 import io.rownd.android.models.domain.AuthState
 import io.rownd.android.models.repos.StateAction
 import io.rownd.android.util.JwtGenerator
+import io.rownd.android.util.RowndEventType
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.views.HubPageSelector
 import io.rownd.android.views.RowndJavascriptInterface
@@ -168,6 +169,33 @@ class RowndWebViewAuthenticationInstrumentedTest {
         }
 
         assertNotNull("Rownd.getAccessToken must return the synced SuperTokens token", runBlocking { Rownd.getAccessToken() })
+    }
+
+    @Test
+    fun syntheticAuthenticationMessageEmitsSignInCompletedOnceForSession() {
+        val stSession = HarnessClient.createSTSession("webview-event-user")
+        val interop = buildAuthenticationMessage(stSession.accessToken, stSession.refreshToken)
+        val events = mutableListOf<RowndEventType>()
+        val listener: (io.rownd.android.util.RowndEvent) -> Unit = { events.add(it.event) }
+
+        Rownd.addEventListener(listener)
+        try {
+            val bridge = createJavascriptInterface(HubPageSelector.SignIn)
+            bridge.postMessage(interop)
+
+            waitUntil { events == listOf(RowndEventType.SignInCompleted) }
+
+            bridge.postMessage(interop)
+            Thread.sleep(300)
+
+            assertEquals(
+                "sign_in_completed must only fire once for the same access token",
+                listOf(RowndEventType.SignInCompleted),
+                events,
+            )
+        } finally {
+            Rownd.removeEventListener(listener)
+        }
     }
 
     @Test

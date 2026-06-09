@@ -41,6 +41,8 @@ import io.rownd.android.models.TriggerSignInWithGoogleMessage
 import io.rownd.android.models.UserDataUpdateMessage
 import io.rownd.android.models.repos.StateAction
 import io.rownd.android.util.Constants
+import io.rownd.android.util.RowndEvent
+import io.rownd.android.util.RowndEventType
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.redactSensitiveKeys
 import io.rownd.android.views.html.noInternetHTML
@@ -438,6 +440,9 @@ class RowndJavascriptInterface constructor(
 
                             parentWebView.rowndClient.signInRepo.reset()
                             parentWebView.rowndClient.userRepo.loadUserAsync()
+                            parentWebView.rowndClient.eventEmitter.emit(
+                                RowndEvent(event = RowndEventType.SignInCompleted)
+                            )
 
                             Executors.newSingleThreadScheduledExecutor().schedule({
                                 parentWebView.dismiss?.invoke()

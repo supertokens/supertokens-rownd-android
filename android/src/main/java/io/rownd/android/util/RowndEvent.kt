@@ -1,5 +1,6 @@
 package io.rownd.android.util
 
+import io.rownd.android.Rownd
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
@@ -46,6 +47,7 @@ data class RowndEvent (
 
 class RowndEventEmitter<T> @Inject constructor() {
     private val observers = mutableSetOf<(T) -> Unit>()
+    private var signInCompletedAccessToken: String? = null
 
     fun addListener(observer: (T) -> Unit) {
         observers.add(observer)
@@ -56,6 +58,20 @@ class RowndEventEmitter<T> @Inject constructor() {
     }
 
     internal fun emit(value: T) {
+        if (value is RowndEvent) {
+            if (value.event == RowndEventType.SignOut) {
+                signInCompletedAccessToken = null
+            }
+
+            if (value.event == RowndEventType.SignInCompleted) {
+                val accessToken = runCatching { Rownd.store.currentState.auth.accessToken }.getOrNull()
+                if (accessToken != null) {
+                    if (signInCompletedAccessToken == accessToken) return
+                    signInCompletedAccessToken = accessToken
+                }
+            }
+        }
+
         for (observer in observers)
             observer(value)
     }
