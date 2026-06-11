@@ -22,7 +22,6 @@ import io.rownd.android.util.RowndEventType
 import io.rownd.android.util.SignInWithGoogle
 import io.rownd.android.util.SuperTokensSessionBridge
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -159,7 +158,7 @@ class GoogleSignInInstrumentedTest {
         signInWithGoogle.emitSignInFailed("exchange failed")
 
         assertEquals(RowndEventType.SignInFailed, captured?.event)
-        assertEquals(RowndSignInType.Google.value, captured?.data?.get("method")?.jsonPrimitive?.content)
-        assertEquals("exchange failed", captured?.data?.get("error")?.jsonPrimitive?.content)
+        assertEquals(RowndSignInType.Google.value, captured?.data?.get("method"))
+        assertEquals("exchange failed", captured?.data?.get("error"))
     }
 }

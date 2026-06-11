@@ -45,6 +45,7 @@ import io.rownd.android.util.RowndEvent
 import io.rownd.android.util.RowndEventType
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.redactSensitiveKeys
+import io.rownd.android.util.signInCompletedEventData
 import io.rownd.android.views.html.noInternetHTML
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.coroutines.CoroutineScope
@@ -441,7 +442,14 @@ class RowndJavascriptInterface constructor(
                             parentWebView.rowndClient.signInRepo.reset()
                             parentWebView.rowndClient.userRepo.loadUserAsync()
                             parentWebView.rowndClient.eventEmitter.emit(
-                                RowndEvent(event = RowndEventType.SignInCompleted)
+                                RowndEvent(
+                                    event = RowndEventType.SignInCompleted,
+                                    data = signInCompletedEventData(
+                                        userType = authenticationMessage.payload.userType,
+                                        appVariantUserType = authenticationMessage.payload.appVariantUserType
+                                            ?: authenticationMessage.payload.userType,
+                                    ),
+                                )
                             )
 
                             Executors.newSingleThreadScheduledExecutor().schedule({

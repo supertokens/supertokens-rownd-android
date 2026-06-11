@@ -9,6 +9,7 @@ import com.supertokens.session.SuperTokensInterceptor
 import io.rownd.android.models.domain.AuthState
 import io.rownd.android.models.repos.StateAction
 import io.rownd.android.util.JwtGenerator
+import io.rownd.android.util.RowndEvent
 import io.rownd.android.util.RowndEventType
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.views.HubPageSelector
@@ -174,16 +175,23 @@ class RowndWebViewAuthenticationInstrumentedTest {
     @Test
     fun syntheticAuthenticationMessageEmitsSignInCompletedOnceForSession() {
         val stSession = HarnessClient.createSTSession("webview-event-user")
-        val interop = buildAuthenticationMessage(stSession.accessToken, stSession.refreshToken)
-        val events = mutableListOf<RowndEventType>()
-        val listener: (io.rownd.android.util.RowndEvent) -> Unit = { events.add(it.event) }
+        val interop = buildAuthenticationMessage(
+            stSession.accessToken,
+            stSession.refreshToken,
+            userType = RowndSignInUserType.NewUser,
+            appVariantUserType = RowndSignInUserType.NewUser,
+        )
+        val events = mutableListOf<RowndEvent>()
+        val listener: (RowndEvent) -> Unit = { events.add(it) }
 
         Rownd.addEventListener(listener)
         try {
             val bridge = createJavascriptInterface(HubPageSelector.SignIn)
             bridge.postMessage(interop)
 
-            waitUntil { events == listOf(RowndEventType.SignInCompleted) }
+            waitUntil { events.map { it.event } == listOf(RowndEventType.SignInCompleted) }
+            assertEquals("new_user", events.single().data["user_type"])
+            assertEquals("new_user", events.single().data["app_variant_user_type"])
 
             bridge.postMessage(interop)
             Thread.sleep(300)
@@ -191,7 +199,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
             assertEquals(
                 "sign_in_completed must only fire once for the same access token",
                 listOf(RowndEventType.SignInCompleted),
-                events,
+                events.map { it.event },
             )
         } finally {
             Rownd.removeEventListener(listener)
@@ -241,12 +249,16 @@ class RowndWebViewAuthenticationInstrumentedTest {
         refreshToken: String,
         frontToken: String = SuperTokensSessionBridge.buildFrontToken(accessToken),
         antiCSRF: String? = null,
+        userType: RowndSignInUserType? = null,
+        appVariantUserType: RowndSignInUserType? = null,
     ): String =
         buildAuthenticationMessageWithRefreshJson(
             accessToken = accessToken,
             refreshTokenJson = "\"$refreshToken\"",
             frontTokenJson = "\"$frontToken\"",
             antiCSRFJson = antiCSRF?.let { "\"$it\"" } ?: "null",
+            userTypeJson = userType?.let { "\"${it.value}\"" } ?: "null",
+            appVariantUserTypeJson = appVariantUserType?.let { "\"${it.value}\"" } ?: "null",
         )
 
     private fun buildAuthenticationMessageWithRefreshJson(
@@ -254,6 +266,8 @@ class RowndWebViewAuthenticationInstrumentedTest {
         refreshTokenJson: String,
         frontTokenJson: String,
         antiCSRFJson: String = "null",
+        userTypeJson: String = "null",
+        appVariantUserTypeJson: String = "null",
     ): String = """
         {
           "type": "authentication",
@@ -261,7 +275,9 @@ class RowndWebViewAuthenticationInstrumentedTest {
             "access_token": "$accessToken",
             "refresh_token": $refreshTokenJson,
             "front_token": $frontTokenJson,
-            "anti_csrf": $antiCSRFJson
+            "anti_csrf": $antiCSRFJson,
+            "user_type": $userTypeJson,
+            "app_variant_user_type": $appVariantUserTypeJson
           }
         }
     """.trimIndent()

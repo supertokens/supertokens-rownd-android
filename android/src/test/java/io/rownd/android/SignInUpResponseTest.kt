@@ -18,6 +18,7 @@ class SignInUpResponseTest {
               "status": "OK",
               "rownd": {
                 "user_type": "new_user",
+                "app_variant_user_type": "existing_user",
                 "app_id": "app_123",
                 "app_user_id": "user_456"
               }
@@ -28,6 +29,7 @@ class SignInUpResponseTest {
 
         assertEquals("OK", response.status)
         assertEquals(RowndSignInUserType.NewUser, response.rownd?.userType)
+        assertEquals(RowndSignInUserType.ExistingUser, response.rownd?.appVariantUserType)
         assertEquals("app_123", response.rownd?.appId)
         assertEquals("user_456", response.rownd?.appUserId)
     }

@@ -25,10 +25,10 @@ import io.rownd.android.util.KtorApiClient
 import io.rownd.android.util.RowndContext
 import io.rownd.android.util.RowndEvent
 import io.rownd.android.util.RowndEventType
+import io.rownd.android.util.signInCompletedEventData
 import io.rownd.android.views.HubPageSelector
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonPrimitive
 import java.net.URI
 import javax.inject.Inject
 
@@ -104,9 +104,10 @@ class SignInLinkApi @Inject constructor() {
             rowndContext.eventEmitter?.emit(
                 RowndEvent(
                     event = RowndEventType.SignInCompleted,
-                    data = mapOf(
-                        "method" to JsonPrimitive(RowndSignInType.SignInLink.value),
-                        "user_type" to JsonPrimitive(RowndSignInUserType.ExistingUser.value),
+                    data = signInCompletedEventData(
+                        method = RowndSignInType.SignInLink,
+                        userType = RowndSignInUserType.ExistingUser,
+                        appVariantUserType = RowndSignInUserType.ExistingUser,
                     )
                 )
             )

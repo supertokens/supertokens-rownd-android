@@ -59,6 +59,7 @@ data class SignInUpResponse(
 @Serializable
 data class RowndSignInUpMeta(
     @SerialName("user_type") val userType: RowndSignInUserType? = null,
+    @SerialName("app_variant_user_type") val appVariantUserType: RowndSignInUserType? = null,
     @SerialName("app_id") val appId: String? = null,
     @SerialName("app_user_id") val appUserId: String? = null,
 )

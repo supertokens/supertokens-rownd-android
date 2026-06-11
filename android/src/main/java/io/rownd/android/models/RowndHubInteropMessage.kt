@@ -1,6 +1,7 @@
 package io.rownd.android.models
 
 import io.rownd.android.RowndSignInIntent
+import io.rownd.android.RowndSignInUserType
 import io.rownd.android.models.network.User
 import io.rownd.android.util.RowndEvent
 import kotlinx.serialization.DeserializationStrategy
@@ -81,6 +82,12 @@ data class AuthenticationPayload(
 
     @SerialName("anti_csrf")
     var antiCsrf: String? = null,
+
+    @SerialName("user_type")
+    var userType: RowndSignInUserType? = null,
+
+    @SerialName("app_variant_user_type")
+    var appVariantUserType: RowndSignInUserType? = null,
 )
 
 @Serializable

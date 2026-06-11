@@ -1,9 +1,10 @@
 package io.rownd.android.util
 
 import io.rownd.android.Rownd
+import io.rownd.android.RowndSignInType
+import io.rownd.android.RowndSignInUserType
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonElement
 import javax.inject.Inject
 
 @Serializable
@@ -42,8 +43,20 @@ enum class RowndEventType {
 @Serializable
 data class RowndEvent (
     var event: RowndEventType,
-    var data: Map<String, JsonElement?>? = null
+    var data: Map<String, String?> = emptyMap()
 )
+
+internal fun signInCompletedEventData(
+    method: RowndSignInType? = null,
+    userType: RowndSignInUserType? = null,
+    appVariantUserType: RowndSignInUserType? = userType,
+): Map<String, String?> {
+    val data = mutableMapOf<String, String?>()
+    method?.let { data["method"] = it.value }
+    userType?.let { data["user_type"] = it.value }
+    appVariantUserType?.let { data["app_variant_user_type"] = it.value }
+    return data
+}
 
 class RowndEventEmitter<T> @Inject constructor() {
     private val observers = mutableSetOf<(T) -> Unit>()
