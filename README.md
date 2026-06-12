@@ -99,7 +99,7 @@ If you're using ProGuard to shrink, obfuscate, and/or optimize your app ([and yo
 
 ### 1. Add SDK configuration values
 
-The SDK needs your Rownd app key, your SuperTokens API origin, the SuperTokens API base path, the Rownd Hub URL, and a deep link scheme. The example app provides them through `BuildConfig` fields:
+The SDK needs your Rownd app key, your SuperTokens API origin, the SuperTokens API base path, the Rownd Hub base URL, and the Android custom scheme your app accepts. The example app provides them through `BuildConfig` fields and manifest placeholders:
 
 ```gradle
 android {
@@ -109,6 +109,7 @@ android {
         buildConfigField "String", "ROWND_APP_KEY", '"<YOUR_APP_KEY>"'
         buildConfigField "String", "ROWND_API_DOMAIN", '"<YOUR_API_DOMAIN>"'
         buildConfigField "String", "ROWND_API_BASE_PATH", '"<YOUR_API_BASE_PATH>"'
+        buildConfigField "String", "ROWND_DEEP_LINK_SCHEME", '"<APP_SCHEME_NAME"'
     }
 }
 ```
@@ -118,10 +119,18 @@ Use the values for your app:
 - `ROWND_APP_KEY` - Your Rownd app key.
 - `ROWND_API_DOMAIN` - The origin for your backend that exposes the SuperTokens APIs.
 - `ROWND_API_BASE_PATH` - The SuperTokens API base path. This is usually `/auth`.
+- `ROWND_DEEP_LINK_SCHEME` - The Android custom scheme your app registers and the SDK accepts.
+
+There are two deep-link values to configure:
+
+- Deep link scheme: the Android custom scheme your app registers and the SDK accepts, for example `rowndsupertokens`.
+- Deep link: the verified HTTPS App Link on your custom Hub subdomain, for example `https://your-hub-subdomain.rownd-hub.supertokens.com/account/login`.
+
+The Hub can derive the custom scheme fallback from your custom Hub subdomain, so make sure your Android custom scheme matches the scheme the Hub will generate.
 
 ### 2. Configure deep links
 
-Add an HTTPS filter to match links used for magic link authentication and email verification.
+Add two intent filters: one for the custom scheme fallback and one for the verified HTTPS App Link. Keep `android:autoVerify="true"` only on the HTTPS filter.
 
 ```xml
 <intent-filter>
@@ -130,13 +139,24 @@ Add an HTTPS filter to match links used for magic link authentication and email 
     <category android:name="android.intent.category.DEFAULT" />
     <category android:name="android.intent.category.BROWSABLE" />
 
+    <data android:scheme="${rowndDeepLinkScheme}" />
+</intent-filter>
+
+<intent-filter android:autoVerify="true">
+    <action android:name="android.intent.action.VIEW" />
+
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+
     <data
         android:scheme="https"
-        android:host="{subdomain}.rownd-hub.supertokens.com" />
+        android:host="<SUBDOMAIN>.rownd-hub.supertokens.com" />
 </intent-filter>
 ```
 
-Use your production Hub host when configuring a production app.
+The custom scheme handles fallback links such as `rowndsupertokens://account/login?...`. The HTTPS filter handles verified App Links for your custom Hub subdomain, such as `https://your-hub-subdomain.rownd-hub.supertokens.com/account/login?...`.
+
+For verified App Links, the Hub domain's `assetlinks.json` must include your Android package name and signing certificate fingerprint. If you change the package name or signing key, update the asset links entry before relying on automatic app handoff.
 
 ### 3. Initialize the Rownd SDK
 
@@ -162,6 +182,7 @@ class MyApplication : Application() {
                 appKey = BuildConfig.ROWND_APP_KEY,
                 apiDomain = BuildConfig.ROWND_API_DOMAIN,
                 apiBasePath = BuildConfig.ROWND_API_BASE_PATH,
+                deepLinkScheme = BuildConfig.ROWND_DEEP_LINK_SCHEME,
             )
         )
     }
@@ -448,7 +469,7 @@ Opens the Rownd sign-in dialog for authentication, as before, but allows passing
 
 - `intent: RowndSignInIntent` - This option applies only when you have opted to split the sign-up/sign-in flow via the Rownd dashboard. Valid values are `.SignIn` or `.SignUp`. If you don’t set this value, the user will be presented with the unified sign-in/sign-up flow. Please reach out to [support@rownd.io](mailto:support@rownd.io) to enable.
 
-- `postSignInRedirect: String` (Not recommended) - If you've followed the steps to enable Android App Links, the redirect will be handled automatically. When the user completes the authentication challenge via email or SMS, they'll be redirected to the URL set for postSignInRedirect. If this is an [Android App Link](https://developer.android.com/training/app-links), it will redirect the user back to your app.
+- `postSignInRedirect: String` (Not recommended) - The SDK and Hub normally handle redirects using your configured HTTPS App Link and custom scheme fallback. Use this only when you need to override the default redirect target. If you provide a custom value, it must still resolve back to your app through an Android App Link or a custom scheme your app handles.
 
 Example:
 
