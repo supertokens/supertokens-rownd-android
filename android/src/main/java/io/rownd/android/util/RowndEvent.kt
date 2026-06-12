@@ -21,11 +21,13 @@ import kotlinx.serialization.encoding.decodeStructure
 import kotlinx.serialization.encoding.encodeStructure
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.util.Base64
 import javax.inject.Inject
 
 @Serializable(with = RowndEventTypeSerializer::class)
@@ -176,7 +178,8 @@ internal fun signInCompletedEventData(
 
 class RowndEventEmitter<T> @Inject constructor() {
     private val observers = mutableSetOf<(T) -> Unit>()
-    private var signInCompletedAccessToken: String? = null
+    private var signInCompletedSessionKey: String? = null
+    private var latestAuthSessionKey: String? = null
 
     fun addListener(observer: (T) -> Unit) {
         observers.add(observer)
@@ -188,20 +191,79 @@ class RowndEventEmitter<T> @Inject constructor() {
 
     internal fun emit(value: T) {
         if (value is RowndEvent) {
-            if (value.event == RowndEventType.SignOut) {
-                signInCompletedAccessToken = null
+            if (value.event == RowndEventType.SignInStarted || value.event == RowndEventType.SignOut) {
+                signInCompletedSessionKey = null
+                latestAuthSessionKey = null
+            }
+
+            if (value.event == RowndEventType.Auth) {
+                value.data["access_token"]?.let { accessToken ->
+                    latestAuthSessionKey = signInCompletedDedupKey(accessToken)
+                }
             }
 
             if (value.event == RowndEventType.SignInCompleted) {
                 val accessToken = runCatching { Rownd.store.currentState.auth.accessToken }.getOrNull()
-                if (accessToken != null) {
-                    if (signInCompletedAccessToken == accessToken) return
-                    signInCompletedAccessToken = accessToken
+                val sessionKey = accessToken?.let(::signInCompletedDedupKey) ?: latestAuthSessionKey
+                if (sessionKey != null) {
+                    if (signInCompletedSessionKey == sessionKey) return
+                    signInCompletedSessionKey = sessionKey
                 }
             }
         }
 
         for (observer in observers)
             observer(value)
+    }
+}
+
+internal fun signInCompletedDedupKey(accessToken: String): String {
+    return runCatching {
+        val parts = accessToken.split(".")
+        if (parts.size < 2) return@runCatching accessToken
+
+        val payload = Json.parseToJsonElement(
+            String(Base64.getUrlDecoder().decode(padBase64Url(parts[1])))
+        ).jsonObject
+
+        payload["sessionHandle"]?.jsonPrimitive?.contentOrNull
+            ?: payload["sub"]?.jsonPrimitive?.contentOrNull
+            ?: payload["app_user_id"]?.jsonPrimitive?.contentOrNull
+            ?: accessToken
+    }.getOrDefault(accessToken)
+}
+
+private fun padBase64Url(value: String): String {
+    val pad = (4 - value.length % 4) % 4
+    return value + "=".repeat(pad)
+}
+
+internal class SignInCompletedEventDeduper {
+    private var completed = false
+
+    fun shouldScheduleAuthenticationFallback(): Boolean {
+        return !completed
+    }
+
+    fun shouldEmitForHubEvent(): Boolean {
+        if (completed) {
+            return false
+        }
+
+        completed = true
+        return true
+    }
+
+    fun shouldEmitForAuthenticationFallback(): Boolean {
+        if (completed) {
+            return false
+        }
+
+        completed = true
+        return true
+    }
+
+    fun reset() {
+        completed = false
     }
 }

@@ -43,6 +43,7 @@ import io.rownd.android.models.repos.StateAction
 import io.rownd.android.util.Constants
 import io.rownd.android.util.RowndEvent
 import io.rownd.android.util.RowndEventType
+import io.rownd.android.util.SignInCompletedEventDeduper
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.redactSensitiveKeys
 import io.rownd.android.util.signInCompletedEventData
@@ -50,6 +51,7 @@ import io.rownd.android.views.html.noInternetHTML
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
@@ -73,6 +75,7 @@ enum class HubPageSelector {
 }
 
 private const val HUB_CLOSE_AFTER_MILLISECONDS: Long = 1500
+private const val SIGN_IN_COMPLETED_AUTHENTICATION_FALLBACK_DELAY_MILLISECONDS: Long = 500
 
 @SuppressLint("SetJavaScriptEnabled")
 class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, attrs), DialogChild {
@@ -400,6 +403,40 @@ class RowndJavascriptInterface constructor(
     private val dynamicBottomSheet: (to: String) -> Unit,
     private val setCanTouchBackground: (to: Boolean) -> Unit,
     ) {
+    private val signInCompletedDeduper = SignInCompletedEventDeduper()
+    private var signInCompletedFallbackJob: Job? = null
+
+    private fun scheduleSignInCompletedAuthenticationFallback(authenticationMessage: AuthenticationMessage) {
+        if (!signInCompletedDeduper.shouldScheduleAuthenticationFallback() || signInCompletedFallbackJob?.isActive == true) {
+            Log.d("Rownd.hub", "Skipping duplicate sign_in_completed event")
+            return
+        }
+
+        signInCompletedFallbackJob = CoroutineScope(Dispatchers.IO).launch {
+            delay(SIGN_IN_COMPLETED_AUTHENTICATION_FALLBACK_DELAY_MILLISECONDS)
+            if (!signInCompletedDeduper.shouldEmitForAuthenticationFallback()) {
+                Log.d("Rownd.hub", "Skipping duplicate sign_in_completed event")
+                return@launch
+            }
+
+            parentWebView.rowndClient.eventEmitter.emit(
+                RowndEvent(
+                    event = RowndEventType.SignInCompleted,
+                    data = signInCompletedEventData(
+                        userType = authenticationMessage.payload.userType,
+                        appVariantUserType = authenticationMessage.payload.appVariantUserType
+                            ?: authenticationMessage.payload.userType,
+                    ),
+                )
+            )
+        }
+    }
+
+    private fun resetSignInCompletedDeduper() {
+        signInCompletedFallbackJob?.cancel()
+        signInCompletedFallbackJob = null
+        signInCompletedDeduper.reset()
+    }
 
     @JavascriptInterface
     fun postMessage(message: String) {
@@ -447,16 +484,7 @@ class RowndJavascriptInterface constructor(
 
                             parentWebView.rowndClient.signInRepo.reset()
                             parentWebView.rowndClient.userRepo.loadUserAsync()
-                            parentWebView.rowndClient.eventEmitter.emit(
-                                RowndEvent(
-                                    event = RowndEventType.SignInCompleted,
-                                    data = signInCompletedEventData(
-                                        userType = authenticationMessage.payload.userType,
-                                        appVariantUserType = authenticationMessage.payload.appVariantUserType
-                                            ?: authenticationMessage.payload.userType,
-                                    ),
-                                )
-                            )
+                            scheduleSignInCompletedAuthenticationFallback(authenticationMessage)
 
                             Executors.newSingleThreadScheduledExecutor().schedule({
                                 parentWebView.dismiss?.invoke()
@@ -486,6 +514,7 @@ class RowndJavascriptInterface constructor(
                 }
 
                 MessageType.signOut -> {
+                    resetSignInCompletedDeduper()
                     Executors.newSingleThreadScheduledExecutor().schedule({
                         parentWebView.dismiss?.invoke()
                     }, HUB_CLOSE_AFTER_MILLISECONDS, TimeUnit.MILLISECONDS)
@@ -534,7 +563,24 @@ class RowndJavascriptInterface constructor(
 
                 MessageType.Event -> {
                     val event = (interopMessage as EventMessage).payload
-                    parentWebView.rowndClient.eventEmitter.emit(event)
+                    when (event.event) {
+                        RowndEventType.SignInCompleted -> {
+                            if (signInCompletedDeduper.shouldEmitForHubEvent()) {
+                                signInCompletedFallbackJob?.cancel()
+                                signInCompletedFallbackJob = null
+                                parentWebView.rowndClient.eventEmitter.emit(event)
+                            } else {
+                                Log.d("Rownd.hub", "Skipping duplicate sign_in_completed event")
+                            }
+                        }
+
+                        RowndEventType.SignInStarted, RowndEventType.SignOut -> {
+                            resetSignInCompletedDeduper()
+                            parentWebView.rowndClient.eventEmitter.emit(event)
+                        }
+
+                        else -> parentWebView.rowndClient.eventEmitter.emit(event)
+                    }
                 }
 
                 MessageType.OpenEmailApp -> {
