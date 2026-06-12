@@ -222,6 +222,20 @@ class AppConfigModelTest {
     }
 
     @Test
+    fun `deep link helper preserves encoded callback query params`() {
+        val hubUrl = SignInLinkApi.toHubUrl(
+            rawUrl = "sandboxx://account/login?apiBasePath=%2Fauth&apiDomain=https%3A%2F%2Fapi-stage.sandboxx.us#frag",
+            deepLinkScheme = "sandboxx",
+            hubBaseUrl = "https://rownd-hub.supertokens.com",
+        )
+
+        assertEquals(
+            "https://rownd-hub.supertokens.com/account/login?apiBasePath=%2Fauth&apiDomain=https%3A%2F%2Fapi-stage.sandboxx.us#frag",
+            hubUrl,
+        )
+    }
+
+    @Test
     fun `deep link helper accepts production hub subdomains`() {
         val hubUrl = SignInLinkApi.toHubUrl(
             rawUrl = "https://tenant.rownd-hub.supertokens.com/account/verify-email?code=abc",

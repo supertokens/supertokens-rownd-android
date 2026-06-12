@@ -1,8 +1,12 @@
 package io.rownd.android
 
 import io.rownd.android.models.AuthenticationMessage
+import io.rownd.android.models.EventMessage
+import io.rownd.android.models.RowndHubInteropMessage
+import io.rownd.android.util.RowndEventType
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 private val authMessageJson = Json { ignoreUnknownKeys = true }
@@ -29,5 +33,24 @@ class AuthenticationMessageTest {
 
         assertEquals(RowndSignInUserType.NewUser, message.payload.userType)
         assertEquals(RowndSignInUserType.NewUser, message.payload.appVariantUserType)
+    }
+
+    @Test
+    fun `hub sign in completed event deserializes with empty data`() {
+        val payload = """
+            {
+              "type": "event",
+              "payload": {
+                "event": "sign_in_completed",
+                "data": {}
+              }
+            }
+        """.trimIndent()
+
+        val message = authMessageJson.decodeFromString(RowndHubInteropMessage.serializer(), payload)
+        val eventMessage = message as EventMessage
+
+        assertEquals(RowndEventType.SignInCompleted, eventMessage.payload.event)
+        assertTrue(eventMessage.payload.data.isEmpty())
     }
 }

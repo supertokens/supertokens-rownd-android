@@ -245,13 +245,9 @@ class SignInLinkApi @Inject constructor() {
             }
 
             val baseUri = parseUri(hubBaseUrl) ?: return null
-            return URI(
-                baseUri.scheme,
-                baseUri.authority,
-                hubPath,
-                uri.rawQuery,
-                uri.rawFragment,
-            ).toString()
+            val query = uri.rawQuery?.let { "?$it" } ?: ""
+            val fragment = uri.rawFragment?.let { "#$it" } ?: ""
+            return "${baseUri.scheme}://${baseUri.rawAuthority}$hubPath$query$fragment"
         }
 
         private fun isConfiguredSchemeDeepLink(uri: URI, deepLinkScheme: String): Boolean {
