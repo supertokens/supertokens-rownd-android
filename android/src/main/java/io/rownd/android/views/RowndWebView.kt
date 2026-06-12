@@ -434,6 +434,12 @@ class RowndJavascriptInterface constructor(
                                     replaceExisting = true,
                                 )
                             }
+
+                            if (!SuperTokensSessionBridge.awaitInitialized()) {
+                                Log.e("Rownd.hub", "Skipping post-authentication user load because SuperTokens is not initialized")
+                                return@launch
+                            }
+
                             SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
                                 context = appContext,
                                 store = parentWebView.rowndClient.stateRepo.getStore(),

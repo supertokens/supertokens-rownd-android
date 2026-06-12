@@ -53,4 +53,46 @@ class AuthenticationMessageTest {
         assertEquals(RowndEventType.SignInCompleted, eventMessage.payload.event)
         assertTrue(eventMessage.payload.data.isEmpty())
     }
+
+    @Test
+    fun `unknown hub event deserializes without throwing`() {
+        val payload = """
+            {
+              "type": "event",
+              "payload": {
+                "event": "post_authentication_api_request_complete",
+                "data": {}
+              }
+            }
+        """.trimIndent()
+
+        val message = authMessageJson.decodeFromString(RowndHubInteropMessage.serializer(), payload)
+        val eventMessage = message as EventMessage
+
+        assertEquals(RowndEventType.Unknown, eventMessage.payload.event)
+        assertTrue(eventMessage.payload.data.isEmpty())
+    }
+
+    @Test
+    fun `hub event object data deserializes without throwing`() {
+        val payload = """
+            {
+              "type": "event",
+              "payload": {
+                "event": "user_data",
+                "data": {
+                  "data": {
+                    "id": "user-id"
+                  }
+                }
+              }
+            }
+        """.trimIndent()
+
+        val message = authMessageJson.decodeFromString(RowndHubInteropMessage.serializer(), payload)
+        val eventMessage = message as EventMessage
+
+        assertEquals(RowndEventType.UserData, eventMessage.payload.event)
+        assertEquals("{\"id\":\"user-id\"}", eventMessage.payload.data["data"])
+    }
 }

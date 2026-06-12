@@ -12,6 +12,7 @@ import io.rownd.android.models.repos.StateAction
 import io.rownd.android.models.repos.StateRepo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
@@ -50,7 +51,25 @@ object SuperTokensSessionBridge {
         builder.build()
     }
 
-    // Called from configure(...) — observes state until app config is ready, then inits SuperTokens once.
+    fun initializeIfNeeded(context: Context, apiDomain: String, apiBasePath: String = "/auth", enableDebugMode: Boolean = false) {
+        if (apiDomain.isBlank()) {
+            Log.e(TAG, "config.supertokens.appInfo.apiDomain is missing — SuperTokens cannot initialize")
+            return
+        }
+
+        if (!isInitialized.compareAndSet(false, true)) return
+
+        this.enableDebugMode = enableDebugMode
+        try {
+            buildSuperTokens(context, apiDomain, apiBasePath, enableDebugMode)
+            Log.d(TAG, "SuperTokens initialized with apiDomain=$apiDomain")
+        } catch (e: Exception) {
+            isInitialized.set(false)
+            Log.e(TAG, "SuperTokens initialization failed: ${e.message}")
+        }
+    }
+
+    // Called from configure(...) as a fallback — observes state until app config is ready, then inits SuperTokens once.
     fun observeAndInitialize(context: Context, stateRepo: StateRepo, enableDebugMode: Boolean = false) {
         this.enableDebugMode = enableDebugMode
 
@@ -60,21 +79,8 @@ object SuperTokensSessionBridge {
                 .take(1)
                 .collect { state ->
                     val st = state.appConfig.config.supertokens
-                    if (st.appInfo.apiDomain.isEmpty()) {
-                        Log.e(TAG, "config.supertokens.appInfo.apiDomain is missing — SuperTokens cannot initialize")
-                        return@collect
-                    }
-
-                    if (!isInitialized.compareAndSet(false, true)) return@collect
-
-                    try {
-                        buildSuperTokens(context, st.appInfo.apiDomain, st.appInfo.apiBasePath ?: "/auth", enableDebugMode)
-                        Log.d(TAG, "SuperTokens initialized with apiDomain=${st.appInfo.apiDomain}")
-                    } catch (e: Exception) {
-                        isInitialized.set(false)
-                        Log.e(TAG, "SuperTokens initialization failed: ${e.message}")
-                        return@collect
-                    }
+                    initializeIfNeeded(context, st.appInfo.apiDomain, st.appInfo.apiBasePath ?: "/auth", enableDebugMode)
+                    if (!isInitialized.get()) return@collect
 
                     try {
                         stateRepo.authRepo.migrateLegacySessionIfNeeded(context)
@@ -122,6 +128,14 @@ object SuperTokensSessionBridge {
                 clearLocalSession(context)
             }
         }
+
+    suspend fun awaitInitialized(timeoutMs: Long = 5_000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (!isInitialized.get() && System.currentTimeMillis() < deadline) {
+            delay(50)
+        }
+        return isInitialized.get()
+    }
 
     fun clearLocalSession(context: Context) {
         FrontToken.removeToken(context)

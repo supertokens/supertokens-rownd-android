@@ -32,6 +32,7 @@ import io.rownd.android.models.repos.StateAction
 import io.rownd.android.models.repos.StateRepo
 import io.rownd.android.models.repos.UserRepo
 import io.rownd.android.util.AppLifecycleListener
+import io.rownd.android.util.HubSessionStorage
 import io.rownd.android.util.InvalidRefreshTokenException
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.NoAccessTokenPresentException
@@ -131,6 +132,7 @@ class RowndClient(
 
         store = stateRepo.setup(StateRepo.defaultDataStore(appContext))
 
+        SuperTokensSessionBridge.initializeIfNeeded(appContext, apiDomain, apiBasePath, config.enableDebugMode)
         SuperTokensSessionBridge.observeAndInitialize(appContext, stateRepo, config.enableDebugMode)
 
         // Clear webview cache on startup
@@ -284,6 +286,8 @@ class RowndClient(
     }
 
     fun signOut() {
+        val existingHubWebView = rowndContext.hubViewModel?.webView()?.value
+        HubSessionStorage.clear(config, existingHubWebView)
         rowndContext.hubViewModel?.webView()?.postValue(null)
         store.dispatch(StateAction.SetAuth(AuthState()))
         store.dispatch(StateAction.SetUser(User()))
