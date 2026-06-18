@@ -17,6 +17,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import io.rownd.android.models.domain.AnonymousSignInMethod as DomainAnonymousSignInMethod
+import io.rownd.android.models.domain.AppleSignInMethod as DomainAppleSignInMethod
 import io.rownd.android.models.domain.AppConfigConfig as DomainAppConfigConfig
 import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.domain.AppSchemaEncryptionState as DomainAppSchemaEncryptionState
@@ -179,13 +180,38 @@ data class HubAuthConfig(
 
 @Serializable
 data class SignInMethods(
+    var apple: AppleSignInMethod = AppleSignInMethod(),
     var google: GoogleSignInMethod = GoogleSignInMethod(),
     var anonymous: AnonymousSignInMethod = AnonymousSignInMethod()
 ) {
     fun asDomainModel(): DomainSignInMethods {
         return DomainSignInMethods(
+            apple.asDomainModel(),
             google.asDomainModel(),
             anonymous.asDomainModel()
+        )
+    }
+}
+
+@Serializable
+data class AppleSignInMethod(
+    val enabled: Boolean = false,
+    @SerialName("client_id")
+    val clientId: String = "",
+    @SerialName("web_client_type")
+    val webClientType: String? = null,
+    @SerialName("ios_client_type")
+    val iosClientType: String? = null,
+    @SerialName("android_client_type")
+    val androidClientType: String? = null,
+) {
+    fun asDomainModel(): DomainAppleSignInMethod {
+        return DomainAppleSignInMethod(
+            enabled,
+            clientId,
+            webClientType,
+            iosClientType,
+            androidClientType,
         )
     }
 }

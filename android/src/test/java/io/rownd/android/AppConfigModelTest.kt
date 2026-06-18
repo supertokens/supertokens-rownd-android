@@ -105,6 +105,39 @@ class AppConfigModelTest {
     }
 
     @Test
+    fun `apple sign in method decodes client type fields`() {
+        val payload = baseAppConfigJson.format(
+            """
+            {
+              "hub": {
+                "auth": {
+                  "sign_in_methods": {
+                    "apple": {
+                      "enabled": true,
+                      "client_id": "com.example.web",
+                      "web_client_type": "web",
+                      "ios_client_type": "ios",
+                      "android_client_type": "android"
+                    }
+                  }
+                }
+              },
+              "customizations": {}
+            }
+            """.trimIndent()
+        )
+
+        val response = json.decodeFromString(AppConfigResponse.serializer(), payload)
+        val apple = response.asDomainModel().config.hub.auth.signInMethods.apple
+
+        assertEquals(true, apple.enabled)
+        assertEquals("com.example.web", apple.clientId)
+        assertEquals("web", apple.webClientType)
+        assertEquals("ios", apple.iosClientType)
+        assertEquals("android", apple.androidClientType)
+    }
+
+    @Test
     fun `plugin schema fields can omit optional required flag`() {
         val payload = """
             {

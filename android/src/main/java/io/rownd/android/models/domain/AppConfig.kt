@@ -106,8 +106,26 @@ data class HubAuthConfig @OptIn(ExperimentalSerializationApi::class) constructor
 
 @Serializable
 data class SignInMethods constructor(
+    val apple: AppleSignInMethod = AppleSignInMethod(),
     val google: GoogleSignInMethod = GoogleSignInMethod(),
     val anonymous: AnonymousSignInMethod = AnonymousSignInMethod(),
+)
+
+@Serializable
+data class AppleSignInMethod @OptIn(ExperimentalSerializationApi::class) constructor(
+    val enabled: Boolean = false,
+    @SerialName("client_id")
+    @JsonNames("clientId")
+    val clientId: String = "",
+    @SerialName("web_client_type")
+    @JsonNames("webClientType")
+    val webClientType: String? = null,
+    @SerialName("ios_client_type")
+    @JsonNames("iosClientType")
+    val iosClientType: String? = null,
+    @SerialName("android_client_type")
+    @JsonNames("androidClientType")
+    val androidClientType: String? = null,
 )
 
 @Serializable
