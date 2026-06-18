@@ -80,6 +80,8 @@ class LegacySessionMigrationInstrumentedTest {
             )
         )
 
+        assertFalse("public compatibility auth should reject legacy Rownd access tokens", Rownd.state.value.auth.isAccessTokenValid)
+
         runBlocking { Rownd.authRepo.migrateLegacySessionIfNeeded(context) }
 
         val counters = HarnessClient.getCounters()
