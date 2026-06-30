@@ -1,3 +1,7 @@
+# 0.1.0
+
+Initial production release of the SuperTokens Rownd Android SDK.
+
 
 
 # [4.1.0](https://github.com/rownd/android/compare/4.0.0...4.1.0) (2026-01-19)

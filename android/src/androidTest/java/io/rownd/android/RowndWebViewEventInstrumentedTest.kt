@@ -50,6 +50,7 @@ class RowndWebViewEventInstrumentedTest {
             webViewRef.set(RowndWebView(context, null).apply {
                 rowndClient = Rownd
                 this.targetPage = targetPage
+                isCurrentPageTrustedHub = true
                 dismiss = {}
             })
         }

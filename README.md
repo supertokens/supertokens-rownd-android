@@ -25,7 +25,7 @@ In your app module's `build.gradle`, add the SDK dependency:
 
 ```gradle
 dependencies {
-    implementation 'com.github.supertokens:supertokens-rownd-android:v0.0.1-beta.4'
+    implementation 'com.github.supertokens:supertokens-rownd-android:0.1.0'
 }
 ```
 
@@ -109,7 +109,8 @@ android {
         buildConfigField "String", "ROWND_APP_KEY", '"<YOUR_APP_KEY>"'
         buildConfigField "String", "ROWND_API_DOMAIN", '"<YOUR_API_DOMAIN>"'
         buildConfigField "String", "ROWND_API_BASE_PATH", '"<YOUR_API_BASE_PATH>"'
-        buildConfigField "String", "ROWND_DEEP_LINK_SCHEME", '"<APP_SCHEME_NAME"'
+        buildConfigField "String", "ROWND_HUB_URL", '"https://<SUBDOMAIN>.rownd-hub.supertokens.com"'
+        buildConfigField "String", "ROWND_DEEP_LINK_SCHEME", '"<APP_SCHEME_NAME>"'
     }
 }
 ```
@@ -119,6 +120,7 @@ Use the values for your app:
 - `ROWND_APP_KEY` - Your Rownd app key.
 - `ROWND_API_DOMAIN` - The origin for your backend that exposes the SuperTokens APIs.
 - `ROWND_API_BASE_PATH` - The SuperTokens API base path. This is usually `/auth`.
+- `ROWND_HUB_URL` - The Rownd Hub URL for your app.
 - `ROWND_DEEP_LINK_SCHEME` - The Android custom scheme your app registers and the SDK accepts.
 
 There are two deep-link values to configure:
@@ -245,7 +247,7 @@ val refreshed = SuperTokensSessionBridge.attemptRefresh(applicationContext)
 
 ### Example app
 
-See `repositories/examples/supertokens-rownd-android-sandboxx` for a standalone Android app that follows these steps. From that folder, run:
+See the sample app in this repository for a standalone Android app that follows these steps. From the repository root, run:
 
 ```bash
 ./gradlew :app:assembleLocalDebug
@@ -528,31 +530,6 @@ Example:
     }
 ```
 
-### suspend Rownd.getAccessToken(token: String): String?
-
-When possible, exchanges a non-Rownd access token for a Rownd access token. This is primarily used in scenarios
-where an app is migrating from some other authentication mechanism to Rownd. Using Rownd integrations,
-the system will accept a third-party token. If it successfully validates, Rownd will sign-in the user and
-return a fresh Rownd access token to the caller.
-
-This API returns `null` if the token could not be validated and exchanged. If that occurs, it's likely
-that the user should sign-in normally via `Rownd.requestSignIn()`.
-
-> NOTE: This API is typically used once. After a Rownd token is available, other tokens should be discarded.
-
-Example:
-
-```kotlin
-    // Assume `oldToken` was retrieved from some prior authenticator.
-    val accessToken = Rownd.getAccessToken(oldToken)
-
-    if (accessToken != null) {
-        // Navigate to the UI that a user should typically see
-    } else {
-        Rownd.requestSignIn()
-    }
-```
-
 ### Rownd.user.get(): Map\<String, Any?>
 
 Returns the entire user profile as a Map
@@ -565,43 +542,11 @@ Your application code is responsible for knowing which type the value should cas
 
 ### Rownd.user.set(data: Map\<String, Any?>): Void
 
-Replaces the user's data with that contained in the Map. This may overwrite existing values, but must match the schema you defined within your Rownd application dashboard. Any fields that are flagged as `encrypted` will be encrypted on-device prior to storing in Rownd's platform.
+Replaces the user's data with that contained in the Map. This may overwrite existing values, but must match the schema you defined within your Rownd application dashboard.
 
 ### Rownd.user.set(field: String, value: Any): Void
 
-Sets a specific user profile field to the provided value, overwriting if a value already exists. If the field is flagged as `encrypted`, it will be encrypted on-device prior to storing in Rownd's platform.
-
-## Data encryption
-
-As indicated previously, Rownd can automatically assist you in protecting sensitive user data by encrypting it on-device with a user's unique encryption key prior to saving it in Rownd's own platform storage.
-
-When you configure your app within the Rownd platform, you can indicate that it supports on-device encryption. When this flag is set, Rownd will automatically generate a cryptographically secure, unrecoverable encryption key on the user's device after they sign in. The key is stored using Android's native KeyStore mechanisms and all encryption is handled on the device. The key is never transmitted to Rownd's servers and the Rownd SDK does not provide any APIs to for your code to programmatically retrieve the encryption key.
-
-Only fields that you designate `encrypted` are encrypted on-device prior to storing within Rownd. Some identifying fields like email and phone number do not support on-device encryption at this time, since they are frequently used for indexing purposes.
-
-Of course, all data within the Rownd platform is encrypted at rest on disk and in transit, but this does not afford the same privacy guarantees as data encrypted on a user's local device. For especially sensitive data, we recommend enabling field-level encryption.
-
-<Info>
-  Data encrypted on-device will not be accessible by you, the app developer, outside of the context of your app. In other words, your app can use encrypted data in its plaintext (decrypted) form while the user is signed in, but you won't be able to retrieve that data from the Rownd servers in a decrypted form. For data that you choose to encrypt, you should never transmit the plain text value across a network.
-</Info>
-
-In some cases, you may want to encrypt data on-device that you'll send to your own servers for storage. Rownd provides convenience methods to encrypt and decrypt that data with the same user-owned key.
-
-### Rownd.user.encrypt(plaintext: String): String
-
-Encrypts the provided String `data` using the user's symmetric encryption key and returns the ciphertext as a string. You can encrypt anything that can be represented as a string (e.g., Int, Dictionary, Array, etc), but it's currently up to you to get it into a string format first.
-
-If the encryption fails, an `EncryptionException` will be thrown with a message explaining the failure.
-
-### Rownd.user.decrypt(ciphertext: String): String
-
-Attempts to decrypt the provided String `data`, returning the plaintext as a string. If the data originated as some other type (e.g., Map), you'll need to decode the data back into its original type.
-
-If the decryption fails, an `EncryptionException` will be thrown with a message explaining the failure.
-
-<Info>
-  Encryption is only possible once a user has authenticated. Rownd supports multiple levels of authentication (e.g., guest, unverified, and verified), but the lowest level of authentication must be achieved prior to encrypting or decrypting data. If you need to explicitly check whether encryption is possible at a specific point in time, call `Rownd.user.isEncryptionPossible(): Boolean` prior to calling `encrypt()` or `decrypt()`.
-</Info>
+Sets a specific user profile field to the provided value, overwriting if a value already exists.
 
 ## Events
 

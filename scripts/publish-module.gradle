@@ -50,33 +50,27 @@ afterEvaluate {
                 pom {
                     name = PUBLISH_ARTIFACT_ID
                     description = 'Rownd SDK for Android'
-                    url = 'https://github.com/rownd/android'
+                    url = 'https://github.com/supertokens/supertokens-rownd-android'
                     licenses {
                         license {
                             name = 'Apache 2.0 License'
-                            url = 'https://github.com/rownd/android/blob/main/LICENSE'
+                            url = 'https://github.com/supertokens/supertokens-rownd-android/blob/main/LICENSE'
                         }
                     }
                     developers {
                         developer {
-                            id = 'rownd'
-                            name = 'Rownd'
-                            email = 'support@rownd.io'
+                            id = 'supertokens'
+                            name = 'SuperTokens'
+                            email = 'team@supertokens.com'
                         }
-                        developer {
-                            id = 'mhamann'
-                            name = 'Matt Hamann'
-                            email = 'mhamann@rownd.io'
-                        }
-                        // Add all other devs here...
                     }
 
                     // Version control info - if you're using GitHub, follow the
                     // format as seen here
                     scm {
-                        connection = 'scm:git:github.com/rownd/android.git'
-                        developerConnection = 'scm:git:ssh://github.com/rownd/android.git'
-                        url = 'https://github.com/rownd/android/tree/main'
+                        connection = 'scm:git:https://github.com/supertokens/supertokens-rownd-android.git'
+                        developerConnection = 'scm:git:ssh://github.com/supertokens/supertokens-rownd-android.git'
+                        url = 'https://github.com/supertokens/supertokens-rownd-android/tree/main'
                     }
 
                     // Resolve actual versions for BOM-managed dependencies
