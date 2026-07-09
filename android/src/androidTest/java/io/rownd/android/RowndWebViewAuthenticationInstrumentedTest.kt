@@ -173,6 +173,25 @@ class RowndWebViewAuthenticationInstrumentedTest {
     }
 
     @Test
+    fun syntheticAuthenticationMessageFromDeepLinkCreatesUsableSuperTokensSession() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val stSession = HarnessClient.createSTSession("webview-deeplink-auth-user")
+        val interop = buildAuthenticationMessage(stSession.accessToken, stSession.refreshToken)
+
+        val bridge = createJavascriptInterface(HubPageSelector.DeepLink)
+        bridge.postMessage(interop)
+
+        waitUntil { runBlocking { SuperTokensSessionBridge.doesSessionExist(context) } }
+
+        val request = Request.Builder()
+            .url("${harnessConfig.androidUrl}/health")
+            .build()
+        stClient.newCall(request).execute().use { response ->
+            assertEquals("Deep link bootstrapped session must authenticate harness requests", 200, response.code)
+        }
+    }
+
+    @Test
     fun syntheticAuthenticationMessageEmitsSignInCompletedOnceForSession() {
         val stSession = HarnessClient.createSTSession("webview-event-user")
         val interop = buildAuthenticationMessage(
@@ -237,7 +256,6 @@ class RowndWebViewAuthenticationInstrumentedTest {
             webViewRef.set(RowndWebView(context, null).apply {
                 rowndClient = Rownd
                 this.targetPage = targetPage
-                isCurrentPageTrustedHub = true
                 dismiss = {}
             })
         }

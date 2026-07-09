@@ -447,7 +447,10 @@ class RowndJavascriptInterface constructor(
 
             when (interopMessage.type) {
                 MessageType.authentication -> {
-                    if (parentWebView.targetPage != HubPageSelector.SignIn) {
+                    if (
+                        parentWebView.targetPage != HubPageSelector.SignIn &&
+                        parentWebView.targetPage != HubPageSelector.DeepLink
+                    ) {
                         return
                     }
 
