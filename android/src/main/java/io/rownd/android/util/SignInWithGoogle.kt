@@ -119,7 +119,7 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
         if (googleSignInMethodConfig?.enabled != true) {
             Log.e(
                 "Rownd",
-                "Google sign-in is not enabled. Turn it on in the Rownd Platform https://app.rownd.io/applications/" + rowndContext.store?.currentState?.appConfig?.id
+                "Google sign-in is not enabled in the backend app config. Expected /plugin/rownd/app-config to include config.hub.auth.sign_in_methods.google.enabled=true for app " + rowndContext.store?.currentState?.appConfig?.id
             )
 
             if (wasUserInitiated == true) {
@@ -135,7 +135,7 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
         } ?: run {
             Log.e(
                 "Rownd",
-                "Cannot sign in with Google. Missing client_id. Add it to your app in the Rownd dashboard."
+                "Cannot sign in with Google. Missing config.hub.auth.sign_in_methods.google.client_id in the backend app config."
             )
             showErrorToUser(SIGN_IN_WITH_GOOGLE_NOT_ENABLED)
             span?.setAttribute("error", "missing_client_id")
@@ -382,7 +382,7 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
         }
 
         if (googleSignInMethodConfig?.enabled != true) {
-            throw RowndException("Google sign-in is not enabled. Turn it on in the Rownd Platform https://app.rownd.io/applications/" + rowndContext.store?.currentState?.appConfig?.id)
+            throw RowndException("Google sign-in is not enabled in the backend app config. Expected /plugin/rownd/app-config to include config.hub.auth.sign_in_methods.google.enabled=true for app " + rowndContext.store?.currentState?.appConfig?.id)
         }
         if (googleSignInMethodConfig.clientId == "") {
             throw RowndException("Cannot sign in with Google. Missing client configuration.")

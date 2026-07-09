@@ -343,7 +343,7 @@ class RowndClient(
                 signInOptions.intent = null
                 Log.w(
                     "Rownd",
-                    "Sign in with intent: SignIn/SignUp is not enabled. Turn it on in the Rownd platform"
+                    "Explicit sign-in/sign-up intent is not enabled in the backend app config. Expected config.hub.auth.use_explicit_sign_up_flow=true."
                 )
             }
         }
