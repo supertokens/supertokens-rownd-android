@@ -160,6 +160,15 @@ The custom scheme handles fallback links such as `rowndsupertokens://account/log
 
 For verified App Links, the Hub domain's `assetlinks.json` must include your Android package name and signing certificate fingerprint. If you change the package name or signing key, update the asset links entry before relying on automatic app handoff.
 
+Warm-start links are handled automatically when your activity extends `ComponentActivity`, including `FragmentActivity` and `AppCompatActivity`. A plain framework `Activity` must forward new intents:
+
+```kotlin
+override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    Rownd.handleIntent(intent)
+}
+```
+
 ### 3. Initialize the Rownd SDK
 
 The Rownd SDK needs access to your application's and current activity's context in order to properly manage state, display UI components, and so on.

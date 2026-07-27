@@ -1,9 +1,11 @@
 package io.rownd.android
 
+import android.content.Intent
 import android.net.Uri
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -33,5 +35,10 @@ class SignInLinksInstrumentedTest {
         assertEquals("rowndsupertokens", emailVerificationUri.scheme)
         assertEquals("account", emailVerificationUri.host)
         assertEquals("/verify-email", emailVerificationUri.path)
+    }
+
+    @Test
+    fun ignoresIntentWithoutDeepLink() {
+        assertFalse(Rownd.handleIntent(Intent()))
     }
 }

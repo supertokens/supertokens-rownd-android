@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.Intent.ACTION_VIEW
 import android.net.Uri
 import android.util.Log
@@ -139,8 +140,12 @@ class SignInLinkApi @Inject constructor() {
     }
 
     internal fun openDeepLinkIfPresentOnIntent(ctx: Activity): Boolean {
-        val action: String? = ctx.intent?.action
-        val uri = ctx.intent?.data
+        return openDeepLinkIfPresentOnIntent(ctx.intent)
+    }
+
+    internal fun openDeepLinkIfPresentOnIntent(intent: Intent?): Boolean {
+        val action = intent?.action
+        val uri = intent?.data
 
         if (action != ACTION_VIEW || !isConfiguredDeepLink(uri)) {
             return false

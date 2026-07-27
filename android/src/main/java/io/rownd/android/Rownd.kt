@@ -4,6 +4,7 @@ package io.rownd.android
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -180,6 +181,10 @@ class RowndClient(
             signInLinkApi.openDeepLinkIfPresentOnIntent(it)
         }
 
+        appHandleWrapper?.registerNewIntentListener {
+            signInLinkApi.openDeepLinkIfPresentOnIntent(it)
+        }
+
         // Show the Google One Tap UI if applicable
         signInWithGoogle.showOneTapIfApplicable()
     }
@@ -193,6 +198,11 @@ class RowndClient(
     fun configure(activity: FragmentActivity, options: RowndConfigureOptions) {
         _registerActivityLifecycle(activity)
         configure(options)
+    }
+
+    /** Handles an intent delivered to a host that does not extend ComponentActivity. */
+    fun handleIntent(intent: Intent): Boolean {
+        return signInLinkApi.openDeepLinkIfPresentOnIntent(intent)
     }
 
     // Mainly for use by other Rownd SDKs (like Flutter)
