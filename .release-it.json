@@ -2,7 +2,7 @@
     "npm": false,
     "git": {
       "commitMessage": "chore: release v${version}",
-      "tagName": "${version}"
+      "tagName": "v${version}"
     },
     "github": {
       "release": true
