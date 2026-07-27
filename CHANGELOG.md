@@ -1,3 +1,12 @@
+
+
+## [0.1.2](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.1...v0.1.2) (2026-07-27)
+
+
+### Bug Fixes
+
+* handle magic links on warm app starts ([d79cd41](https://github.com/supertokens/supertokens-rownd-android/commit/d79cd415a5e568d81ccc005677bcef8b19e54808))
+
 # 0.1.0
 
 Initial production release of the SuperTokens Rownd Android SDK.
