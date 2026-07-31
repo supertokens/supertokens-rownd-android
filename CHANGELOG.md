@@ -1,5 +1,12 @@
 
 
+## [0.1.3](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.2...v0.1.3) (2026-07-31)
+
+
+### Bug Fixes
+
+* Add appVariantId in config and include it in login requests ([8a9d4ab](https://github.com/supertokens/supertokens-rownd-android/commit/8a9d4ab24f8e9010d141435e76baa9919f646a56))
+
 ## [0.1.2](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.1...v0.1.2) (2026-07-27)
 
 
