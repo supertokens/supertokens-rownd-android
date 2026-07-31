@@ -209,6 +209,8 @@ Register your `Application` class in `AndroidManifest.xml`:
 </application>
 ```
 
+`appVariantId` is optional. Set it in `RowndConfigureOptions` when this app belongs to a Rownd app variant so Hub and native Google sign-in include it in authentication requests.
+
 `Rownd.configure(...)` automatically initializes the SuperTokens session integration once the Rownd app config has loaded. You do not need to manually initialize SuperTokens for the Rownd session bridge.
 
 ### 4. Request sign in

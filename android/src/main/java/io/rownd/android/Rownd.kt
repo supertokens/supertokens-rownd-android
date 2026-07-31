@@ -60,6 +60,7 @@ val Rownd = RowndClient(DaggerRowndGraph.create())
 
 data class RowndConfigureOptions(
     val appKey: String,
+    val appVariantId: String? = null,
     val apiDomain: String,
     val apiBasePath: String = "/auth",
     val hubUrl: String? = null,
@@ -119,6 +120,7 @@ class RowndClient(
         require(apiDomain.isNotBlank()) { "apiDomain is required" }
 
         config.appKey = options.appKey
+        config.appVariantId = options.appVariantId
         config.apiUrl = apiDomain
         config.apiBasePath = apiBasePath
         config.deepLinkScheme = options.deepLinkScheme.trimEnd(':')

@@ -183,7 +183,16 @@ class AuthRepo @Inject constructor() {
         val apiDomain = st.appInfo.apiDomain
         val apiBasePath = st.appInfo.apiBasePath ?: "/auth"
 
-        val response = authenticatedApiClient.client.post("$apiDomain$apiBasePath/signinup") {
+        val signinUpUrl = buildString {
+            append(apiDomain)
+            append(apiBasePath)
+            append("/signinup")
+            rowndContext.config.appVariantId?.takeIf { it.isNotEmpty() }?.let {
+                append("?app_variant_id=")
+                append(java.net.URLEncoder.encode(it, Charsets.UTF_8.name()))
+            }
+        }
+        val response = authenticatedApiClient.client.post(signinUpUrl) {
             setBody(GoogleSignInUpBody(
                 thirdPartyId = "google",
                 oAuthTokens = mapOf("id_token" to idToken),
