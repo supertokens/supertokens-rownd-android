@@ -28,6 +28,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.time.Instant
 import java.util.Date
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(AndroidJUnit4::class)
@@ -152,6 +153,16 @@ class RowndWebViewAuthenticationInstrumentedTest {
     }
 
     @Test
+    fun userInputCodeOtpCompletesFromSignedOutState() {
+        assertUserInputCodeOtpCompletion(existingSession = false)
+    }
+
+    @Test
+    fun userInputCodeOtpReplacesExistingSession() {
+        assertUserInputCodeOtpCompletion(existingSession = true)
+    }
+
+    @Test
     fun syntheticAuthenticationMessageCreatesUsableSuperTokensSession() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val stSession = HarnessClient.createSTSession("webview-auth-user")
@@ -248,7 +259,75 @@ class RowndWebViewAuthenticationInstrumentedTest {
         assertEquals("Expired bootstrapped sessions must refresh through SuperTokens", 1, counters.stRefresh)
     }
 
-    private fun createJavascriptInterface(targetPage: HubPageSelector): RowndJavascriptInterface {
+    private fun assertUserInputCodeOtpCompletion(existingSession: Boolean) {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val previousSession = if (existingSession) HarnessClient.createSTSession("otp-existing-user") else null
+        if (previousSession != null) {
+            SuperTokensSessionBridge.bootstrapSession(
+                context,
+                previousSession.accessToken,
+                previousSession.refreshToken,
+            )
+            Rownd.store.dispatch(StateAction.SetAuth(AuthState(accessToken = previousSession.accessToken)))
+        }
+
+        val authenticatedSession = HarnessClient.createSTSession("otp-authenticated-user")
+        val completionCount = AtomicInteger()
+        val completionEvent = AtomicReference<RowndEvent>()
+        val dismissalCount = AtomicInteger()
+        val listener: (RowndEvent) -> Unit = {
+            if (it.event == RowndEventType.SignInCompleted) {
+                completionEvent.set(it)
+                completionCount.incrementAndGet()
+            }
+        }
+        val bridge = createJavascriptInterface(HubPageSelector.SignIn) {
+            dismissalCount.incrementAndGet()
+        }
+
+        Rownd.addEventListener(listener)
+        try {
+            bridge.postMessage(buildAuthChallengeInitiatedMessage())
+
+            assertEquals("otp-challenge", Rownd.stateRepo.state.value.auth.challengeId)
+            assertEquals("otp@example.com", Rownd.stateRepo.state.value.auth.userIdentifier)
+            if (previousSession != null) {
+                assertEquals(previousSession.accessToken, runBlocking { SuperTokensSessionBridge.getAccessToken(context) })
+            } else {
+                assertFalse(runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
+            }
+
+            bridge.postMessage(buildAuthenticationMessage(
+                authenticatedSession.accessToken,
+                authenticatedSession.refreshToken,
+                userType = RowndSignInUserType.ExistingUser,
+            ))
+            bridge.postMessage("""{"type":"auth_challenge_cleared"}""")
+            bridge.postMessage(buildSignInCompletedMessage())
+
+            waitUntil {
+                runBlocking { SuperTokensSessionBridge.getAccessToken(context) } == authenticatedSession.accessToken &&
+                    Rownd.stateRepo.state.value.auth.accessToken == authenticatedSession.accessToken
+            }
+
+            assertEquals(authenticatedSession.refreshToken, SuperTokensSessionBridge.getRefreshToken(context))
+            assertEquals(authenticatedSession.accessToken, Rownd.stateRepo.state.value.auth.accessToken)
+            assertEquals(null, Rownd.stateRepo.state.value.auth.challengeId)
+            assertEquals(null, Rownd.stateRepo.state.value.auth.userIdentifier)
+
+            waitUntil { dismissalCount.get() == 1 }
+            assertEquals("OTP completion must be emitted once", 1, completionCount.get())
+            assertEquals("email", completionEvent.get().data["method"])
+            assertEquals("OTP completion must dismiss once", 1, dismissalCount.get())
+        } finally {
+            Rownd.removeEventListener(listener)
+        }
+    }
+
+    private fun createJavascriptInterface(
+        targetPage: HubPageSelector,
+        dismiss: () -> Unit = {},
+    ): RowndJavascriptInterface {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val webViewRef = AtomicReference<RowndWebView>()
 
@@ -256,12 +335,32 @@ class RowndWebViewAuthenticationInstrumentedTest {
             webViewRef.set(RowndWebView(context, null).apply {
                 rowndClient = Rownd
                 this.targetPage = targetPage
-                dismiss = {}
+                this.dismiss = dismiss
             })
         }
 
         return RowndJavascriptInterface(webViewRef.get(), {}, {})
     }
+
+    private fun buildAuthChallengeInitiatedMessage(): String = """
+        {
+          "type": "auth_challenge_initiated",
+          "payload": {
+            "challenge_id": "otp-challenge",
+            "user_identifier": "otp@example.com"
+          }
+        }
+    """.trimIndent()
+
+    private fun buildSignInCompletedMessage(): String = """
+        {
+          "type": "event",
+          "payload": {
+            "event": "sign_in_completed",
+            "data": { "method": "email" }
+          }
+        }
+    """.trimIndent()
 
     private fun buildAuthenticationMessage(
         accessToken: String,
