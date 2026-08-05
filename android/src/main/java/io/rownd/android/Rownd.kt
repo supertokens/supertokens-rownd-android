@@ -282,6 +282,12 @@ class RowndClient(
                     jsFnOptions = RowndSignInJsOptions(signInType = RowndSignInType.Anonymous)
                 )
             }
+            RowndSignInHint.Apple -> {
+                displayHub(
+                    HubPageSelector.SignIn,
+                    jsFnOptions = RowndSignInJsOptions(signInType = RowndSignInType.Apple)
+                )
+            }
         }
     }
 
@@ -521,6 +527,7 @@ enum class RowndSignInHint {
     Google,
     OneTap,
     Guest,
+    Apple,
 }
 
 @Serializable

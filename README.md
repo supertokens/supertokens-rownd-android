@@ -2,7 +2,7 @@
 
 The Rownd SDK for Android provides authentication, account and user profile management, deep linking, and more for native Android applications.
 
-Using the Rownd platform, you can easily bring the same authentication that's on your website to your mobile apps. Or if you only authenticate users on your mobile apps, you can streamline the authentication process using Rownd's passwordless sign-in links, enabling you to seamlessly authenticate users from an app link sent to their email or phone number.
+Using the Rownd platform, you can easily bring the same authentication that's on your website to your mobile apps. Or if you only authenticate users on your mobile apps, you can streamline authentication using Rownd's passwordless sign-in links, one-time codes, or both, delivered by email or SMS.
 
 Once a user is authenticated, you can retrieve and update their profile information on the fly using native APIs. Leverage Rownd's pre-built mobile app components to give users profile management tools.
 
@@ -226,6 +226,7 @@ You can also request a specific sign-in method when it is enabled for your Rownd
 ```kotlin
 Rownd.requestSignIn(RowndSignInHint.OneTap)
 Rownd.requestSignIn(RowndSignInHint.Guest)
+Rownd.requestSignIn(RowndSignInHint.Apple)
 ```
 
 ### 5. Call protected APIs
@@ -469,6 +470,8 @@ Supported options:
 - `RowndSignInHint.OneTap` - Prompt user to sign into their account with Google One Tap
 
 - `RowndSignInHint.Guest` - Sign in the user anonymously as a guest.
+
+- `RowndSignInHint.Apple` - Start Sign in with Apple through the Rownd Hub.
 
 Example:
 
