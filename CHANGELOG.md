@@ -1,5 +1,12 @@
 
 
+## [0.1.4](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.3...v0.1.4) (2026-08-05)
+
+
+### Bug Fixes
+
+* Handle apple sign in ([93592e1](https://github.com/supertokens/supertokens-rownd-android/commit/93592e178691d2c831b191325bd3fd3547531f1b))
+
 ## [0.1.3](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.2...v0.1.3) (2026-07-31)
 
 
