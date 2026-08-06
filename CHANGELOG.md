@@ -1,5 +1,12 @@
 
 
+## [0.1.5](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.4...v0.1.5) (2026-08-06)
+
+
+### Bug Fixes
+
+* prevent OAuth callbacks from replaying sign-in ([08c6b96](https://github.com/supertokens/supertokens-rownd-android/commit/08c6b9624c6223264f92a035621bc0d64d0c18cc))
+
 ## [0.1.4](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.3...v0.1.4) (2026-08-05)
 
 
