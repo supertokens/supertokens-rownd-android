@@ -52,6 +52,7 @@ import kotlinx.collections.immutable.persistentListOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
@@ -89,6 +90,12 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
     internal var setCanTouchBackgroundToDismiss: ((to: Boolean) -> Unit)? = null
 
     internal lateinit var rowndClient: RowndClient
+    internal val rowndJavascriptInterface: RowndJavascriptInterface
+
+    private val lifecycleJob = SupervisorJob()
+    internal val lifecycleScope = CoroutineScope(Dispatchers.Main.immediate + lifecycleJob)
+    private var targetPageRequestId: Long = 0
+    private var pendingTargetPageRequest: PendingTargetPageRequest? = null
 
     init {
         this.setLayerType(LAYER_TYPE_HARDWARE, null)
@@ -118,7 +125,7 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
             setCanTouchBackgroundToDismiss?.let { it(enable) }
         }
 
-        val rowndJavascriptInterface = RowndJavascriptInterface(this, ::dynamicBottomSheet, ::setCanTouchBackground)
+        rowndJavascriptInterface = RowndJavascriptInterface(this, ::dynamicBottomSheet, ::setCanTouchBackground)
 
         this.addJavascriptInterface(rowndJavascriptInterface, "rowndAndroidSDK")
         this.webViewClient = RowndWebViewClient(this, context)
@@ -127,6 +134,12 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
         if (0 != appFlags.and(ApplicationInfo.FLAG_DEBUGGABLE)) {
             setWebContentsDebuggingEnabled(true)
         }
+    }
+
+    override fun destroy() {
+        rowndJavascriptInterface.dispose()
+        lifecycleJob.cancel()
+        super.destroy()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -146,33 +159,90 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
     }
 
     internal fun loadNewPage(targetPage: HubPageSelector = HubPageSelector.SignIn, jsFnOptionsAsJson: String?) {
-        this.jsFunctionArgsAsJson = jsFnOptionsAsJson ?: DEFAULT_JS_FN_ARGS
-        this.targetPage = targetPage
+        val targetPageRequestId = beginTargetPageRequest(targetPage, jsFnOptionsAsJson)
 
         this.let {
-            CoroutineScope(Dispatchers.Main).launch {
-                val targetUrl = Rownd.config.hubLoaderUrl()
+            lifecycleScope.launch {
+                val targetUrl = rowndClient.config.hubLoaderUrl().toUri().buildUpon()
+                    .appendQueryParameter(TARGET_PAGE_REQUEST_ID_PARAM, targetPageRequestId.toString())
+                    .build()
+                    .toString()
+                if (!it.setTargetPageRequestUrl(targetPageRequestId, targetUrl)) {
+                    return@launch
+                }
                 it.loadUrl(targetUrl)
             }
         }
-
     }
 
     internal fun loadNewPage(targetPage: HubPageSelector = HubPageSelector.SignIn, jsFnOptions: RowndSignInOptionsBase) {
         loadNewPage(targetPage, jsFnOptions.toJsonString())
     }
 
+    internal fun prepareTargetPageRequest(
+        targetPage: HubPageSelector,
+        jsFnOptionsAsJson: String?,
+        targetUrl: String,
+    ) {
+        val requestId = beginTargetPageRequest(targetPage, jsFnOptionsAsJson)
+        setTargetPageRequestUrl(requestId, targetUrl)
+    }
+
+    @Synchronized
+    private fun beginTargetPageRequest(targetPage: HubPageSelector, jsFnOptionsAsJson: String?): Long {
+        this.targetPage = targetPage
+        this.jsFunctionArgsAsJson = jsFnOptionsAsJson ?: DEFAULT_JS_FN_ARGS
+        targetPageRequestId += 1
+        pendingTargetPageRequest = PendingTargetPageRequest(
+            id = targetPageRequestId,
+            targetPage = targetPage,
+            jsFunctionArgsAsJson = this.jsFunctionArgsAsJson,
+        )
+        return targetPageRequestId
+    }
+
+    @Synchronized
+    private fun setTargetPageRequestUrl(requestId: Long, targetUrl: String): Boolean {
+        val request = pendingTargetPageRequest?.takeIf { it.id == requestId } ?: return false
+        pendingTargetPageRequest = request.copy(targetUrl = targetUrl)
+        return true
+    }
+
+    @Synchronized
+    internal fun pendingTargetPageRequest(url: String): PendingTargetPageRequest? {
+        val requestId = url.toUri().getQueryParameter(TARGET_PAGE_REQUEST_ID_PARAM)?.toLongOrNull()
+        return pendingTargetPageRequest?.takeIf { it.id == requestId }
+    }
+
+    @Synchronized
+    internal fun hasPendingTargetPageRequest(): Boolean = pendingTargetPageRequest != null
+
+    @Synchronized
+    internal fun consumeTargetPageRequest(requestId: Long): PendingTargetPageRequest? {
+        val request = pendingTargetPageRequest?.takeIf { it.id == requestId } ?: return null
+        pendingTargetPageRequest = null
+        return request
+    }
+
     companion object {
         const val DEFAULT_JS_FN_ARGS = "{}"
+        private const val TARGET_PAGE_REQUEST_ID_PARAM = "rph_sdk_request_id"
     }
+
+    internal data class PendingTargetPageRequest(
+        val id: Long,
+        val targetPage: HubPageSelector,
+        val jsFunctionArgsAsJson: String,
+        val targetUrl: String? = null,
+    )
 }
 
 class RowndWebViewClient(private val webView: RowndWebView, private val context: Context) : WebViewClientCompat() {
     private var timeout: Boolean = true
-    private var displayedTargetForUrl: String? = null
+    private var pageLoadId: Long = 0
 
     init {
-        CoroutineScope(Dispatchers.IO).launch {
+        webView.lifecycleScope.launch(Dispatchers.IO) {
             delay(20000)
             if (timeout) {
                 loadNoInternetHTML()
@@ -275,13 +345,10 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
 
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
         timeout = false
+        pageLoadId += 1
         super.onPageStarted(webView, url, favicon)
         Log.d("Rownd.hub", "Started loading $url")
         setIsLoading(true)
-        if (url?.startsWith(Rownd.config.baseUrl) == true) {
-            displayedTargetForUrl = null
-        }
-
         if (url?.startsWith(Rownd.config.baseUrl) == true) {
             view?.setBackgroundColor(0x00000000)
         } else {
@@ -308,14 +375,23 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
 
         view.setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
 
+        val targetPageRequest = webView.pendingTargetPageRequest(url)
+        if (targetPageRequest == null) {
+            if (!webView.hasPendingTargetPageRequest()) {
+                setIsLoading(false)
+            }
+            return
+        }
+        val finishedPageLoadId = pageLoadId
+
         if (WebViewFeature.isFeatureSupported(WebViewFeature.VISUAL_STATE_CALLBACK)) {
             WebViewCompat.postVisualStateCallback(view, 1) {
-                displayTargetPage(view)
+                displayTargetPage(view, targetPageRequest, finishedPageLoadId)
             }
         } else {
             // If VISUAL_STATE_CALLBACK isn't supported on this platform, try to display the
             // appropriate content.
-            displayTargetPage(view)
+            displayTargetPage(view, targetPageRequest, finishedPageLoadId)
         }
     }
 
@@ -354,19 +430,23 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
         }
     }
 
-    private fun displayTargetPage(view: WebView) {
-        if (displayedTargetForUrl == view.url) {
-            setIsLoading(false)
+    private fun displayTargetPage(
+        view: WebView,
+        targetPageRequest: RowndWebView.PendingTargetPageRequest,
+        finishedPageLoadId: Long,
+    ) {
+        if (pageLoadId != finishedPageLoadId) {
             return
         }
-        displayedTargetForUrl = view.url
 
-        when ((view as RowndWebView).targetPage) {
-            HubPageSelector.SignIn, HubPageSelector.Unknown -> evaluateJavascript("rownd.requestSignIn(${webView.jsFunctionArgsAsJson})")
+        val request = webView.consumeTargetPageRequest(targetPageRequest.id) ?: return
+
+        when (request.targetPage) {
+            HubPageSelector.SignIn, HubPageSelector.Unknown -> evaluateJavascript("rownd.requestSignIn(${request.jsFunctionArgsAsJson})")
             HubPageSelector.SignOut -> evaluateJavascript("rownd.signOut({\"show_success\":true})")
-            HubPageSelector.QrCode -> evaluateJavascript("rownd.generateQrCode(${webView.jsFunctionArgsAsJson})")
+            HubPageSelector.QrCode -> evaluateJavascript("rownd.generateQrCode(${request.jsFunctionArgsAsJson})")
             HubPageSelector.ManageAccount -> evaluateJavascript("rownd.user.manageAccount()")
-            HubPageSelector.ConnectAuthenticator -> evaluateJavascript("rownd.connectAuthenticator(${webView.jsFunctionArgsAsJson})")
+            HubPageSelector.ConnectAuthenticator -> evaluateJavascript("rownd.connectAuthenticator(${request.jsFunctionArgsAsJson})")
             HubPageSelector.DeepLink -> Unit
         }
 
@@ -404,17 +484,21 @@ class RowndJavascriptInterface constructor(
     private val setCanTouchBackground: (to: Boolean) -> Unit,
     ) {
     private val signInCompletedDeduper = SignInCompletedEventDeduper()
+    private val bridgeLifecycle = SupervisorJob()
+    private val bridgeScope = CoroutineScope(Dispatchers.IO + bridgeLifecycle)
     private var signInCompletedFallbackJob: Job? = null
+    @Volatile
+    private var disposed = false
 
     private fun scheduleSignInCompletedAuthenticationFallback(authenticationMessage: AuthenticationMessage) {
-        if (!signInCompletedDeduper.shouldScheduleAuthenticationFallback() || signInCompletedFallbackJob?.isActive == true) {
+        if (disposed || !signInCompletedDeduper.shouldScheduleAuthenticationFallback() || signInCompletedFallbackJob?.isActive == true) {
             Log.d("Rownd.hub", "Skipping duplicate sign_in_completed event")
             return
         }
 
-        signInCompletedFallbackJob = CoroutineScope(Dispatchers.IO).launch {
+        signInCompletedFallbackJob = bridgeScope.launch {
             delay(SIGN_IN_COMPLETED_AUTHENTICATION_FALLBACK_DELAY_MILLISECONDS)
-            if (!signInCompletedDeduper.shouldEmitForAuthenticationFallback()) {
+            if (disposed || !signInCompletedDeduper.shouldEmitForAuthenticationFallback()) {
                 Log.d("Rownd.hub", "Skipping duplicate sign_in_completed event")
                 return@launch
             }
@@ -432,6 +516,12 @@ class RowndJavascriptInterface constructor(
         }
     }
 
+    internal fun dispose() {
+        disposed = true
+        bridgeLifecycle.cancel()
+        signInCompletedFallbackJob = null
+    }
+
     private fun resetSignInCompletedDeduper() {
         signInCompletedFallbackJob?.cancel()
         signInCompletedFallbackJob = null
@@ -440,6 +530,10 @@ class RowndJavascriptInterface constructor(
 
     @JavascriptInterface
     fun postMessage(message: String) {
+        if (disposed) {
+            return
+        }
+
         Log.d("Rownd.hub", "postMessage: " + redactSensitiveKeys(message))
         try {
             val interopMessage = json.decodeFromString(RowndHubInteropMessage.serializer(), message)
@@ -462,7 +556,7 @@ class RowndJavascriptInterface constructor(
                     }
                     val appContext = parentWebView.context.applicationContext
 
-                    fun launchPostBootstrap(includeBootstrap: Boolean) = CoroutineScope(Dispatchers.IO).launch {
+                    fun launchPostBootstrap(includeBootstrap: Boolean) = bridgeScope.launch {
                         try {
                             if (includeBootstrap) {
                                 SuperTokensSessionBridge.bootstrapSession(
@@ -547,9 +641,7 @@ class RowndJavascriptInterface constructor(
                 }
 
                 MessageType.tryAgain -> {
-                    CoroutineScope(Dispatchers.Main).launch {
-                        parentWebView.loadUrl(Rownd.config.hubLoaderUrl())
-                    }
+                    parentWebView.loadNewPage(parentWebView.targetPage, parentWebView.jsFunctionArgsAsJson)
                 }
 
                 MessageType.HubResize -> {

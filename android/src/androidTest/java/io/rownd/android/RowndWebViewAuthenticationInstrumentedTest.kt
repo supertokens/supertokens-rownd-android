@@ -1,7 +1,7 @@
 package io.rownd.android
 
-import android.content.Context
 import android.app.Application
+import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.supertokens.session.SuperTokens
@@ -18,6 +18,7 @@ import io.rownd.android.views.RowndWebView
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -28,11 +29,14 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.time.Instant
 import java.util.Date
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(AndroidJUnit4::class)
 class RowndWebViewAuthenticationInstrumentedTest {
+    private val webViews = mutableListOf<RowndWebView>()
 
     companion object {
         private lateinit var harnessConfig: HarnessClient.HarnessConfig
@@ -73,6 +77,18 @@ class RowndWebViewAuthenticationInstrumentedTest {
         Rownd._registerActivityLifecycle(context.applicationContext as Application)
         Rownd.store = Rownd.stateRepo.getStore()
         Rownd.store.dispatch(StateAction.SetAuth(AuthState()))
+    }
+
+    @After
+    fun destroyWebViews() {
+        if (webViews.isEmpty()) {
+            return
+        }
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            webViews.forEach(RowndWebView::destroy)
+        }
+        webViews.clear()
     }
 
     @Test
@@ -199,6 +215,33 @@ class RowndWebViewAuthenticationInstrumentedTest {
             .build()
         stClient.newCall(request).execute().use { response ->
             assertEquals("Deep link bootstrapped session must authenticate harness requests", 200, response.code)
+        }
+    }
+
+    @Test
+    fun destroyingWebViewCancelsPendingSignInCompletedFallback() {
+        val stSession = HarnessClient.createSTSession("destroyed-webview-auth-user")
+        val completionEvent = CountDownLatch(1)
+        val listener: (RowndEvent) -> Unit = {
+            if (it.event == RowndEventType.SignInCompleted) {
+                completionEvent.countDown()
+            }
+        }
+
+        Rownd.addEventListener(listener)
+        try {
+            val bridge = createJavascriptInterface(HubPageSelector.DeepLink)
+            bridge.postMessage(buildAuthenticationMessage(stSession.accessToken, stSession.refreshToken))
+
+            waitUntil { Rownd.stateRepo.state.value.auth.accessToken == stSession.accessToken }
+            destroyWebViews()
+
+            assertFalse(
+                "A destroyed WebView must not emit its delayed sign_in_completed fallback",
+                completionEvent.await(2, TimeUnit.SECONDS),
+            )
+        } finally {
+            Rownd.removeEventListener(listener)
         }
     }
 
@@ -339,7 +382,10 @@ class RowndWebViewAuthenticationInstrumentedTest {
             })
         }
 
-        return RowndJavascriptInterface(webViewRef.get(), {}, {})
+        return webViewRef.get().let {
+            webViews.add(it)
+            it.rowndJavascriptInterface
+        }
     }
 
     private fun buildAuthChallengeInitiatedMessage(): String = """
