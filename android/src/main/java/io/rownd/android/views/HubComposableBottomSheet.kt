@@ -102,6 +102,7 @@ class HubComposableBottomSheet(
                         }
                     }
                     hubWebView.dismiss = {
+                        hubWebView.rowndJavascriptInterface.invalidateEmailVerificationRequests()
                         this@HubComposableBottomSheet.dismiss()
                     }
                     if (!hasLoadedUrl) {

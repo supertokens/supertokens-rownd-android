@@ -188,9 +188,10 @@ object SuperTokensSessionBridge {
 
     // MARK: - Rownd compatibility state sync
 
-    suspend fun syncRowndAuthStateFromSuperTokens(context: Context, store: io.rownd.android.models.Store<io.rownd.android.models.repos.GlobalState, StateAction>) {
-        val accessToken = getAccessToken(context) ?: return
+    suspend fun syncRowndAuthStateFromSuperTokens(context: Context, store: io.rownd.android.models.Store<io.rownd.android.models.repos.GlobalState, StateAction>): Boolean {
+        val accessToken = getAccessToken(context) ?: return false
         store.dispatch(StateAction.SetAuth(AuthState(accessToken = accessToken, refreshToken = null)))
+        return true
     }
 
     // MARK: - Helpers

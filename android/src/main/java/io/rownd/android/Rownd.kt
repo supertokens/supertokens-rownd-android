@@ -33,6 +33,7 @@ import io.rownd.android.models.repos.StateAction
 import io.rownd.android.models.repos.StateRepo
 import io.rownd.android.models.repos.UserRepo
 import io.rownd.android.util.AppLifecycleListener
+import io.rownd.android.util.AuthenticatedApiClient
 import io.rownd.android.util.HubSessionStorage
 import io.rownd.android.util.InvalidRefreshTokenException
 import io.rownd.android.util.SuperTokensSessionBridge
@@ -85,6 +86,7 @@ class RowndClient(
     internal var eventEmitter = graph.rowndEventEmitter()
     internal var signInWithGoogle = graph.signInWithGoogle()
     internal var telemetry = graph.telemetry()
+    internal var authenticatedApiClient: AuthenticatedApiClient = graph.authenticatedApiClient()
 
     var state = stateRepo.state
     var user = userRepo

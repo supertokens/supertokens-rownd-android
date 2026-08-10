@@ -36,6 +36,7 @@ import io.rownd.android.models.CanTouchBackgroundToDismissMessage
 import io.rownd.android.models.EventMessage
 import io.rownd.android.models.HubResizeMessage
 import io.rownd.android.models.MessageType
+import io.rownd.android.models.VerifyEmailMessage
 import io.rownd.android.models.RowndHubInteropMessage
 import io.rownd.android.models.TriggerSignInWithGoogleMessage
 import io.rownd.android.models.UserDataUpdateMessage
@@ -45,6 +46,8 @@ import io.rownd.android.util.RowndEvent
 import io.rownd.android.util.RowndEventType
 import io.rownd.android.util.SignInCompletedEventDeduper
 import io.rownd.android.util.SuperTokensSessionBridge
+import io.rownd.android.util.nativeEmailVerificationRequest
+import io.rownd.android.util.performNativeEmailVerification
 import io.rownd.android.util.redactSensitiveKeys
 import io.rownd.android.util.signInCompletedEventData
 import io.rownd.android.views.html.noInternetHTML
@@ -58,6 +61,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
+import java.net.URI
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -77,6 +81,20 @@ enum class HubPageSelector {
 
 private const val HUB_CLOSE_AFTER_MILLISECONDS: Long = 1500
 private const val SIGN_IN_COMPLETED_AUTHENTICATION_FALLBACK_DELAY_MILLISECONDS: Long = 500
+private const val NATIVE_EMAIL_VERIFICATION_EVENT = "rownd:native-email-verification"
+
+internal fun urlForLogging(url: String?): String = runCatching {
+    val parsed = URI(url ?: return@runCatching "[invalid URL]")
+    URI(parsed.scheme, null, parsed.host, parsed.port, parsed.path, null, null).toString()
+}.getOrDefault("[invalid URL]")
+
+private fun trustedOriginRule(baseUrl: String): String? = runCatching {
+    val uri = URI(baseUrl)
+    if (uri.scheme == null || uri.host == null) {
+        return@runCatching null
+    }
+    "${uri.scheme.lowercase()}://${uri.host.lowercase()}${if (uri.port >= 0) ":${uri.port}" else ""}"
+}.getOrNull()
 
 @SuppressLint("SetJavaScriptEnabled")
 class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, attrs), DialogChild {
@@ -94,6 +112,7 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
 
     private val lifecycleJob = SupervisorJob()
     internal val lifecycleScope = CoroutineScope(Dispatchers.Main.immediate + lifecycleJob)
+    private val secureHubMessagingAvailable: Boolean
     private var targetPageRequestId: Long = 0
     private var pendingTargetPageRequest: PendingTargetPageRequest? = null
 
@@ -127,7 +146,31 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
 
         rowndJavascriptInterface = RowndJavascriptInterface(this, ::dynamicBottomSheet, ::setCanTouchBackground)
 
-        this.addJavascriptInterface(rowndJavascriptInterface, "rowndAndroidSDK")
+        val trustedOrigin = trustedOriginRule(Rownd.config.baseUrl)
+        secureHubMessagingAvailable =
+            trustedOrigin != null &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+        if (secureHubMessagingAvailable) {
+            val allowedOrigins = setOf(trustedOrigin)
+            WebViewCompat.addWebMessageListener(
+                this,
+                "rowndAndroidSDK",
+                allowedOrigins,
+            ) { _, message, _, isMainFrame, _ ->
+                if (isMainFrame && message.data != null) {
+                    rowndJavascriptInterface.postSecureMessage(message.data!!)
+                }
+            }
+            WebViewCompat.addDocumentStartJavaScript(
+                this,
+                "window.__rowndNativeEmailVerificationBridge = true;",
+                allowedOrigins,
+            )
+        } else {
+            Log.w("Rownd.hub", "Secure Hub messaging is unavailable in this WebView version")
+            this.addJavascriptInterface(rowndJavascriptInterface, "rowndAndroidSDK")
+        }
         this.webViewClient = RowndWebViewClient(this, context)
 
         val appFlags = Rownd.appHandleWrapper?.app?.get()?.applicationInfo?.flags ?: 0
@@ -140,6 +183,11 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
         rowndJavascriptInterface.dispose()
         lifecycleJob.cancel()
         super.destroy()
+    }
+
+    override fun onDetachedFromWindow() {
+        rowndJavascriptInterface.invalidateEmailVerificationRequests()
+        super.onDetachedFromWindow()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -344,10 +392,11 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
     }
 
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+        webView.rowndJavascriptInterface.invalidateEmailVerificationRequests()
         timeout = false
         pageLoadId += 1
         super.onPageStarted(webView, url, favicon)
-        Log.d("Rownd.hub", "Started loading $url")
+        Log.d("Rownd.hub", "Started loading ${urlForLogging(url)}")
         setIsLoading(true)
         if (url?.startsWith(Rownd.config.baseUrl) == true) {
             view?.setBackgroundColor(0x00000000)
@@ -487,6 +536,11 @@ class RowndJavascriptInterface constructor(
     private val bridgeLifecycle = SupervisorJob()
     private val bridgeScope = CoroutineScope(Dispatchers.IO + bridgeLifecycle)
     private var signInCompletedFallbackJob: Job? = null
+    private var emailVerificationJob: Job? = null
+    @Volatile
+    private var emailVerificationRequestId: String? = null
+    @Volatile
+    private var emailVerificationNavigationGeneration = 0
     @Volatile
     private var disposed = false
 
@@ -520,6 +574,98 @@ class RowndJavascriptInterface constructor(
         disposed = true
         bridgeLifecycle.cancel()
         signInCompletedFallbackJob = null
+        invalidateEmailVerificationRequests()
+    }
+
+    internal fun invalidateEmailVerificationRequests() {
+        emailVerificationNavigationGeneration += 1
+        emailVerificationJob?.cancel()
+        emailVerificationJob = null
+        emailVerificationRequestId = null
+    }
+
+    private fun verifyEmail(requestId: String) {
+        val requestedUrl = parentWebView.url
+        val verificationRequest = nativeEmailVerificationRequest(
+            targetPage = parentWebView.targetPage,
+            currentUrl = requestedUrl,
+            trustedBaseUrl = Rownd.config.baseUrl,
+            trustedApiDomain = Rownd.config.supertokens.appInfo.apiDomain,
+            trustedApiBasePath = Rownd.config.supertokens.appInfo.apiBasePath ?: Rownd.config.apiBasePath,
+        )
+        if (
+            disposed ||
+            requestId.isEmpty() ||
+            requestId.length > 256 ||
+            verificationRequest == null
+        ) {
+            Log.w("Rownd.hub", "Ignoring unauthorized native email-verification request")
+            return
+        }
+
+        emailVerificationJob?.cancel()
+        emailVerificationRequestId = requestId
+        val requestedNavigationGeneration = emailVerificationNavigationGeneration
+        emailVerificationJob = bridgeScope.launch {
+            val result = runCatching {
+                val appContext = parentWebView.context.applicationContext
+                val previousAccessToken = SuperTokensSessionBridge.getAccessToken(appContext)
+                    ?: error("Native email verification requires an existing session")
+                val status = performNativeEmailVerification(parentWebView.rowndClient.authenticatedApiClient.client, verificationRequest)
+                val replacementAccessToken = SuperTokensSessionBridge.getAccessToken(appContext)
+                check(
+                    replacementAccessToken != null &&
+                        replacementAccessToken != previousAccessToken &&
+                        !SuperTokensSessionBridge.getRefreshToken(appContext).isNullOrEmpty() &&
+                        !SuperTokensSessionBridge.getFrontToken(appContext).isNullOrEmpty()
+                ) { "Native replacement session was not adopted" }
+                check(SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                    context = appContext,
+                    store = parentWebView.rowndClient.stateRepo.getStore(),
+                )) { "Native session was not adopted" }
+                status
+            }
+            if (
+                disposed ||
+                emailVerificationRequestId != requestId ||
+                emailVerificationNavigationGeneration != requestedNavigationGeneration
+            ) {
+                return@launch
+            }
+
+            val detail = JSONObject().put("request_id", requestId)
+            if (result.isSuccess) {
+                detail.put("status", result.getOrThrow())
+            } else {
+                Log.w("Rownd.hub", "Native email verification failed", result.exceptionOrNull())
+                detail.put("error", "Email verification failed")
+            }
+            val script = """
+                if (window.location.href === ${JSONObject.quote(requestedUrl)}) {
+                    window.dispatchEvent(new CustomEvent('$NATIVE_EMAIL_VERIFICATION_EVENT', { detail: $detail }));
+                }
+            """.trimIndent()
+
+            parentWebView.post {
+                if (
+                    !disposed &&
+                    emailVerificationRequestId == requestId &&
+                    emailVerificationNavigationGeneration == requestedNavigationGeneration &&
+                    parentWebView.url == requestedUrl &&
+                    nativeEmailVerificationRequest(
+                        targetPage = parentWebView.targetPage,
+                        currentUrl = parentWebView.url,
+                        trustedBaseUrl = Rownd.config.baseUrl,
+                        trustedApiDomain = Rownd.config.supertokens.appInfo.apiDomain,
+                        trustedApiBasePath = Rownd.config.supertokens.appInfo.apiBasePath ?: Rownd.config.apiBasePath,
+                    ) != null
+                ) {
+                    parentWebView.evaluateJavascript(script, null)
+                    emailVerificationRequestId = null
+                    emailVerificationJob = null
+                }
+            }
+        }
     }
 
     private fun resetSignInCompletedDeduper() {
@@ -530,6 +676,14 @@ class RowndJavascriptInterface constructor(
 
     @JavascriptInterface
     fun postMessage(message: String) {
+        handleMessage(message, allowSensitiveMessages = false)
+    }
+
+    internal fun postSecureMessage(message: String) {
+        handleMessage(message, allowSensitiveMessages = true)
+    }
+
+    private fun handleMessage(message: String, allowSensitiveMessages: Boolean) {
         if (disposed) {
             return
         }
@@ -689,6 +843,15 @@ class RowndJavascriptInterface constructor(
                     } catch (ex: android.content.ActivityNotFoundException) {
                         Toast.makeText(parentWebView.rowndClient.appHandleWrapper?.activity?.get(), "No email clients installed.", Toast.LENGTH_SHORT).show()
                     }
+                }
+
+                MessageType.VerifyEmail -> {
+                    if (!allowSensitiveMessages) {
+                        Log.w("Rownd.hub", "Ignoring native email verification over the legacy bridge")
+                        return
+                    }
+                    val request = interopMessage as VerifyEmailMessage
+                    parentWebView.post { verifyEmail(request.payload.requestId) }
                 }
 
                 MessageType.HubLoaded -> {

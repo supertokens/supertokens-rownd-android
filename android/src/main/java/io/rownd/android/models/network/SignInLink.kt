@@ -53,7 +53,6 @@ data class SignInAuthenticationResponse(
 )
 
 class SignInLinkApi @Inject constructor() {
-    private var lastHandledDeepLink: String? = null
 
     @Inject
     lateinit var userRepo: UserRepo
@@ -151,7 +150,9 @@ class SignInLinkApi @Inject constructor() {
             return false
         }
 
-        return openDeepLink(uri)
+        return openDeepLink(uri).also { handled ->
+            if (handled) intent.data = null
+        }
     }
 
     private fun signInWithLinkFromClipboardIfPresent(ctx: Activity) {
@@ -172,14 +173,8 @@ class SignInLinkApi @Inject constructor() {
     }
 
     private fun openDeepLink(uri: Uri?): Boolean {
-        val deepLink = uri?.toString() ?: return false
-        if (deepLink == lastHandledDeepLink) {
-            return true
-        }
-
         val hubUrl = toHubUrl(uri) ?: return false
-        Log.d("Rownd.SignInLink", "Opening deep link in hub: ${uri.path}")
-        lastHandledDeepLink = deepLink
+        Log.d("Rownd.SignInLink", "Opening deep link in hub: ${uri?.path}")
         config.pendingHubDeepLinkUrl = hubUrl
         Rownd.displayHub(HubPageSelector.DeepLink)
         return true
