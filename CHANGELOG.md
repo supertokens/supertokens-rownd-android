@@ -1,5 +1,12 @@
 
 
+## [0.1.6](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.5...v0.1.6) (2026-08-11)
+
+
+### Bug Fixes
+
+* Handle native pending email verification ([6635532](https://github.com/supertokens/supertokens-rownd-android/commit/66355321323967131f3dd3f959f5c504ae430b23))
+
 ## [0.1.5](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.4...v0.1.5) (2026-08-06)
 
 
