@@ -48,6 +48,13 @@ type HarnessState = {
   requestLog: RequestCapture[];
   refreshSimulationCompleted: boolean;
   userData: Record<string, unknown>;
+  pendingEmailVerifications: Map<string, PendingEmailVerification>;
+};
+
+type PendingEmailVerification = {
+  token: string;
+  userId: string;
+  verified: boolean;
 };
 
 export type AndroidIntegrationHarness = {
@@ -107,6 +114,7 @@ function createEmptyState(): HarnessState {
     requestLog: [],
     refreshSimulationCompleted: false,
     userData: { user_id: "harness-user", email: "harness-user@example.com" },
+    pendingEmailVerifications: new Map(),
   };
 }
 
@@ -505,6 +513,30 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   );
   app.use(express.json());
 
+  app.get("/test/email-verification-launcher", (req, res) => {
+    const names = [
+      "token",
+      "rowndPendingVerificationId",
+      "apiDomain",
+      "apiBasePath",
+    ];
+    const params = new URLSearchParams();
+    for (const name of names) {
+      const value = req.query[name];
+      if (typeof value === "string") params.set(name, value);
+    }
+    const href = `rowndsupertokens://account/verify-email?${params.toString()}`;
+    const escapedHref = href
+      .replaceAll("&", "&amp;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
+
+    res.type("html").send(
+      `<!doctype html><meta name="viewport" content="width=device-width"><a href="${escapedHref}">Open email verification</a>`,
+    );
+  });
+
   // Counter tracking
   app.use((req, _res, next) => {
     const state = getState(req as express.Request);
@@ -647,6 +679,37 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       }
 
       res.json({ sign_out_all: signOutAll });
+    },
+  );
+
+  app.post(
+    "/auth/user/email/verify",
+    verifySession() as any,
+    async (req: any, res) => {
+      const pendingId = String(req.query.rowndPendingVerificationId || "");
+      const pending = getState(req).pendingEmailVerifications.get(pendingId);
+      if (
+        !pending ||
+        pending.verified ||
+        pending.token !== req.body?.token ||
+        req.body?.method !== "token" ||
+        pending.userId !== req.session.getUserId()
+      ) {
+        res.status(400).json({ status: "GENERAL_ERROR" });
+        return;
+      }
+
+      pending.verified = true;
+      await Session.createNewSession(
+        req,
+        res,
+        "public",
+        req.session.getRecipeUserId(),
+        {},
+        {},
+        {},
+      );
+      res.json({ status: "OK" });
     },
   );
 
@@ -825,6 +888,18 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     });
   });
 
+  app.post("/test/pending-email-verification", (req, res) => {
+    const userId = String(req.body?.userId || "test-user");
+    const pendingVerificationId = `pending-${Date.now()}`;
+    const token = `verify-${Date.now()}`;
+    getState(req).pendingEmailVerifications.set(pendingVerificationId, {
+      token,
+      userId,
+      verified: false,
+    });
+    res.json({ token, pendingVerificationId, userId });
+  });
+
   app.get("/test/protected", verifySession() as any, async (req: any, res) => {
     res.json({
       userId: req.session.getUserId(),
@@ -875,8 +950,10 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     appId: APP_ID,
     stop: async () => {
       if (server) {
+        const closingServer = server;
         await new Promise<void>((resolve, reject) => {
-          server?.close((err) => (err ? reject(err) : resolve()));
+          closingServer.close((err) => (err ? reject(err) : resolve()));
+          closingServer.closeAllConnections();
         });
         server = undefined;
       }

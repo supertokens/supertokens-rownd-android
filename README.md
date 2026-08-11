@@ -664,7 +664,16 @@ Run integration tests:
 npm run test:integration
 ```
 
+Run pending-email verification coverage on a connected emulator with Chrome installed:
+
+```sh
+npm run test:email-verification:e2e
+```
+
+This starts the harness, verifies Chrome custom-scheme dispatch to the local example app, then separately verifies native email verification and replacement-session adoption in the SDK. The two tests intentionally isolate OS handoff from SDK verification behavior.
+
 Useful overrides:
 
 - `ANDROID_HOST`: host address reachable from the Android device, default `10.0.2.2`
 - `ANDROID_HUB_URL`: remote hub URL, default staging hub
+- `ANDROID_HARNESS_PORT`: local harness port, default `3138`

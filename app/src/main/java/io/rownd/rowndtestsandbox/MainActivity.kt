@@ -55,7 +55,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         setContent {
             MaterialTheme(
                 colors = lightColors(
@@ -278,6 +277,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
 }
 
 @Composable

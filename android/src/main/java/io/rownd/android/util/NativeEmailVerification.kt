@@ -27,7 +27,7 @@ internal data class NativeEmailVerificationRequest(
 
 @Serializable
 private data class NativeEmailVerificationBody(
-    val method: String = "token",
+    val method: String,
     val token: String,
 )
 
@@ -130,7 +130,7 @@ internal suspend fun performNativeEmailVerification(
         timeout { requestTimeoutMillis = NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS }
         parameter("rowndPendingVerificationId", request.pendingVerificationId)
         contentType(ContentType.Application.Json)
-        setBody(NativeEmailVerificationBody(token = request.token))
+        setBody(NativeEmailVerificationBody(method = "token", token = request.token))
     }
     check(response.status == HttpStatusCode.OK) {
         "Email verification failed with HTTP ${response.status.value}"

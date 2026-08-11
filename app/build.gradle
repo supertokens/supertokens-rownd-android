@@ -14,6 +14,10 @@ def buildConfigString = { value ->
     return "\"${value.replace('\\', '\\\\').replace('"', '\\"')}\""
 }
 
+def useLocalRowndSdk = providers.gradleProperty("rowndUseLocalSdk")
+    .map { it.toBoolean() }
+    .getOrElse(false)
+
 android {
     namespace 'io.rownd.rowndtestsandbox'
 
@@ -36,9 +40,9 @@ android {
         local {
             dimension "environment"
             applicationIdSuffix ".local"
-            buildConfigField "String", "API_URL", '"https://trout-uncouple-geriatric.ngrok-free.dev"'
-            buildConfigField "String", "HUB_URL", '"https://staging.supertokens-rownd-hub.pages.dev"'
-            buildConfigField "String", "APP_KEY", '"key_pko8eul59xz33hr21jgxvx6s"'
+            buildConfigField "String", "API_URL", buildConfigString(envOrDefault("ANDROID_API_URL", "https://trout-uncouple-geriatric.ngrok-free.dev"))
+            buildConfigField "String", "HUB_URL", buildConfigString(envOrDefault("ANDROID_HUB_URL", "https://staging.supertokens-rownd-hub.pages.dev"))
+            buildConfigField "String", "APP_KEY", buildConfigString(envOrDefault("ANDROID_APP_KEY", "key_pko8eul59xz33hr21jgxvx6s"))
         }
         dev {
             dimension "environment"
@@ -73,7 +77,11 @@ android {
 }
 
 dependencies {
-    implementation 'com.github.supertokens:supertokens-rownd-android:v0.0.1-beta.4'
+    if (useLocalRowndSdk) {
+        implementation project(':android')
+    } else {
+        implementation 'com.github.supertokens:supertokens-rownd-android:v0.0.1-beta.4'
+    }
 
     // Google Play instant
     implementation "com.google.android.gms:play-services-instantapps:17.0.0"
@@ -98,4 +106,5 @@ dependencies {
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.3'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.4.0'
+    androidTestImplementation 'androidx.test.uiautomator:uiautomator:2.3.0'
 }

@@ -48,6 +48,13 @@ object HarnessClient {
     )
 
     @Serializable
+    data class PendingEmailVerificationResponse(
+        val token: String,
+        val pendingVerificationId: String,
+        val userId: String,
+    )
+
+    @Serializable
     data class RequestCapture(
         val method: String,
         val path: String,
@@ -104,6 +111,15 @@ object HarnessClient {
     fun createSTSession(userId: String = "test-user"): STSessionResponse {
         val body: Map<String, Any> = mapOf("userId" to userId)
         val response = post("/test/st-session", body, "default")
+        return json.decodeFromString(response)
+    }
+
+    fun createPendingEmailVerification(userId: String): PendingEmailVerificationResponse {
+        val response = post(
+            "/test/pending-email-verification",
+            mapOf("userId" to userId),
+            "default",
+        )
         return json.decodeFromString(response)
     }
 

@@ -9,9 +9,11 @@ import com.supertokens.session.SuperTokensInterceptor
 import io.rownd.android.models.domain.AuthState
 import io.rownd.android.models.repos.StateAction
 import io.rownd.android.util.JwtGenerator
+import io.rownd.android.util.NativeEmailVerificationRequest
 import io.rownd.android.util.RowndEvent
 import io.rownd.android.util.RowndEventType
 import io.rownd.android.util.SuperTokensSessionBridge
+import io.rownd.android.util.performNativeEmailVerification
 import io.rownd.android.views.HubPageSelector
 import io.rownd.android.views.RowndJavascriptInterface
 import io.rownd.android.views.RowndWebView
@@ -216,6 +218,40 @@ class RowndWebViewAuthenticationInstrumentedTest {
         stClient.newCall(request).execute().use { response ->
             assertEquals("Deep link bootstrapped session must authenticate harness requests", 200, response.code)
         }
+    }
+
+    @Test
+    fun nativeEmailVerificationAdoptsReplacementSession() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val userId = "pending-email-user"
+        val original = HarnessClient.createSTSession(userId)
+        val pending = HarnessClient.createPendingEmailVerification(userId)
+        SuperTokensSessionBridge.bootstrapSession(
+            context,
+            original.accessToken,
+            original.refreshToken,
+        )
+
+        val status = performNativeEmailVerification(
+            Rownd.authenticatedApiClient.client,
+            NativeEmailVerificationRequest(
+                token = pending.token,
+                pendingVerificationId = pending.pendingVerificationId,
+                apiDomain = harnessConfig.androidUrl,
+                apiBasePath = "/auth",
+            ),
+        )
+        val replacementAccessToken = SuperTokensSessionBridge.getAccessToken(context)
+
+        assertEquals("OK", status)
+        assertNotNull("Verification response must install a replacement access token", replacementAccessToken)
+        assertTrue("Verification must replace the existing access token", replacementAccessToken != original.accessToken)
+        val replacementRefreshToken = SuperTokensSessionBridge.getRefreshToken(context)
+        assertNotNull("Verification response must install a replacement refresh token", replacementRefreshToken)
+        assertTrue("Verification must replace the existing refresh token", replacementRefreshToken != original.refreshToken)
+        assertNotNull("Verification response must install a front token", SuperTokensSessionBridge.getFrontToken(context))
+        assertTrue(SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(context, Rownd.store))
+        assertEquals(replacementAccessToken, Rownd.stateRepo.state.value.auth.accessToken)
     }
 
     @Test

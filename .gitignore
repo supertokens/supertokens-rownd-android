@@ -17,3 +17,4 @@ node_modules
 .cxx
 local.properties
 publish-local.properties
+/example-server/.env
