@@ -33,9 +33,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -52,6 +56,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
+@OptIn(ExperimentalComposeUiApi::class)
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,6 +75,7 @@ class MainActivity : AppCompatActivity() {
                 )
             ) {
                 val state by Rownd.state.collectAsState()
+                val observedEvents by SandboxObservability.events.collectAsState()
                 val scope = rememberCoroutineScope()
                 val scrollState = rememberScrollState()
                 val superTokensClient = remember {
@@ -88,7 +94,9 @@ class MainActivity : AppCompatActivity() {
 
                 Surface(
                     color = MaterialTheme.colors.background,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .semantics { testTagsAsResourceId = true },
                 ) {
                     Column(
                         modifier = Modifier
@@ -104,6 +112,10 @@ class MainActivity : AppCompatActivity() {
                             accessTokenValid = state.auth.isAccessTokenValid,
                             sessionExists = sessionExists,
                             scenarioStatus = scenarioStatus,
+                            challengeId = state.auth.challengeId ?: "none",
+                            signInCompletedCount = observedEvents.signInCompletedCount,
+                            signOutCount = observedEvents.signOutCount,
+                            latestEvent = observedEvents.latestEvent,
                             authLevel = state.user.authLevel?.name ?: "unknown",
                             userId = state.user.data["user_id"]?.toString() ?: "not loaded",
                         )
@@ -311,17 +323,25 @@ private fun StatusCard(
     accessTokenValid: Boolean,
     sessionExists: String,
     scenarioStatus: String,
+    challengeId: String,
+    signInCompletedCount: Int,
+    signOutCount: Int,
+    latestEvent: String,
     authLevel: String,
     userId: String,
 ) {
     SandboxCard {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatusRow("Host", if (initialized) "ready" else "loading")
-            StatusRow("Auth", if (authenticated) "signed_in" else "signed_out")
+            StatusRow("Host", if (initialized) "ready" else "loading", "e2e.status.host")
+            StatusRow("Auth", if (authenticated) "signed_in" else "signed_out", "e2e.status.auth")
             StatusRow("Verified user", verifiedUser.toString())
             StatusRow("Auth level", authLevel)
             StatusRow("Example", "all-authentication-methods-android")
             StatusRow("Scenario", scenarioStatus)
+            StatusRow("Challenge", challengeId, "e2e.status.challenge")
+            StatusRow("Sign-in completed events", signInCompletedCount.toString(), "e2e.status.sign-in-events")
+            StatusRow("Sign-out events", signOutCount.toString(), "e2e.status.sign-out-events")
+            StatusRow("Latest event", latestEvent, "e2e.status.latest-event")
             StatusRow("User", userId)
             StatusRow("Access token", if (accessTokenValid) "valid" else "invalid")
             StatusRow("SuperTokens session", sessionExists)
@@ -345,7 +365,7 @@ private fun LoginCard(
                 color = MutedText,
                 style = MaterialTheme.typography.body2,
             )
-            FlowButton("Open Rownd auth UI", onClick = onOpenAuth)
+            FlowButton("Open Rownd auth UI", testTag = "e2e.action.open-auth", onClick = onOpenAuth)
             if (googleEnabled) {
                 FlowButton("Show One Tap", onClick = onOneTap)
             }
@@ -384,7 +404,7 @@ private fun PostLoginCard(
                         style = MaterialTheme.typography.body2,
                     )
                 }
-                FlowButton("Profile", style = FlowButtonStyle.Compact, onClick = onManageAccount)
+                FlowButton("Profile", style = FlowButtonStyle.Compact, testTag = "e2e.action.manage-account", onClick = onManageAccount)
             }
 
             FlowButton("Check session", onClick = onCheckSession)
@@ -429,8 +449,9 @@ private fun SandboxCard(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun StatusRow(label: String, value: String) {
-    Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
+private fun StatusRow(label: String, value: String, testTag: String? = null) {
+    val modifier = if (testTag == null) Modifier.fillMaxWidth() else Modifier.fillMaxWidth().testTag(testTag)
+    Row(verticalAlignment = Alignment.Top, modifier = modifier) {
         Text("$label:", fontWeight = FontWeight.SemiBold)
         Spacer(modifier = Modifier.width(8.dp))
         SelectionContainer(modifier = Modifier.weight(1f)) {
@@ -449,6 +470,7 @@ private enum class FlowButtonStyle {
 private fun FlowButton(
     title: String,
     style: FlowButtonStyle = FlowButtonStyle.Primary,
+    testTag: String? = null,
     onClick: () -> Unit,
 ) {
     val isPrimary = style == FlowButtonStyle.Primary || style == FlowButtonStyle.Compact
@@ -460,7 +482,9 @@ private fun FlowButton(
             backgroundColor = if (isPrimary) Ink else SoftSlate,
             contentColor = if (isPrimary) Color.White else Ink,
         ),
-        modifier = if (style == FlowButtonStyle.Compact) Modifier else Modifier.fillMaxWidth(),
+        modifier = (if (style == FlowButtonStyle.Compact) Modifier else Modifier.fillMaxWidth()).let {
+            if (testTag == null) it else it.testTag(testTag)
+        },
     ) {
         Text(
             text = title,

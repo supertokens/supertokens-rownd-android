@@ -31,6 +31,7 @@ type MagicLinkCapture = {
 type HarnessCounters = {
   legacyRefresh: number;
   migrate: number;
+  passwordlessConsume: number;
   stRefresh: number;
 };
 
@@ -45,6 +46,7 @@ type HarnessState = {
   captures: Map<string, MagicLinkCapture>;
   legacySessions: Map<string, LegacySessionRecord>;
   counters: HarnessCounters;
+  passwordlessConsumeStatuses: number[];
   requestLog: RequestCapture[];
   refreshSimulationCompleted: boolean;
   userData: Record<string, unknown>;
@@ -77,10 +79,6 @@ export const HARNESS_PORT = Number(process.env.ANDROID_HARNESS_PORT || 3137);
 // Override ANDROID_HOST when running on a physical device or in CI.
 export const ANDROID_HOST = process.env.ANDROID_HOST || "10.0.2.2";
 
-const HUB_URL =
-  process.env.ANDROID_HUB_URL ||
-  process.env.HUB_URL ||
-  "https://staging.supertokens-rownd-hub.pages.dev";
 const ANDROID_PUBLIC_API_URL = process.env.ANDROID_PUBLIC_API_URL;
 
 const appName = "Rownd Android Integration Tests";
@@ -110,7 +108,8 @@ function createEmptyState(): HarnessState {
   return {
     captures: new Map<string, MagicLinkCapture>(),
     legacySessions: new Map<string, LegacySessionRecord>(),
-    counters: { legacyRefresh: 0, migrate: 0, stRefresh: 0 },
+    counters: { legacyRefresh: 0, migrate: 0, passwordlessConsume: 0, stRefresh: 0 },
+    passwordlessConsumeStatuses: [],
     requestLog: [],
     refreshSimulationCompleted: false,
     userData: { user_id: "harness-user", email: "harness-user@example.com" },
@@ -192,10 +191,11 @@ function getAllCounters() {
     (acc, s) => {
       acc.legacyRefresh += s.counters.legacyRefresh;
       acc.migrate += s.counters.migrate;
+      acc.passwordlessConsume += s.counters.passwordlessConsume;
       acc.stRefresh += s.counters.stRefresh;
       return acc;
     },
-    { legacyRefresh: 0, migrate: 0, stRefresh: 0 },
+    { legacyRefresh: 0, migrate: 0, passwordlessConsume: 0, stRefresh: 0 },
   );
 }
 
@@ -291,6 +291,10 @@ async function ensureSTUser(
 
 export async function startIntegrationHarness(): Promise<AndroidIntegrationHarness> {
   resetState();
+  const hubUrl =
+    process.env.ANDROID_HUB_URL ||
+    process.env.HUB_URL ||
+    `http://${ANDROID_HOST}:${process.env.ANDROID_HUB_PORT || 8787}`;
 
   const { privateKey: applePrivateKey } = generateKeyPairSync("ec", {
     namedCurve: "P-256",
@@ -361,7 +365,6 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   const serverUrl = `http://127.0.0.1:${started.port}`;
   const androidUrl = `http://${ANDROID_HOST}:${started.port}`;
   const publicUrl = ANDROID_PUBLIC_API_URL || androidUrl;
-  const hubUrl = HUB_URL;
 
   SuperTokens.init({
     debug: true,
@@ -408,7 +411,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       }),
       Passwordless.init({
         contactMethod: "EMAIL_OR_PHONE",
-        flowType: "MAGIC_LINK",
+        flowType: "USER_INPUT_CODE_AND_MAGIC_LINK",
         emailDelivery: {
           service: {
             sendEmail: async (input: any) => {
@@ -444,7 +447,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
           rowndAppKey: APP_KEY,
           rowndAppSecret: "rownd-e2e-secret-rownd-e2e-secret",
           clientDomains: {
-            mobile: "https://staging.supertokens-rownd-hub.pages.dev/",
+            mobile: `${hubUrl}/`,
           },
           schema: {
             nickname: {
@@ -538,13 +541,17 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   });
 
   // Counter tracking
-  app.use((req, _res, next) => {
+  app.use((req, res, next) => {
     const state = getState(req as express.Request);
     if (req.method === "POST" && req.path === "/auth/session/refresh") {
       state.counters.stRefresh += 1;
     }
     if (req.method === "POST" && req.path === "/auth/plugin/rownd/migrate") {
       state.counters.migrate += 1;
+    }
+    if (req.method === "POST" && req.path.endsWith("/signinup/code/consume")) {
+      state.counters.passwordlessConsume += 1;
+      res.on("finish", () => state.passwordlessConsumeStatuses.push(res.statusCode));
     }
     if (req.path === "/auth/plugin/rownd/user") {
       recordRequest(req as express.Request);
@@ -567,6 +574,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
             user_visible: true,
             owned_by: "user",
             read_only: false,
+            show_empty: true,
           },
         },
         config: {
@@ -821,6 +829,14 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
 
   app.get("/counters/all", (_req, res) => {
     res.json(getAllCounters());
+  });
+
+  app.get("/test/passwordless/consumes", (req, res) => {
+    const state = getState(req);
+    res.json({
+      count: state.counters.passwordlessConsume,
+      statuses: state.passwordlessConsumeStatuses,
+    });
   });
 
   app.get("/test/last-request", (req, res) => {

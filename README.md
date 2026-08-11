@@ -664,6 +664,14 @@ Run integration tests:
 npm run test:integration
 ```
 
+Run real-Hub E2E tests on a connected emulator:
+
+```sh
+npm run test:e2e
+```
+
+The E2E suite requires a sibling `../supertokens-rownd-hub` checkout with dependencies installed. It builds and starts that Hub locally, then verifies OTP and magic-link authentication through the Android WebView bridge, replay handling, restored-session account management, Hub profile-update persistence and native-state synchronization, and Hub-originated sign-out.
+
 Run pending-email verification coverage on a connected emulator with Chrome installed:
 
 ```sh
@@ -675,5 +683,6 @@ This starts the harness, verifies Chrome custom-scheme dispatch to the local exa
 Useful overrides:
 
 - `ANDROID_HOST`: host address reachable from the Android device, default `10.0.2.2`
-- `ANDROID_HUB_URL`: remote hub URL, default staging hub
+- `ANDROID_HUB_URL`: Hub URL reachable from the Android device, default `http://10.0.2.2:8787`
+- `ANDROID_HUB_DIR`: local Hub checkout used by `test:e2e`, default `../supertokens-rownd-hub`
 - `ANDROID_HARNESS_PORT`: local harness port, default `3138`

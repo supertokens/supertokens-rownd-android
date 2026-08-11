@@ -33,7 +33,7 @@ class RowndWebViewEventInstrumentedTest {
         Rownd.addEventListener(listener)
         try {
             val bridge = createJavascriptInterface(HubPageSelector.SignIn)
-            bridge.postMessage(interop)
+            bridge.postSecureMessage(interop)
 
             assertEquals(listOf(RowndEventType.SignInCompleted), events.map { it.event })
             assertTrue(events.single().data.isEmpty())

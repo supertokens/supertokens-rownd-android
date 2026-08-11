@@ -88,6 +88,16 @@ internal fun urlForLogging(url: String?): String = runCatching {
     URI(parsed.scheme, null, parsed.host, parsed.port, parsed.path, null, null).toString()
 }.getOrDefault("[invalid URL]")
 
+internal fun MessageType.isAllowedOverLegacyBridge(): Boolean = when (this) {
+    MessageType.tryAgain,
+    MessageType.CloseHubView,
+    MessageType.HubLoaded,
+    MessageType.HubResize,
+    MessageType.CanTouchBackgroundToDismiss,
+    MessageType.OpenEmailApp -> true
+    else -> false
+}
+
 private fun trustedOriginRule(baseUrl: String): String? = runCatching {
     val uri = URI(baseUrl)
     if (uri.scheme == null || uri.host == null) {
@@ -693,6 +703,11 @@ class RowndJavascriptInterface constructor(
             val interopMessage = json.decodeFromString(RowndHubInteropMessage.serializer(), message)
             Log.d("Rownd.hub", redactSensitiveKeys(interopMessage.toString()))
 
+            if (!allowSensitiveMessages && !interopMessage.type.isAllowedOverLegacyBridge()) {
+                Log.w("Rownd.hub", "Ignoring '${interopMessage.type}' over the legacy bridge")
+                return
+            }
+
             when (interopMessage.type) {
                 MessageType.authentication -> {
                     if (
@@ -846,10 +861,6 @@ class RowndJavascriptInterface constructor(
                 }
 
                 MessageType.VerifyEmail -> {
-                    if (!allowSensitiveMessages) {
-                        Log.w("Rownd.hub", "Ignoring native email verification over the legacy bridge")
-                        return
-                    }
                     val request = interopMessage as VerifyEmailMessage
                     parentWebView.post { verifyEmail(request.payload.requestId) }
                 }

@@ -8,11 +8,38 @@ import io.rownd.android.Rownd
 import io.rownd.android.RowndConfigureOptions
 import io.rownd.android.models.RowndCustomizations
 import io.rownd.android.util.RowndEventType
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 
 class AppCustomizations : RowndCustomizations() {
     override var sheetCornerBorderRadius: Dp = 25.dp
     //override var loadingAnimation: Int? = R.raw.loading_indicator_small
+}
+
+data class SandboxEventObservation(
+    val signInCompletedCount: Int = 0,
+    val signOutCount: Int = 0,
+    val latestEvent: String = "none",
+)
+
+object SandboxObservability {
+    private val mutableEvents = MutableStateFlow(SandboxEventObservation())
+    val events = mutableEvents.asStateFlow()
+
+    @Synchronized
+    fun record(event: RowndEventType) {
+        val current = mutableEvents.value
+        mutableEvents.value = current.copy(
+            signInCompletedCount = current.signInCompletedCount + if (event == RowndEventType.SignInCompleted) 1 else 0,
+            signOutCount = current.signOutCount + if (event == RowndEventType.SignOut) 1 else 0,
+            latestEvent = event.name,
+        )
+    }
+
+    fun reset() {
+        mutableEvents.value = SandboxEventObservation()
+    }
 }
 
 
@@ -36,6 +63,7 @@ class RowndTestSandbox: Application() {
         Log.d("App.onCreate", "Rownd initialized: ${Rownd.state.value.isInitialized}")
 
         Rownd.addEventListener {
+            SandboxObservability.record(it.event)
             when (it.event) {
                 RowndEventType.SignInStarted -> {
                     // Do stuff

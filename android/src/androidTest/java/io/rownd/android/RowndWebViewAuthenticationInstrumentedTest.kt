@@ -7,6 +7,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.supertokens.session.SuperTokens
 import com.supertokens.session.SuperTokensInterceptor
 import io.rownd.android.models.domain.AuthState
+import io.rownd.android.models.domain.User
 import io.rownd.android.models.repos.StateAction
 import io.rownd.android.util.JwtGenerator
 import io.rownd.android.util.NativeEmailVerificationRequest
@@ -100,7 +101,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
         val interop = buildAuthenticationMessage(stSession.accessToken, stSession.refreshToken)
 
         val bridge = createJavascriptInterface(HubPageSelector.ManageAccount)
-        bridge.postMessage(interop)
+        bridge.postSecureMessage(interop)
 
         Thread.sleep(300)
 
@@ -119,7 +120,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
         )
 
         val bridge = createJavascriptInterface(HubPageSelector.SignIn)
-        bridge.postMessage(interop)
+        bridge.postSecureMessage(interop)
 
         Thread.sleep(300)
 
@@ -136,7 +137,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
         val interop = buildAuthenticationMessage(accessToken, refreshToken, frontToken, antiCSRF)
 
         val bridge = createJavascriptInterface(HubPageSelector.SignIn)
-        bridge.postMessage(interop)
+        bridge.postSecureMessage(interop)
 
         waitUntil {
             sharedPrefs(context).getString("supertokens-android-fronttoken-key", null) == frontToken
@@ -160,7 +161,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
         """.trimIndent()
 
         val bridge = createJavascriptInterface(HubPageSelector.SignIn)
-        bridge.postMessage(interop)
+        bridge.postSecureMessage(interop)
 
         Thread.sleep(300)
 
@@ -168,6 +169,37 @@ class RowndWebViewAuthenticationInstrumentedTest {
         assertFalse("auth_challenge_initiated must not create a SuperTokens session", exists)
         assertEquals("challenge-123", Rownd.stateRepo.state.value.auth.challengeId)
         assertEquals("test@example.com", Rownd.stateRepo.state.value.auth.userIdentifier)
+    }
+
+    @Test
+    fun legacyBridgeCannotMutateAuthenticationStateOrUserData() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val baselineSession = HarnessClient.createSTSession("legacy-baseline-user")
+        val forgedSession = HarnessClient.createSTSession("legacy-forged-user")
+        SuperTokensSessionBridge.bootstrapSession(
+            context,
+            baselineSession.accessToken,
+            baselineSession.refreshToken,
+        )
+        Rownd.store.dispatch(StateAction.SetAuth(AuthState(
+            accessToken = baselineSession.accessToken,
+            challengeId = "baseline-challenge",
+            userIdentifier = "baseline@example.com",
+        )))
+        Rownd.store.dispatch(StateAction.SetUser(User(data = mapOf("role" to "member"))))
+        val bridge = createJavascriptInterface(HubPageSelector.SignIn)
+
+        bridge.postMessage(buildAuthenticationMessage(forgedSession.accessToken, forgedSession.refreshToken))
+        bridge.postMessage("""{"type":"sign_out"}""")
+        bridge.postMessage(buildAuthChallengeInitiatedMessage())
+        bridge.postMessage("""{"type":"auth_challenge_cleared"}""")
+        bridge.postMessage("""{"type":"user_data_update","payload":{"data":{"role":"admin"}}}""")
+        Thread.sleep(300)
+
+        assertEquals(baselineSession.accessToken, runBlocking { SuperTokensSessionBridge.getAccessToken(context) })
+        assertEquals("baseline-challenge", Rownd.stateRepo.state.value.auth.challengeId)
+        assertEquals("baseline@example.com", Rownd.stateRepo.state.value.auth.userIdentifier)
+        assertEquals("member", Rownd.stateRepo.state.value.user.data["role"])
     }
 
     @Test
@@ -187,7 +219,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
         val interop = buildAuthenticationMessage(stSession.accessToken, stSession.refreshToken)
 
         val bridge = createJavascriptInterface(HubPageSelector.SignIn)
-        bridge.postMessage(interop)
+        bridge.postSecureMessage(interop)
 
         waitUntil { runBlocking { SuperTokensSessionBridge.doesSessionExist(context) } }
 
@@ -208,7 +240,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
         val interop = buildAuthenticationMessage(stSession.accessToken, stSession.refreshToken)
 
         val bridge = createJavascriptInterface(HubPageSelector.DeepLink)
-        bridge.postMessage(interop)
+        bridge.postSecureMessage(interop)
 
         waitUntil { runBlocking { SuperTokensSessionBridge.doesSessionExist(context) } }
 
@@ -267,7 +299,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
         Rownd.addEventListener(listener)
         try {
             val bridge = createJavascriptInterface(HubPageSelector.DeepLink)
-            bridge.postMessage(buildAuthenticationMessage(stSession.accessToken, stSession.refreshToken))
+            bridge.postSecureMessage(buildAuthenticationMessage(stSession.accessToken, stSession.refreshToken))
 
             waitUntil { Rownd.stateRepo.state.value.auth.accessToken == stSession.accessToken }
             destroyWebViews()
@@ -296,13 +328,13 @@ class RowndWebViewAuthenticationInstrumentedTest {
         Rownd.addEventListener(listener)
         try {
             val bridge = createJavascriptInterface(HubPageSelector.SignIn)
-            bridge.postMessage(interop)
+            bridge.postSecureMessage(interop)
 
             waitUntil { events.map { it.event } == listOf(RowndEventType.SignInCompleted) }
             assertEquals("new_user", events.single().data["user_type"])
             assertEquals("new_user", events.single().data["app_variant_user_type"])
 
-            bridge.postMessage(interop)
+            bridge.postSecureMessage(interop)
             Thread.sleep(300)
 
             assertEquals(
@@ -325,7 +357,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
         val interop = buildAuthenticationMessage(expiredToken, stSession.refreshToken)
 
         val bridge = createJavascriptInterface(HubPageSelector.SignIn)
-        bridge.postMessage(interop)
+        bridge.postSecureMessage(interop)
 
         waitUntil { runBlocking { SuperTokensSessionBridge.doesSessionExist(context) } }
 
@@ -366,7 +398,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
 
         Rownd.addEventListener(listener)
         try {
-            bridge.postMessage(buildAuthChallengeInitiatedMessage())
+            bridge.postSecureMessage(buildAuthChallengeInitiatedMessage())
 
             assertEquals("otp-challenge", Rownd.stateRepo.state.value.auth.challengeId)
             assertEquals("otp@example.com", Rownd.stateRepo.state.value.auth.userIdentifier)
@@ -376,13 +408,13 @@ class RowndWebViewAuthenticationInstrumentedTest {
                 assertFalse(runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
             }
 
-            bridge.postMessage(buildAuthenticationMessage(
+            bridge.postSecureMessage(buildAuthenticationMessage(
                 authenticatedSession.accessToken,
                 authenticatedSession.refreshToken,
                 userType = RowndSignInUserType.ExistingUser,
             ))
-            bridge.postMessage("""{"type":"auth_challenge_cleared"}""")
-            bridge.postMessage(buildSignInCompletedMessage())
+            bridge.postSecureMessage("""{"type":"auth_challenge_cleared"}""")
+            bridge.postSecureMessage(buildSignInCompletedMessage())
 
             waitUntil {
                 runBlocking { SuperTokensSessionBridge.getAccessToken(context) } == authenticatedSession.accessToken &&
