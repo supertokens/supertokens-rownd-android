@@ -37,8 +37,28 @@ data class AuthState @OptIn(ExperimentalSerializationApi::class) constructor(
 
             val jwt = JWT(accessToken)
 
+            if (isSuperTokensConfigured() && !isLikelySuperTokensToken(jwt) && isLegacyRowndAccessToken(jwt)) {
+                return false
+            }
+
             return !Rownd.authRepo.isJwtExpiredWithMargin(jwt)
         }
+
+    private fun isSuperTokensConfigured(): Boolean {
+        return Rownd.config.supertokens.appInfo.apiDomain.isNotBlank()
+    }
+
+    private fun isLikelySuperTokensToken(jwt: JWT): Boolean {
+        return jwt.getClaim("sessionHandle").asString() != null ||
+            jwt.getClaim("tId").asString() != null ||
+            jwt.getClaim("refreshTokenHash1").asString() != null ||
+            jwt.getClaim("parentRefreshTokenHash1").asString() != null
+    }
+
+    private fun isLegacyRowndAccessToken(jwt: JWT): Boolean {
+        return jwt.getClaim("https://auth.rownd.io/app_user_id").asString() != null ||
+            jwt.getClaim("app_user_id").asString() != null
+    }
 
     internal fun toRphInitHash(userRepo: UserRepo, context: Context? = null): String? {
         val resolvedRefreshToken = refreshToken ?: context?.let { SuperTokensSessionBridge.getRefreshToken(it) }

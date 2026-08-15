@@ -20,6 +20,7 @@ val json = Json { encodeDefaults = true }
 @Serializable
 data class RowndConfig(
     var appKey: String? = null,
+    var appVariantId: String? = null,
     var baseUrl: String = "https://rownd-hub.supertokens.com",
     var apiUrl: String = "",
     var apiBasePath: String = "/auth",

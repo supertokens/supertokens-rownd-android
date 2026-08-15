@@ -30,6 +30,8 @@ class HubComposableBottomSheet(
     internal var existingWebView: RowndWebView? = null
     internal var isDismissing: Boolean = false
     private var viewModel: RowndWebViewModel? = null
+    private var activeWebView: RowndWebView? = null
+    private var isReusingWebView: Boolean = false
 
     init {
         viewModel = ViewModelProvider(this.activity)[RowndWebViewModel::class.java]
@@ -41,6 +43,11 @@ class HubComposableBottomSheet(
         override fun dismiss() {
             isDismissing = true
             viewModel?.webView()?.postValue(null)
+            activeWebView?.let { webView ->
+                (webView.parent as? ViewGroup)?.removeView(webView)
+                webView.destroy()
+            }
+            activeWebView = null
 
             super.dismiss()
         }
@@ -70,36 +77,40 @@ class HubComposableBottomSheet(
                         val oldWebViewIndex = viewGroup.indexOfChild(currentWebView)
                         rootViewGroup.removeView(currentWebView)
                         rootViewGroup.addView(existingWebView, oldWebViewIndex, currentWebView.layoutParams)
+                        currentWebView.destroy()
+                        activeWebView = existingWebView
+                        isReusingWebView = true
                     } else {
+                        activeWebView = currentWebView
+                        isReusingWebView = false
                         viewModel?.webView()?.postValue(currentWebView)
                     }
 
                     return@AndroidViewBinding view
                 },
                 update = {
-                    this.hubWebview.progressBar = this.hubProgressBar
-                    this.hubWebview.setIsLoading = setIsLoading
+                    val hubWebView = requireNotNull(activeWebView)
+                    hubWebView.progressBar = this.hubProgressBar
+                    hubWebView.setIsLoading = setIsLoading
 
-                    this.hubWebview.animateBottomSheet = {
+                    hubWebView.animateBottomSheet = {
                         requestDetent(it)
                     }
-                    this.hubWebview.setCanTouchBackgroundToDismiss = {
+                    hubWebView.setCanTouchBackgroundToDismiss = {
                         coroutineScope.launch {
                             setCanTouchBackgroundToDismiss(it)
                         }
                     }
-                    this.hubWebview.dismiss = {
-                        onDismiss()
+                    hubWebView.dismiss = {
+                        hubWebView.rowndJavascriptInterface.invalidateEmailVerificationRequests()
+                        this@HubComposableBottomSheet.dismiss()
                     }
                     if (!hasLoadedUrl) {
-                        this.hubWebview.targetPage = this@HubComposableBottomSheet.targetPage
-                        this.hubWebview.jsFunctionArgsAsJson = this@HubComposableBottomSheet.jsFnArgsAsJson ?: RowndWebView.DEFAULT_JS_FN_ARGS
-
-                        this.let {
-                            coroutineScope.launch {
-                                val url = viewModel?.rowndClient?.config?.hubLoaderUrl()
-                                it.hubWebview.loadUrl(url!!)
-                            }
+                        if (!isReusingWebView) {
+                            hubWebView.loadNewPage(
+                                this@HubComposableBottomSheet.targetPage,
+                                this@HubComposableBottomSheet.jsFnArgsAsJson,
+                            )
                         }
                         setHasLoadedUrl(true)
                     }

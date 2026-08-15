@@ -20,7 +20,9 @@ class JwtGenerator {
         .generate()
 
     fun generateTestJwt(
-        expires: Date? = Date.from(Instant.now().plusSeconds(120))
+        expires: Date? = Date.from(Instant.now().plusSeconds(120)),
+        appUserId: String? = null,
+        sessionHandle: String? = null,
     ): String {
         val header = JWSHeader.Builder(JWSAlgorithm.EdDSA)
             .type(JOSEObjectType.JWT)
@@ -33,9 +35,11 @@ class JwtGenerator {
             .audience("RowndAndroidSDKTests")
             .subject("1234567890")
             .expirationTime(expires)
-            .build()
 
-        val signedJwt = SignedJWT(header, payload)
+        appUserId?.let { payload.claim("app_user_id", it) }
+        sessionHandle?.let { payload.claim("sessionHandle", it) }
+
+        val signedJwt = SignedJWT(header, payload.build())
         signedJwt.sign(Ed25519Signer(key))
 
         return signedJwt.serialize()

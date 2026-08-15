@@ -42,13 +42,12 @@ class UserRepo @Inject constructor() {
                 val user: NetworkUser = authenticatedApiClient.client.get(rowndPluginUrl("user")) {
                     headers { remove("x-rownd-app-key") }
                 }.body()
-                Log.i("RowndUsersApi", "Successfully loaded user data: $user")
                 stateRepo.getStore().dispatch(StateAction.SetUser(user.asDomainModel(stateRepo, this@UserRepo)))
                 setIsLoading(value = false)
                 return@async user.asDomainModel(stateRepo, this@UserRepo)
             } catch (ex: ClientRequestException) {
                 setIsLoading(value = false)
-                Log.e("RowndUsersApi", "Failed to fetch the user: ${ex.message}")
+                Log.e("RowndUsersApi", "Failed to fetch the user")
 
                 if (ex.response.status == HttpStatusCode.NotFound) {
                     // This user doesn't exist
@@ -58,7 +57,7 @@ class UserRepo @Inject constructor() {
                 return@async null
             } catch (ex: Exception) {
                 setIsLoading(value = false)
-                Log.e("RowndUsersApi", "Failed to fetch the user: ${ex.message}")
+                Log.e("RowndUsersApi", "Failed to fetch the user")
                 return@async null
             }
         }
@@ -77,14 +76,13 @@ class UserRepo @Inject constructor() {
                             networkUser
                         )
                     }.body()
-                Log.i("RowndUsersApi", "Successfully saved user data: $user")
                 stateRepo.getStore().dispatch(StateAction.SetUser(savedUser.asDomainModel(stateRepo, this@UserRepo)))
                 setIsLoading(value = false)
                 return@async savedUser.asDomainModel(stateRepo, this@UserRepo)
             } catch (ex: Exception) {
                 setIsLoading(value = false)
-                Log.e("RowndUsersApi", "Failed to save the user: ${ex.message}")
-                throw RowndException("Failed to save the user: ${ex.message}")
+                Log.e("RowndUsersApi", "Failed to save the user")
+                throw RowndException("Failed to save the user")
             }
         }
     }

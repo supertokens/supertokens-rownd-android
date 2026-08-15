@@ -10,7 +10,7 @@ fun redactSensitiveKeys(jsonString: String?): String {
     // Compile the combined pattern to match both JSON-like and non-JSON structures
     val pattern = Pattern.compile(
         // Matches JSON-like tokens
-        "\\\"(accessToken|refreshToken|refresh_token|access_token|id_token)\\\"\\s*:\\s*\\\"[^\"\\\\]*\\\"" +
+        "\\\"(token|accessToken|refreshToken|refresh_token|access_token|id_token|frontToken|front_token|antiCSRF|antiCsrf|anti_csrf)\\\"\\s*:\\s*\\\"[^\"\\\\]*\\\"" +
                 // Matches key-value token structures
                 "|(accessToken=|refreshToken=)[^,\\)]+" +
                 // Matches Authorization headers with JWT

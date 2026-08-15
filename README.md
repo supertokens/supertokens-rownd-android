@@ -2,7 +2,7 @@
 
 The Rownd SDK for Android provides authentication, account and user profile management, deep linking, and more for native Android applications.
 
-Using the Rownd platform, you can easily bring the same authentication that's on your website to your mobile apps. Or if you only authenticate users on your mobile apps, you can streamline the authentication process using Rownd's passwordless sign-in links, enabling you to seamlessly authenticate users from an app link sent to their email or phone number.
+Using the Rownd platform, you can easily bring the same authentication that's on your website to your mobile apps. Or if you only authenticate users on your mobile apps, you can streamline authentication using Rownd's passwordless sign-in links, one-time codes, or both, delivered by email or SMS.
 
 Once a user is authenticated, you can retrieve and update their profile information on the fly using native APIs. Leverage Rownd's pre-built mobile app components to give users profile management tools.
 
@@ -25,7 +25,7 @@ In your app module's `build.gradle`, add the SDK dependency:
 
 ```gradle
 dependencies {
-    implementation 'com.github.supertokens:supertokens-rownd-android:v0.0.1-beta.4'
+    implementation 'com.github.supertokens:supertokens-rownd-android:0.1.0'
 }
 ```
 
@@ -99,7 +99,7 @@ If you're using ProGuard to shrink, obfuscate, and/or optimize your app ([and yo
 
 ### 1. Add SDK configuration values
 
-The SDK needs your Rownd app key, your SuperTokens API origin, the SuperTokens API base path, the Rownd Hub URL, and a deep link scheme. The example app provides them through `BuildConfig` fields:
+The SDK needs your Rownd app key, your SuperTokens API origin, the SuperTokens API base path, the Rownd Hub base URL, and the Android custom scheme your app accepts. The example app provides them through `BuildConfig` fields and manifest placeholders:
 
 ```gradle
 android {
@@ -109,6 +109,8 @@ android {
         buildConfigField "String", "ROWND_APP_KEY", '"<YOUR_APP_KEY>"'
         buildConfigField "String", "ROWND_API_DOMAIN", '"<YOUR_API_DOMAIN>"'
         buildConfigField "String", "ROWND_API_BASE_PATH", '"<YOUR_API_BASE_PATH>"'
+        buildConfigField "String", "ROWND_HUB_URL", '"https://<SUBDOMAIN>.rownd-hub.supertokens.com"'
+        buildConfigField "String", "ROWND_DEEP_LINK_SCHEME", '"<APP_SCHEME_NAME>"'
     }
 }
 ```
@@ -118,10 +120,19 @@ Use the values for your app:
 - `ROWND_APP_KEY` - Your Rownd app key.
 - `ROWND_API_DOMAIN` - The origin for your backend that exposes the SuperTokens APIs.
 - `ROWND_API_BASE_PATH` - The SuperTokens API base path. This is usually `/auth`.
+- `ROWND_HUB_URL` - The Rownd Hub URL for your app.
+- `ROWND_DEEP_LINK_SCHEME` - The Android custom scheme your app registers and the SDK accepts.
+
+There are two deep-link values to configure:
+
+- Deep link scheme: the Android custom scheme your app registers and the SDK accepts, for example `rowndsupertokens`.
+- Deep link: the verified HTTPS App Link on your custom Hub subdomain, for example `https://your-hub-subdomain.rownd-hub.supertokens.com/account/login`.
+
+The Hub can derive the custom scheme fallback from your custom Hub subdomain, so make sure your Android custom scheme matches the scheme the Hub will generate.
 
 ### 2. Configure deep links
 
-Add an HTTPS filter to match links used for magic link authentication and email verification.
+Add two intent filters: one for the custom scheme fallback and one for the verified HTTPS App Link. Keep `android:autoVerify="true"` only on the HTTPS filter.
 
 ```xml
 <intent-filter>
@@ -130,13 +141,33 @@ Add an HTTPS filter to match links used for magic link authentication and email 
     <category android:name="android.intent.category.DEFAULT" />
     <category android:name="android.intent.category.BROWSABLE" />
 
+    <data android:scheme="${rowndDeepLinkScheme}" />
+</intent-filter>
+
+<intent-filter android:autoVerify="true">
+    <action android:name="android.intent.action.VIEW" />
+
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+
     <data
         android:scheme="https"
-        android:host="{subdomain}.rownd-hub.supertokens.com" />
+        android:host="<SUBDOMAIN>.rownd-hub.supertokens.com" />
 </intent-filter>
 ```
 
-Use your production Hub host when configuring a production app.
+The custom scheme handles fallback links such as `rowndsupertokens://account/login?...`. The HTTPS filter handles verified App Links for your custom Hub subdomain, such as `https://your-hub-subdomain.rownd-hub.supertokens.com/account/login?...`.
+
+For verified App Links, the Hub domain's `assetlinks.json` must include your Android package name and signing certificate fingerprint. If you change the package name or signing key, update the asset links entry before relying on automatic app handoff.
+
+Warm-start links are handled automatically when your activity extends `ComponentActivity`, including `FragmentActivity` and `AppCompatActivity`. A plain framework `Activity` must forward new intents:
+
+```kotlin
+override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    Rownd.handleIntent(intent)
+}
+```
 
 ### 3. Initialize the Rownd SDK
 
@@ -162,6 +193,7 @@ class MyApplication : Application() {
                 appKey = BuildConfig.ROWND_APP_KEY,
                 apiDomain = BuildConfig.ROWND_API_DOMAIN,
                 apiBasePath = BuildConfig.ROWND_API_BASE_PATH,
+                deepLinkScheme = BuildConfig.ROWND_DEEP_LINK_SCHEME,
             )
         )
     }
@@ -176,6 +208,8 @@ Register your `Application` class in `AndroidManifest.xml`:
     ...>
 </application>
 ```
+
+`appVariantId` is optional. Set it in `RowndConfigureOptions` when this app belongs to a Rownd app variant so Hub and native Google sign-in include it in authentication requests.
 
 `Rownd.configure(...)` automatically initializes the SuperTokens session integration once the Rownd app config has loaded. You do not need to manually initialize SuperTokens for the Rownd session bridge.
 
@@ -192,6 +226,7 @@ You can also request a specific sign-in method when it is enabled for your Rownd
 ```kotlin
 Rownd.requestSignIn(RowndSignInHint.OneTap)
 Rownd.requestSignIn(RowndSignInHint.Guest)
+Rownd.requestSignIn(RowndSignInHint.Apple)
 ```
 
 ### 5. Call protected APIs
@@ -224,7 +259,7 @@ val refreshed = SuperTokensSessionBridge.attemptRefresh(applicationContext)
 
 ### Example app
 
-See `repositories/examples/supertokens-rownd-android-sandboxx` for a standalone Android app that follows these steps. From that folder, run:
+See the sample app in this repository for a standalone Android app that follows these steps. From the repository root, run:
 
 ```bash
 ./gradlew :app:assembleLocalDebug
@@ -436,6 +471,8 @@ Supported options:
 
 - `RowndSignInHint.Guest` - Sign in the user anonymously as a guest.
 
+- `RowndSignInHint.Apple` - Start Sign in with Apple through the Rownd Hub.
+
 Example:
 
 ```kotlin
@@ -448,7 +485,7 @@ Opens the Rownd sign-in dialog for authentication, as before, but allows passing
 
 - `intent: RowndSignInIntent` - This option applies only when you have opted to split the sign-up/sign-in flow via the Rownd dashboard. Valid values are `.SignIn` or `.SignUp`. If you don’t set this value, the user will be presented with the unified sign-in/sign-up flow. Please reach out to [support@rownd.io](mailto:support@rownd.io) to enable.
 
-- `postSignInRedirect: String` (Not recommended) - If you've followed the steps to enable Android App Links, the redirect will be handled automatically. When the user completes the authentication challenge via email or SMS, they'll be redirected to the URL set for postSignInRedirect. If this is an [Android App Link](https://developer.android.com/training/app-links), it will redirect the user back to your app.
+- `postSignInRedirect: String` (Not recommended) - The SDK and Hub normally handle redirects using your configured HTTPS App Link and custom scheme fallback. Use this only when you need to override the default redirect target. If you provide a custom value, it must still resolve back to your app through an Android App Link or a custom scheme your app handles.
 
 Example:
 
@@ -507,31 +544,6 @@ Example:
     }
 ```
 
-### suspend Rownd.getAccessToken(token: String): String?
-
-When possible, exchanges a non-Rownd access token for a Rownd access token. This is primarily used in scenarios
-where an app is migrating from some other authentication mechanism to Rownd. Using Rownd integrations,
-the system will accept a third-party token. If it successfully validates, Rownd will sign-in the user and
-return a fresh Rownd access token to the caller.
-
-This API returns `null` if the token could not be validated and exchanged. If that occurs, it's likely
-that the user should sign-in normally via `Rownd.requestSignIn()`.
-
-> NOTE: This API is typically used once. After a Rownd token is available, other tokens should be discarded.
-
-Example:
-
-```kotlin
-    // Assume `oldToken` was retrieved from some prior authenticator.
-    val accessToken = Rownd.getAccessToken(oldToken)
-
-    if (accessToken != null) {
-        // Navigate to the UI that a user should typically see
-    } else {
-        Rownd.requestSignIn()
-    }
-```
-
 ### Rownd.user.get(): Map\<String, Any?>
 
 Returns the entire user profile as a Map
@@ -544,43 +556,11 @@ Your application code is responsible for knowing which type the value should cas
 
 ### Rownd.user.set(data: Map\<String, Any?>): Void
 
-Replaces the user's data with that contained in the Map. This may overwrite existing values, but must match the schema you defined within your Rownd application dashboard. Any fields that are flagged as `encrypted` will be encrypted on-device prior to storing in Rownd's platform.
+Replaces the user's data with that contained in the Map. This may overwrite existing values, but must match the schema you defined within your Rownd application dashboard.
 
 ### Rownd.user.set(field: String, value: Any): Void
 
-Sets a specific user profile field to the provided value, overwriting if a value already exists. If the field is flagged as `encrypted`, it will be encrypted on-device prior to storing in Rownd's platform.
-
-## Data encryption
-
-As indicated previously, Rownd can automatically assist you in protecting sensitive user data by encrypting it on-device with a user's unique encryption key prior to saving it in Rownd's own platform storage.
-
-When you configure your app within the Rownd platform, you can indicate that it supports on-device encryption. When this flag is set, Rownd will automatically generate a cryptographically secure, unrecoverable encryption key on the user's device after they sign in. The key is stored using Android's native KeyStore mechanisms and all encryption is handled on the device. The key is never transmitted to Rownd's servers and the Rownd SDK does not provide any APIs to for your code to programmatically retrieve the encryption key.
-
-Only fields that you designate `encrypted` are encrypted on-device prior to storing within Rownd. Some identifying fields like email and phone number do not support on-device encryption at this time, since they are frequently used for indexing purposes.
-
-Of course, all data within the Rownd platform is encrypted at rest on disk and in transit, but this does not afford the same privacy guarantees as data encrypted on a user's local device. For especially sensitive data, we recommend enabling field-level encryption.
-
-<Info>
-  Data encrypted on-device will not be accessible by you, the app developer, outside of the context of your app. In other words, your app can use encrypted data in its plaintext (decrypted) form while the user is signed in, but you won't be able to retrieve that data from the Rownd servers in a decrypted form. For data that you choose to encrypt, you should never transmit the plain text value across a network.
-</Info>
-
-In some cases, you may want to encrypt data on-device that you'll send to your own servers for storage. Rownd provides convenience methods to encrypt and decrypt that data with the same user-owned key.
-
-### Rownd.user.encrypt(plaintext: String): String
-
-Encrypts the provided String `data` using the user's symmetric encryption key and returns the ciphertext as a string. You can encrypt anything that can be represented as a string (e.g., Int, Dictionary, Array, etc), but it's currently up to you to get it into a string format first.
-
-If the encryption fails, an `EncryptionException` will be thrown with a message explaining the failure.
-
-### Rownd.user.decrypt(ciphertext: String): String
-
-Attempts to decrypt the provided String `data`, returning the plaintext as a string. If the data originated as some other type (e.g., Map), you'll need to decode the data back into its original type.
-
-If the decryption fails, an `EncryptionException` will be thrown with a message explaining the failure.
-
-<Info>
-  Encryption is only possible once a user has authenticated. Rownd supports multiple levels of authentication (e.g., guest, unverified, and verified), but the lowest level of authentication must be achieved prior to encrypting or decrypting data. If you need to explicitly check whether encryption is possible at a specific point in time, call `Rownd.user.isEncryptionPossible(): Boolean` prior to calling `encrypt()` or `decrypt()`.
-</Info>
+Sets a specific user profile field to the provided value, overwriting if a value already exists.
 
 ## Events
 
@@ -684,7 +664,25 @@ Run integration tests:
 npm run test:integration
 ```
 
+Run real-Hub E2E tests on a connected emulator:
+
+```sh
+npm run test:e2e
+```
+
+The E2E suite requires a sibling `../supertokens-rownd-hub` checkout with dependencies installed. It builds and starts that Hub locally, then verifies OTP and magic-link authentication through the Android WebView bridge, replay handling, restored-session account management, Hub profile-update persistence and native-state synchronization, and Hub-originated sign-out.
+
+Run pending-email verification coverage on a connected emulator with Chrome installed:
+
+```sh
+npm run test:email-verification:e2e
+```
+
+This starts the harness, verifies Chrome custom-scheme dispatch to the local example app, then separately verifies native email verification and replacement-session adoption in the SDK. The two tests intentionally isolate OS handoff from SDK verification behavior.
+
 Useful overrides:
 
 - `ANDROID_HOST`: host address reachable from the Android device, default `10.0.2.2`
-- `ANDROID_HUB_URL`: remote hub URL, default staging hub
+- `ANDROID_HUB_URL`: Hub URL reachable from the Android device, default `http://10.0.2.2:8787`
+- `ANDROID_HUB_DIR`: local Hub checkout used by `test:e2e`, default `../supertokens-rownd-hub`
+- `ANDROID_HARNESS_PORT`: local harness port, default `3138`

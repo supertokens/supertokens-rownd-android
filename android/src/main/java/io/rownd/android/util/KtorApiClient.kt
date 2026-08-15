@@ -1,5 +1,6 @@
 package io.rownd.android.util
 
+import android.content.pm.ApplicationInfo
 import android.util.Log
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.HttpClientEngine
@@ -30,9 +31,20 @@ private object CustomAndroidHttpLogger : Logger {
 
 open class KtorApiClient @Inject constructor(engine: HttpClientEngine, rowndContext: RowndContext)  {
     private val base = HttpClient(engine) {
-        install(Logging) {
-            level = LogLevel.ALL
-            logger = CustomAndroidHttpLogger
+        val appFlags = rowndContext.config.applicationContext?.applicationInfo?.flags ?: 0
+        val isDebuggableApp = (appFlags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+        if (rowndContext.config.enableDebugMode && isDebuggableApp) {
+            install(Logging) {
+                level = LogLevel.HEADERS
+                logger = CustomAndroidHttpLogger
+                sanitizeHeader { header ->
+                    header.equals("Authorization", ignoreCase = true) ||
+                        header.equals("Cookie", ignoreCase = true) ||
+                        header.equals("Set-Cookie", ignoreCase = true) ||
+                        header.equals("anti-csrf", ignoreCase = true)
+                }
+            }
         }
         install(UserAgent) {
             agent = Constants.DEFAULT_API_USER_AGENT

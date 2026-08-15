@@ -1,5 +1,46 @@
 
 
+## [0.1.6](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.5...v0.1.6) (2026-08-11)
+
+
+### Bug Fixes
+
+* Handle native pending email verification ([6635532](https://github.com/supertokens/supertokens-rownd-android/commit/66355321323967131f3dd3f959f5c504ae430b23))
+
+## [0.1.5](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.4...v0.1.5) (2026-08-06)
+
+
+### Bug Fixes
+
+* prevent OAuth callbacks from replaying sign-in ([08c6b96](https://github.com/supertokens/supertokens-rownd-android/commit/08c6b9624c6223264f92a035621bc0d64d0c18cc))
+
+## [0.1.4](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.3...v0.1.4) (2026-08-05)
+
+
+### Bug Fixes
+
+* Handle apple sign in ([93592e1](https://github.com/supertokens/supertokens-rownd-android/commit/93592e178691d2c831b191325bd3fd3547531f1b))
+
+## [0.1.3](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.2...v0.1.3) (2026-07-31)
+
+
+### Bug Fixes
+
+* Add appVariantId in config and include it in login requests ([8a9d4ab](https://github.com/supertokens/supertokens-rownd-android/commit/8a9d4ab24f8e9010d141435e76baa9919f646a56))
+
+## [0.1.2](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.1...v0.1.2) (2026-07-27)
+
+
+### Bug Fixes
+
+* handle magic links on warm app starts ([d79cd41](https://github.com/supertokens/supertokens-rownd-android/commit/d79cd415a5e568d81ccc005677bcef8b19e54808))
+
+# 0.1.0
+
+Initial production release of the SuperTokens Rownd Android SDK.
+
+
+
 # [4.1.0](https://github.com/rownd/android/compare/4.0.0...4.1.0) (2026-01-19)
 
 

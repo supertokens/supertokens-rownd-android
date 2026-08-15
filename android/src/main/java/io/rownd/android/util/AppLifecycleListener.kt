@@ -3,11 +3,14 @@ package io.rownd.android.util
 import android.app.Activity
 import android.app.Application
 import android.app.Application.ActivityLifecycleCallbacks
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.core.util.Consumer
 import androidx.lifecycle.Lifecycle.State
 import kotlinx.collections.immutable.PersistentList
 import java.lang.ref.WeakReference
+import java.util.WeakHashMap
 
 enum class ContextType {
     APP, ACTIVITY
@@ -25,7 +28,10 @@ class AppLifecycleListener(parentApp: Application) : ActivityLifecycleCallbacks 
     var activity: WeakReference<Activity>? = null
         private set
 
-    private var activityListeners: MutableList<Listener> = mutableListOf()
+    private val activityListeners: MutableList<Listener> = mutableListOf()
+    private val newIntentListeners: MutableList<(intent: Intent) -> Unit> = mutableListOf()
+    private val registeredNewIntentListeners =
+        WeakHashMap<ComponentActivity, MutableMap<(intent: Intent) -> Unit, Consumer<Intent>>>()
 
     init {
         app = WeakReference(parentApp)
@@ -37,11 +43,9 @@ class AppLifecycleListener(parentApp: Application) : ActivityLifecycleCallbacks 
     }
 
     override fun onActivityCreated(activity: Activity, bundle: Bundle?) {
-        if (activity !is Activity) {
-            return
-        }
-
         this.activity = WeakReference(activity)
+
+        registerNewIntentListeners(activity)
 
         val listeners = activityListeners.filter() {
             it.states.contains(State.CREATED)
@@ -63,6 +67,7 @@ class AppLifecycleListener(parentApp: Application) : ActivityLifecycleCallbacks 
     override fun onActivityResumed(activity: Activity) {
         this.activity = WeakReference(activity)
         isAppInForeground = true
+        registerNewIntentListeners(activity)
 
         // This is probably one of the better trigger points for listeners
         // unless there's a need for something earlier in the lifecycle
@@ -89,6 +94,10 @@ class AppLifecycleListener(parentApp: Application) : ActivityLifecycleCallbacks 
     override fun onActivityStopped(activity: Activity) {}
     override fun onActivitySaveInstanceState(activity: Activity, bundle: Bundle) {}
     override fun onActivityDestroyed(activity: Activity) {
+        if (activity is ComponentActivity) {
+            removeNewIntentListeners(activity)
+        }
+
         val listeners = activityListeners.filter() {
             it.states.contains(State.DESTROYED)
         }
@@ -118,6 +127,47 @@ class AppLifecycleListener(parentApp: Application) : ActivityLifecycleCallbacks 
         } else if (immediate && activity != null) {
             callback.invoke(activity)
         }
+    }
+
+    internal fun registerNewIntentListener(callback: (intent: Intent) -> Unit) {
+        newIntentListeners.add(callback)
+        (activity?.get() as? ComponentActivity)?.let {
+            registerNewIntentListener(it, callback)
+        }
+    }
+
+    private fun registerNewIntentListeners(activity: Activity) {
+        if (activity !is ComponentActivity) {
+            return
+        }
+
+        newIntentListeners.forEach { registerNewIntentListener(activity, it) }
+    }
+
+    private fun registerNewIntentListener(
+        activity: ComponentActivity,
+        callback: (intent: Intent) -> Unit,
+    ) {
+        val registeredListeners = registeredNewIntentListeners.getOrPut(activity) { mutableMapOf() }
+        if (callback !in registeredListeners) {
+            val listener = Consumer<Intent> { callback(it) }
+            registeredListeners[callback] = listener
+            activity.addOnNewIntentListener(listener)
+        }
+    }
+
+    private fun removeNewIntentListeners(activity: ComponentActivity) {
+        registeredNewIntentListeners.remove(activity)?.values?.forEach {
+            activity.removeOnNewIntentListener(it)
+        }
+    }
+
+    internal fun unregister() {
+        app.get()?.unregisterActivityLifecycleCallbacks(this)
+        registeredNewIntentListeners.keys.toList().forEach(::removeNewIntentListeners)
+        newIntentListeners.clear()
+        activityListeners.clear()
+        activity = null
     }
 
     private fun callListeners(listeners: List<Listener>, activity: Activity) {

@@ -1,6 +1,7 @@
 package io.rownd.android.models
 
 import io.rownd.android.RowndSignInIntent
+import io.rownd.android.RowndSignInUserType
 import io.rownd.android.models.network.User
 import io.rownd.android.util.RowndEvent
 import kotlinx.serialization.DeserializationStrategy
@@ -59,6 +60,9 @@ enum class MessageType {
     @SerialName("open_email_app")
     OpenEmailApp,
 
+    @SerialName("verify_email")
+    VerifyEmail,
+
     Unknown
 }
 
@@ -81,6 +85,12 @@ data class AuthenticationPayload(
 
     @SerialName("anti_csrf")
     var antiCsrf: String? = null,
+
+    @SerialName("user_type")
+    var userType: RowndSignInUserType? = null,
+
+    @SerialName("app_variant_user_type")
+    var appVariantUserType: RowndSignInUserType? = null,
 )
 
 @Serializable
@@ -160,6 +170,18 @@ data class OpenEmailAppMessage(
 ) : RowndHubInteropMessage()
 
 @Serializable
+data class VerifyEmailMessage(
+    override var type: MessageType = MessageType.VerifyEmail,
+    var payload: VerifyEmailPayload,
+) : RowndHubInteropMessage()
+
+@Serializable
+data class VerifyEmailPayload(
+    @SerialName("request_id")
+    var requestId: String,
+)
+
+@Serializable
 data class AuthChallengeInitiatedMessage(
     override var type: MessageType = MessageType.AuthChallengeInitiated,
 
@@ -195,6 +217,7 @@ object RowndHubInteropMessageSerializer : JsonContentPolymorphicSerializer<Rownd
             "can_touch_background_to_dismiss" -> CanTouchBackgroundToDismissMessage.serializer()
             "event" -> EventMessage.serializer()
             "open_email_app" -> OpenEmailAppMessage.serializer()
+            "verify_email" -> VerifyEmailMessage.serializer()
             "auth_challenge_initiated" -> AuthChallengeInitiatedMessage.serializer()
             "auth_challenge_cleared" -> AuthChallengeClearedMessage.serializer()
             else -> throw Error("Key '$messageType' did not match a known serializer.")

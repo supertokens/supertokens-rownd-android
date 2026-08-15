@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.Intent.ACTION_VIEW
 import android.net.Uri
 import android.util.Log
@@ -25,10 +26,10 @@ import io.rownd.android.util.KtorApiClient
 import io.rownd.android.util.RowndContext
 import io.rownd.android.util.RowndEvent
 import io.rownd.android.util.RowndEventType
+import io.rownd.android.util.signInCompletedEventData
 import io.rownd.android.views.HubPageSelector
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonPrimitive
 import java.net.URI
 import javax.inject.Inject
 
@@ -52,7 +53,6 @@ data class SignInAuthenticationResponse(
 )
 
 class SignInLinkApi @Inject constructor() {
-    private var lastHandledDeepLink: String? = null
 
     @Inject
     lateinit var userRepo: UserRepo
@@ -104,9 +104,10 @@ class SignInLinkApi @Inject constructor() {
             rowndContext.eventEmitter?.emit(
                 RowndEvent(
                     event = RowndEventType.SignInCompleted,
-                    data = mapOf(
-                        "method" to JsonPrimitive(RowndSignInType.SignInLink.value),
-                        "user_type" to JsonPrimitive(RowndSignInUserType.ExistingUser.value),
+                    data = signInCompletedEventData(
+                        method = RowndSignInType.SignInLink,
+                        userType = RowndSignInUserType.ExistingUser,
+                        appVariantUserType = RowndSignInUserType.ExistingUser,
                     )
                 )
             )
@@ -138,14 +139,20 @@ class SignInLinkApi @Inject constructor() {
     }
 
     internal fun openDeepLinkIfPresentOnIntent(ctx: Activity): Boolean {
-        val action: String? = ctx.intent?.action
-        val uri = ctx.intent?.data
+        return openDeepLinkIfPresentOnIntent(ctx.intent)
+    }
+
+    internal fun openDeepLinkIfPresentOnIntent(intent: Intent?): Boolean {
+        val action = intent?.action
+        val uri = intent?.data
 
         if (action != ACTION_VIEW || !isConfiguredDeepLink(uri)) {
             return false
         }
 
-        return openDeepLink(uri)
+        return openDeepLink(uri).also { handled ->
+            if (handled) intent.data = null
+        }
     }
 
     private fun signInWithLinkFromClipboardIfPresent(ctx: Activity) {
@@ -166,14 +173,8 @@ class SignInLinkApi @Inject constructor() {
     }
 
     private fun openDeepLink(uri: Uri?): Boolean {
-        val deepLink = uri?.toString() ?: return false
-        if (deepLink == lastHandledDeepLink) {
-            return true
-        }
-
         val hubUrl = toHubUrl(uri) ?: return false
-        Log.d("Rownd.SignInLink", "Opening deep link in hub: ${uri.path}")
-        lastHandledDeepLink = deepLink
+        Log.d("Rownd.SignInLink", "Opening deep link in hub: ${uri?.path}")
         config.pendingHubDeepLinkUrl = hubUrl
         Rownd.displayHub(HubPageSelector.DeepLink)
         return true
@@ -244,13 +245,9 @@ class SignInLinkApi @Inject constructor() {
             }
 
             val baseUri = parseUri(hubBaseUrl) ?: return null
-            return URI(
-                baseUri.scheme,
-                baseUri.authority,
-                hubPath,
-                uri.rawQuery,
-                uri.rawFragment,
-            ).toString()
+            val query = uri.rawQuery?.let { "?$it" } ?: ""
+            val fragment = uri.rawFragment?.let { "#$it" } ?: ""
+            return "${baseUri.scheme}://${baseUri.rawAuthority}$hubPath$query$fragment"
         }
 
         private fun isConfiguredSchemeDeepLink(uri: URI, deepLinkScheme: String): Boolean {

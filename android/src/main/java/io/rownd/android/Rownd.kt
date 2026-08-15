@@ -4,6 +4,7 @@ package io.rownd.android
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -32,6 +33,8 @@ import io.rownd.android.models.repos.StateAction
 import io.rownd.android.models.repos.StateRepo
 import io.rownd.android.models.repos.UserRepo
 import io.rownd.android.util.AppLifecycleListener
+import io.rownd.android.util.AuthenticatedApiClient
+import io.rownd.android.util.HubSessionStorage
 import io.rownd.android.util.InvalidRefreshTokenException
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.NoAccessTokenPresentException
@@ -58,6 +61,7 @@ val Rownd = RowndClient(DaggerRowndGraph.create())
 
 data class RowndConfigureOptions(
     val appKey: String,
+    val appVariantId: String? = null,
     val apiDomain: String,
     val apiBasePath: String = "/auth",
     val hubUrl: String? = null,
@@ -82,6 +86,7 @@ class RowndClient(
     internal var eventEmitter = graph.rowndEventEmitter()
     internal var signInWithGoogle = graph.signInWithGoogle()
     internal var telemetry = graph.telemetry()
+    internal var authenticatedApiClient: AuthenticatedApiClient = graph.authenticatedApiClient()
 
     var state = stateRepo.state
     var user = userRepo
@@ -117,6 +122,7 @@ class RowndClient(
         require(apiDomain.isNotBlank()) { "apiDomain is required" }
 
         config.appKey = options.appKey
+        config.appVariantId = options.appVariantId
         config.apiUrl = apiDomain
         config.apiBasePath = apiBasePath
         config.deepLinkScheme = options.deepLinkScheme.trimEnd(':')
@@ -131,6 +137,7 @@ class RowndClient(
 
         store = stateRepo.setup(StateRepo.defaultDataStore(appContext))
 
+        SuperTokensSessionBridge.initializeIfNeeded(appContext, apiDomain, apiBasePath, config.enableDebugMode)
         SuperTokensSessionBridge.observeAndInitialize(appContext, stateRepo, config.enableDebugMode)
 
         // Clear webview cache on startup
@@ -178,6 +185,10 @@ class RowndClient(
             signInLinkApi.openDeepLinkIfPresentOnIntent(it)
         }
 
+        appHandleWrapper?.registerNewIntentListener {
+            signInLinkApi.openDeepLinkIfPresentOnIntent(it)
+        }
+
         // Show the Google One Tap UI if applicable
         signInWithGoogle.showOneTapIfApplicable()
     }
@@ -191,6 +202,11 @@ class RowndClient(
     fun configure(activity: FragmentActivity, options: RowndConfigureOptions) {
         _registerActivityLifecycle(activity)
         configure(options)
+    }
+
+    /** Handles an intent delivered to a host that does not extend ComponentActivity. */
+    fun handleIntent(intent: Intent): Boolean {
+        return signInLinkApi.openDeepLinkIfPresentOnIntent(intent)
     }
 
     // Mainly for use by other Rownd SDKs (like Flutter)
@@ -268,6 +284,12 @@ class RowndClient(
                     jsFnOptions = RowndSignInJsOptions(signInType = RowndSignInType.Anonymous)
                 )
             }
+            RowndSignInHint.Apple -> {
+                displayHub(
+                    HubPageSelector.SignIn,
+                    jsFnOptions = RowndSignInJsOptions(signInType = RowndSignInType.Apple)
+                )
+            }
         }
     }
 
@@ -284,6 +306,8 @@ class RowndClient(
     }
 
     fun signOut() {
+        val existingHubWebView = rowndContext.hubViewModel?.webView()?.value
+        HubSessionStorage.clear(config, existingHubWebView)
         rowndContext.hubViewModel?.webView()?.postValue(null)
         store.dispatch(StateAction.SetAuth(AuthState()))
         store.dispatch(StateAction.SetUser(User()))
@@ -339,7 +363,7 @@ class RowndClient(
                 signInOptions.intent = null
                 Log.w(
                     "Rownd",
-                    "Sign in with intent: SignIn/SignUp is not enabled. Turn it on in the Rownd platform"
+                    "Explicit sign-in/sign-up intent is not enabled in the backend app config. Expected config.hub.auth.use_explicit_sign_up_flow=true."
                 )
             }
         }
@@ -505,6 +529,7 @@ enum class RowndSignInHint {
     Google,
     OneTap,
     Guest,
+    Apple,
 }
 
 @Serializable

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { startIntegrationHarness } from "./server";
+import { startLocalHub, type LocalHub } from "./local-hub";
+import { startIntegrationHarness, type AndroidIntegrationHarness } from "./server";
 
 process.on("unhandledRejection", (reason) => {
   if (reason instanceof Error && reason.message.startsWith("Failed to fetch app config")) {
@@ -22,15 +23,23 @@ function parseCommand() {
 
 async function main() {
   const [command, ...args] = parseCommand();
-  const harness = await startIntegrationHarness();
-
-  console.log("Android harness ready");
-  console.log(`  host:    ${harness.serverUrl}`);
-  console.log(`  android: ${harness.androidUrl}`);
-  console.log(`  public:  ${harness.publicUrl}`);
-  console.log(`  hub:     ${harness.hubUrl}`);
+  let localHub: LocalHub | undefined;
+  let harness: AndroidIntegrationHarness | undefined;
 
   try {
+    if (process.env.ANDROID_E2E_LOCAL_HUB === "1") {
+      localHub = await startLocalHub();
+      process.env.ANDROID_HUB_URL = localHub.androidUrl;
+    }
+
+    harness = await startIntegrationHarness();
+
+    console.log("Android harness ready");
+    console.log(`  host:    ${harness.serverUrl}`);
+    console.log(`  android: ${harness.androidUrl}`);
+    console.log(`  public:  ${harness.publicUrl}`);
+    console.log(`  hub:     ${harness.hubUrl}`);
+
     const child = spawn(command, args, {
       stdio: "inherit",
       env: {
@@ -58,7 +67,8 @@ async function main() {
 
     process.exitCode = exitCode;
   } finally {
-    await harness.stop();
+    await harness?.stop();
+    await localHub?.stop();
   }
 }
 

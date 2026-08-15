@@ -62,6 +62,7 @@ class LegacySessionMigrationInstrumentedTest {
         Rownd.config.apiUrl = harnessConfig.androidUrl
         Rownd.config.apiBasePath = "/auth"
         Rownd.config.appKey = harnessConfig.appKey
+        Rownd.config.supertokens = testAppConfig().config.supertokens
         Rownd.authRepo.legacyTokenApiClient.baseUrl = harnessConfig.androidUrl
         Rownd.stateRepo.getStore().dispatch(StateAction.SetAppConfig(testAppConfig()))
         Rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState()))
@@ -79,6 +80,8 @@ class LegacySessionMigrationInstrumentedTest {
                 )
             )
         )
+
+        assertFalse("public compatibility auth should reject legacy Rownd access tokens", Rownd.state.value.auth.isAccessTokenValid)
 
         runBlocking { Rownd.authRepo.migrateLegacySessionIfNeeded(context) }
 
