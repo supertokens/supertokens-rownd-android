@@ -4,7 +4,13 @@ on:
   pull_request:
     branches:
       - main
-  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   sdk:
@@ -58,14 +64,23 @@ jobs:
           java-version: 21
           cache: gradle
 
-      - name: Instrumentation Tests
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Node.js dependencies
+        run: npm ci
+
+      - name: Integration Tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}
           target: ${{ matrix.target }}
           arch: ${{ matrix.api-level > 27 && 'x86_64' || 'x86' }}
           profile: pixel_3a
-          script: ./gradlew :android:connectedAndroidTest --stacktrace
+          script: npm run test:integration
 
       - name: Upload Reports
         uses: actions/upload-artifact@v4
