@@ -1,5 +1,12 @@
 
 
+## [0.1.8](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.7...v0.1.8) (2026-08-18)
+
+
+### Bug Fixes
+
+* handle opaque URLs in pending Hub requests ([c8cc6ec](https://github.com/supertokens/supertokens-rownd-android/commit/c8cc6ec2f043c6ac8d1149bc157a5c6f36a959bd))
+
 ## [0.1.7](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.6...v0.1.7) (2026-08-18)
 
 
