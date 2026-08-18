@@ -1,5 +1,12 @@
 
 
+## [0.1.7](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.6...v0.1.7) (2026-08-18)
+
+
+### Bug Fixes
+
+* allow missing user verification fields ([efbc573](https://github.com/supertokens/supertokens-rownd-android/commit/efbc5731c51a136be31249a9540aa080fc41f07b))
+
 ## [0.1.6](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.5...v0.1.6) (2026-08-11)
 
 
