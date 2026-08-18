@@ -268,7 +268,14 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
 
     @Synchronized
     internal fun pendingTargetPageRequest(url: String): PendingTargetPageRequest? {
-        val requestId = url.toUri().getQueryParameter(TARGET_PAGE_REQUEST_ID_PARAM)?.toLongOrNull()
+        // Opaque URIs have no query and Uri.getQueryParameter throws
+        // UnsupportedOperationException on them. onPageFinished delivers such URLs routinely:
+        // "about:blank" is let through its URL guard on purpose, and the no-internet error page
+        // (loadDataWithBaseURL with a null base URL) reports "about:blank" too — so opening the
+        // hub while offline crashed here instead of showing the error page.
+        val requestId = runCatching {
+            url.toUri().getQueryParameter(TARGET_PAGE_REQUEST_ID_PARAM)?.toLongOrNull()
+        }.getOrNull()
         return pendingTargetPageRequest?.takeIf { it.id == requestId }
     }
 
