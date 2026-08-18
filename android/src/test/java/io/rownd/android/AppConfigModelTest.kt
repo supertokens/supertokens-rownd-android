@@ -105,6 +105,39 @@ class AppConfigModelTest {
     }
 
     @Test
+    fun `app config without user verification fields deserializes with empty default`() {
+        val payload = """
+            {
+              "app": {
+                "id": "app_test123",
+                "icon": "",
+                "schema": {},
+                "config": {
+                  "hub": {
+                    "auth": {
+                      "sign_in_methods": {
+                        "google": {
+                          "enabled": true,
+                          "client_id": "google-client-id"
+                        }
+                      }
+                    }
+                  },
+                  "customizations": {}
+                }
+              }
+            }
+        """.trimIndent()
+
+        val response = json.decodeFromString(AppConfigResponse.serializer(), payload)
+        val domain = response.asDomainModel()
+
+        assertEquals(emptyList<String>(), domain.userVerificationFields)
+        assertEquals(true, domain.config.hub.auth.signInMethods.google.enabled)
+        assertEquals("google-client-id", domain.config.hub.auth.signInMethods.google.clientId)
+    }
+
+    @Test
     fun `apple sign in method decodes client type fields`() {
         val payload = baseAppConfigJson.format(
             """

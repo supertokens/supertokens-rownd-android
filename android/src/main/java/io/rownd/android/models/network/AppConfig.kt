@@ -38,7 +38,7 @@ data class AppConfig(
     var id: String,
     var icon: String = "",
     @SerialName("user_verification_fields")
-    var userVerificationFields: List<String>,
+    var userVerificationFields: List<String> = emptyList(),
     var schema: Map<String, AppSchemaField>,
     var config: AppConfigConfig,
 ) {
