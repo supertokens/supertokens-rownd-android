@@ -105,25 +105,62 @@ class AppConfigModelTest {
     }
 
     @Test
-    fun `app config without user verification fields deserializes with empty default`() {
+    fun `plugin app config without user verification fields preserves native auth config`() {
         val payload = """
             {
+              "status": "OK",
+              "config_type": "app",
               "app": {
                 "id": "app_test123",
+                "name": "Test app",
                 "icon": "",
-                "schema": {},
+                "schema": {
+                  "email": {
+                    "display_name": "Email",
+                    "type": "string",
+                    "owned_by": "user"
+                  },
+                  "google_id": {
+                    "display_name": "Google ID",
+                    "type": "string",
+                    "owned_by": "app"
+                  }
+                },
                 "config": {
+                  "customizations": {
+                    "primary_color": "#5b5bd6"
+                  },
                   "hub": {
+                    "customizations": {
+                      "rounded_corners": true,
+                      "dark_mode": "auto"
+                    },
                     "auth": {
                       "sign_in_methods": {
+                        "email": { "enabled": true },
+                        "phone": { "enabled": true },
                         "google": {
                           "enabled": true,
-                          "client_id": "google-client-id"
+                          "client_id": "google-client-id",
+                          "ios_client_id": "ios-client-id",
+                          "scopes": []
+                        },
+                        "apple": {
+                          "enabled": false,
+                          "client_id": "",
+                          "web_client_type": "web",
+                          "ios_client_type": "ios",
+                          "android_client_type": "android"
+                        },
+                        "anonymous": {
+                          "enabled": true,
+                          "type": "guest",
+                          "display_name": "Continue as guest"
                         }
-                      }
+                      },
+                      "show_app_icon": false
                     }
-                  },
-                  "customizations": {}
+                  }
                 }
               }
             }
@@ -133,8 +170,13 @@ class AppConfigModelTest {
         val domain = response.asDomainModel()
 
         assertEquals(emptyList<String>(), domain.userVerificationFields)
+        assertEquals("Email", domain.schema["email"]?.displayName)
+        assertEquals("#5b5bd6", domain.config.customizations.primaryColor)
+        assertEquals("auto", domain.config.hub.customizations?.darkMode)
         assertEquals(true, domain.config.hub.auth.signInMethods.google.enabled)
         assertEquals("google-client-id", domain.config.hub.auth.signInMethods.google.clientId)
+        assertEquals("android", domain.config.hub.auth.signInMethods.apple.androidClientType)
+        assertEquals(true, domain.config.hub.auth.signInMethods.anonymous.enabled)
     }
 
     @Test
