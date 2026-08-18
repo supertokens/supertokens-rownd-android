@@ -12,6 +12,7 @@ import io.rownd.android.views.HubPageSelector
 import io.rownd.android.views.RowndWebView
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -59,6 +60,20 @@ class RowndWebViewInstrumentedTest {
                 webView.destroy()
             }
         }
+    }
+
+    @Test
+    fun opaqueUrlDoesNotMatchOrClearPendingTargetPageRequest() {
+        instrumentation.runOnMainSync {
+            webView.prepareTargetPageRequest(
+                HubPageSelector.SignIn,
+                null,
+                requestUrl(requestId = 1, config = "pending"),
+            )
+        }
+
+        assertNull(webView.pendingTargetPageRequest("about:blank"))
+        assertTrue(webView.hasPendingTargetPageRequest())
     }
 
     @Test

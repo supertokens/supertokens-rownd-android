@@ -268,7 +268,13 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
 
     @Synchronized
     internal fun pendingTargetPageRequest(url: String): PendingTargetPageRequest? {
-        val requestId = url.toUri().getQueryParameter(TARGET_PAGE_REQUEST_ID_PARAM)?.toLongOrNull()
+        val uri = url.toUri()
+        // WebView uses opaque URLs such as about:blank for locally loaded error pages.
+        if (!uri.isHierarchical) {
+            return null
+        }
+
+        val requestId = uri.getQueryParameter(TARGET_PAGE_REQUEST_ID_PARAM)?.toLongOrNull()
         return pendingTargetPageRequest?.takeIf { it.id == requestId }
     }
 
