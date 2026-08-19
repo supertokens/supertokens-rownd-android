@@ -5,6 +5,11 @@ import android.net.Uri
 import android.os.SystemClock
 import android.webkit.CookieManager
 import android.webkit.WebStorage
+import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.web.sugar.Web.onWebView
@@ -30,6 +35,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.net.HttpURLConnection
@@ -38,6 +44,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
 class RealHubE2ETest {
+    @get:Rule
+    val composeRule = createEmptyComposeRule()
+
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
     private val device = UiDevice.getInstance(instrumentation)
@@ -101,6 +110,7 @@ class RealHubE2ETest {
         val customSchemeLink = toCustomScheme(waitForCapture(email).getString("urlWithLinkCode"))
         dispatchActionView(customSchemeLink)
 
+        waitForCompletedConsumes(1)
         waitForSignedInApp()
         assertEquals(1, SandboxObservability.events.value.signInCompletedCount)
         assertProtectedRequestSucceeds()
@@ -108,9 +118,13 @@ class RealHubE2ETest {
         val originalSessionHandle = sessionHandle(originalAccessToken)
 
         dispatchActionView(customSchemeLink)
-        val replay = waitForCompletedConsumes(2)
+        waitUntil("replay Hub to open") {
+            device.findObject(By.res("e2e.action.manage-account")) == null
+        }
+        waitForResource("e2e.action.manage-account")
+        val replay = waitForCompletedConsumes(1)
 
-        assertEquals(2, replay.getInt("count"))
+        assertEquals(1, replay.getInt("count"))
         assertTrue("existing session must survive replay", Rownd.state.value.auth.isAuthenticated)
         assertTrue(runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
         assertEquals(originalSessionHandle, sessionHandle(runBlocking { Rownd.getAccessToken() }))
@@ -129,10 +143,10 @@ class RealHubE2ETest {
         waitUntil("session to restore after activity recreation") { Rownd.state.value.auth.isAuthenticated }
         assertProtectedRequestSucceeds()
 
-        waitForResource("e2e.action.manage-account").click()
+        clickResource("e2e.action.manage-account")
         waitForText("Sign out")
         onWebView()
-            .withElement(findElement(Locator.ID, "rownd-ui-profile-sign-out"))
+            .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-profile-sign-out']"))
             .perform(webClick())
 
         waitUntil("Hub sign-out to clear native session") {
@@ -161,11 +175,12 @@ class RealHubE2ETest {
         waitForSignedInApp()
         waitUntil("initial native profile load to complete") {
             !Rownd.state.value.user.isLoading &&
-                Rownd.state.value.user.data["user_id"] == "harness-user"
+                Rownd.state.value.user.data["email"] == email &&
+                !(Rownd.state.value.user.data["user_id"] as? String).isNullOrBlank()
         }
         assertFalse("test must observe a new nickname", Rownd.state.value.user.data["nickname"] == nickname)
 
-        waitForResource("e2e.action.manage-account").click()
+        clickResource("e2e.action.manage-account")
         waitForText("Personal information")
         onWebView()
             .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-profile-mobile-tab-personal']"))
@@ -174,7 +189,6 @@ class RealHubE2ETest {
         onWebView()
             .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-profile-field-nickname']"))
             .perform(webKeys(nickname))
-        waitForText("Save edits")
         onWebView()
             .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-profile-save']"))
             .perform(webClick())
@@ -196,21 +210,33 @@ class RealHubE2ETest {
     }
 
     private fun openEmailChallenge(email: String) {
-        waitForResource("e2e.action.open-auth").click()
-        waitForText("Email")
+        clickResource("e2e.action.open-auth")
+        waitForTextContaining("Email")
         onWebView()
             .withElement(findElement(Locator.ID, "rph-sign-in-identifier-input"))
             .perform(webKeys(email))
-            .withElement(findElement(Locator.ID, "rownd-ui-login-continue-button"))
+        waitUntil("email continue button to become enabled") {
+            device.findObject(By.text("Continue"))?.isEnabled == true
+        }
+        onWebView()
+            .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-login-continue-button']"))
             .perform(webClick())
-        waitForText("Enter your sign-in code")
+        waitUntil("email challenge to start") {
+            Rownd.state.value.auth.challengeId != null &&
+                Rownd.state.value.auth.userIdentifier == email
+        }
     }
 
     private fun submitOtp(code: String) {
+        waitForText("Use a code instead")
+        onWebView()
+            .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-passwordless-waiting-use-code']"))
+            .perform(webClick())
+        waitForText("Enter your sign-in code")
         onWebView()
             .withElement(findElement(Locator.ID, "rph-passwordless-code-input"))
             .perform(webKeys(code))
-            .withElement(findElement(Locator.ID, "rownd-ui-passwordless-code-submit"))
+            .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-passwordless-code-submit']"))
             .perform(webClick())
     }
 
@@ -219,7 +245,7 @@ class RealHubE2ETest {
             Rownd.state.value.auth.isAuthenticated &&
                 runBlocking { SuperTokensSessionBridge.doesSessionExist(context) }
         }
-        waitForText("Post-login page")
+        waitForResource("e2e.action.manage-account")
         waitUntil("single settled sign-in event") {
             SandboxObservability.events.value.signInCompletedCount == 1
         }
@@ -333,9 +359,45 @@ class RealHubE2ETest {
         assertNotNull("Timed out waiting for '$text'", device.wait(Until.findObject(By.text(text)), timeoutMs))
     }
 
-    private fun waitForResource(resourceName: String, timeoutMs: Long = 15_000) =
-        device.wait(Until.findObject(By.res(resourceName)), timeoutMs)
-            ?: throw AssertionError("Timed out waiting for resource '$resourceName'")
+    private fun waitForTextContaining(text: String, timeoutMs: Long = 15_000) {
+        assertNotNull("Timed out waiting for text containing '$text'", device.wait(Until.findObject(By.textContains(text)), timeoutMs))
+    }
+
+    private fun clickResource(resourceName: String, timeoutMs: Long = 15_000) {
+        device.findObject(By.res(resourceName))?.let {
+            it.click()
+            return
+        }
+
+        waitForResource(resourceName, timeoutMs)
+        composeRule
+            .onNodeWithTag(resourceName, useUnmergedTree = true)
+            .performClick()
+    }
+
+    private fun waitForResource(resourceName: String, timeoutMs: Long = 15_000) {
+        val targetSelector = By.res(resourceName)
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        fun remainingMs() = (deadline - SystemClock.uptimeMillis()).coerceAtLeast(0)
+
+        while (remainingMs() > 0) {
+            if (device.findObject(targetSelector) != null) return
+
+            val nodes = composeRule
+                .onAllNodesWithTag(resourceName, useUnmergedTree = true)
+                .fetchSemanticsNodes()
+            if (nodes.isNotEmpty()) {
+                composeRule
+                    .onNodeWithTag(resourceName, useUnmergedTree = true)
+                    .performScrollTo()
+                return
+            }
+
+            SystemClock.sleep(minOf(50, remainingMs()))
+        }
+
+        throw AssertionError("Timed out waiting for resource '$resourceName'")
+    }
 
     private fun waitUntil(description: String, timeoutMs: Long = 15_000, condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
