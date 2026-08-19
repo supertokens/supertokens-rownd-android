@@ -302,7 +302,7 @@ You can use this StateFlow in both older-style XML layouts as well as Android Je
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent"
-            app:layout_constraintVertical_bias="0.19999999" />
+            app:layout_constraintVertical_bias="0.1.1099999" />
 
     </androidx.constraintlayout.widget.ConstraintLayout>
 </layout>

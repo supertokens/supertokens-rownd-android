@@ -1,5 +1,13 @@
 
 
+## [0.1.10](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.9...v0.1.10) (2026-08-19)
+
+
+### Bug Fixes
+
+* harden Hub lifecycle synchronization ([5c497c6](https://github.com/supertokens/supertokens-rownd-android/commit/5c497c690c2450edc4899c8a5baa3b5629cbd791))
+* synchronize Hub readiness and dismissal ([38a297b](https://github.com/supertokens/supertokens-rownd-android/commit/38a297bd1c19183cb33b3bf95f30c932587036da))
+
 ## [0.1.9](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.8...v0.1.9) (2026-08-19)
 
 
