@@ -43,8 +43,12 @@ class RowndBottomSheetActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        if (!isChangingConfigurations) {
+            bottomSheetHolder?.dispose()
+        }
+        bottomSheetHolder = null
         Rownd.signInWithGoogle.deRegisterIntentLauncher(this.localClassName)
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {

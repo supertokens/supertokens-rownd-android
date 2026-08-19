@@ -39,18 +39,24 @@ class HubComposableBottomSheet(
             existingWebView = it
         }
     }
-        // Internal dismiss function to recycle web view
-        override fun dismiss() {
-            isDismissing = true
-            viewModel?.webView()?.postValue(null)
-            activeWebView?.let { webView ->
-                (webView.parent as? ViewGroup)?.removeView(webView)
-                webView.destroy()
-            }
-            activeWebView = null
+    internal fun dispose() {
+        if (isDismissing) return
+        isDismissing = true
 
-            super.dismiss()
-        }
+        val webView = activeWebView ?: existingWebView
+        activeWebView = null
+        existingWebView = null
+        viewModel?.webView()?.value = null
+
+        webView?.dismiss = null
+        (webView?.parent as? ViewGroup)?.removeView(webView)
+        webView?.destroy()
+    }
+
+    override fun dismiss() {
+        dispose()
+        super.dismiss()
+    }
 
         @ExperimentalMaterial3Api
         @Composable
@@ -88,8 +94,9 @@ class HubComposableBottomSheet(
 
                     return@AndroidViewBinding view
                 },
-                update = {
-                    val hubWebView = requireNotNull(activeWebView)
+                update = update@{
+                    if (isDismissing) return@update
+                    val hubWebView = activeWebView ?: return@update
                     hubWebView.progressBar = this.hubProgressBar
                     hubWebView.setIsLoading = setIsLoading
 

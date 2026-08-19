@@ -15,6 +15,7 @@ import android.webkit.WebView
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStoreOwner
 import com.lyft.kronos.AndroidClockFactory
@@ -413,6 +414,13 @@ class RowndClient(
         targetPage: HubPageSelector,
         jsFnOptions: RowndSignInOptionsBase? = null
     ) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            Handler(Looper.getMainLooper()).post {
+                displayHub(targetPage, jsFnOptions)
+            }
+            return
+        }
+
         val isAppConfigLoading = isAppConfigLoadingWithCallback {
             displayHub(targetPage, jsFnOptions)
         }
@@ -432,19 +440,25 @@ class RowndClient(
 
         try {
             val activity = appHandleWrapper?.activity?.get()
+            val isActivityResumed = AppLifecycleListener.isAppInForeground ||
+                (activity as? LifecycleOwner)
+                    ?.lifecycle
+                    ?.currentState
+                    ?.isAtLeast(Lifecycle.State.RESUMED) == true
 
-            if (activity == null) {
+            if (
+                activity == null ||
+                activity.isFinishing ||
+                activity.isDestroyed ||
+                !isActivityResumed
+            ) {
                 appHandleWrapper?.registerActivityListener(
-                    persistentListOf(Lifecycle.State.CREATED),
-                    immediate = true,
+                    persistentListOf(Lifecycle.State.RESUMED),
+                    immediate = false,
                     once = true
                 ) {
                     displayHub(targetPage, jsFnOptions)
                 }
-                return
-            }
-
-            if (activity.isFinishing) {
                 return
             }
 

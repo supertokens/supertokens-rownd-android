@@ -112,7 +112,7 @@ class AppLifecycleListener(parentApp: Application) : ActivityLifecycleCallbacks 
         once: Boolean? = false,
         callback: (activity: Activity) -> Unit
     ) {
-        val activity = this.activity?.get() as ComponentActivity?
+        val activity = this.activity?.get() as? ComponentActivity
         activityListeners.add(Listener(
             states,
             once,

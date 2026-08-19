@@ -205,6 +205,10 @@ class RowndWebViewInstrumentedTest {
             )
         }
         javascriptProbe.awaitDocumentLoad("The Hub document did not load for $url")
+        javascriptProbe.awaitPageFinished("The Hub document did not finish loading for $url")
+        evaluateJavascript(
+            """window.rowndAndroidSDK.postMessage(JSON.stringify({type: "hub_loaded"}))""",
+        )
     }
 
     private fun requestUrl(requestId: Int, config: String): String =
@@ -241,6 +245,7 @@ class RowndWebViewInstrumentedTest {
         val targetInvocationCount = AtomicInteger()
         val targetMarkers = CopyOnWriteArrayList<String>()
         private val documentLoads = Semaphore(0)
+        private val finishedPageLoads = Semaphore(0)
         private val targetInvocations = Semaphore(0)
 
         @JavascriptInterface
@@ -255,10 +260,22 @@ class RowndWebViewInstrumentedTest {
             targetInvocations.release()
         }
 
+        @JavascriptInterface
+        fun pageFinished() {
+            finishedPageLoads.release()
+        }
+
         fun awaitDocumentLoad(message: String) {
             assertTrue(
                 message,
                 documentLoads.tryAcquire(WEBVIEW_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+            )
+        }
+
+        fun awaitPageFinished(message: String) {
+            assertTrue(
+                message,
+                finishedPageLoads.tryAcquire(WEBVIEW_TIMEOUT_SECONDS, TimeUnit.SECONDS),
             )
         }
 
@@ -280,6 +297,9 @@ class RowndWebViewInstrumentedTest {
               <body>
                 <script>
                   window.rownd = {
+                    setSessionStorage: function() {
+                      $JAVASCRIPT_PROBE_NAME.pageFinished();
+                    },
                     requestSignIn: function(options) {
                       $JAVASCRIPT_PROBE_NAME.recordTarget(options && options.marker);
                     }

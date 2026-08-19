@@ -62,8 +62,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
 import java.net.URI
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 
 val json = Json { ignoreUnknownKeys = true }
@@ -119,6 +117,7 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
 
     internal lateinit var rowndClient: RowndClient
     internal val rowndJavascriptInterface: RowndJavascriptInterface
+    internal val rowndWebViewClient: RowndWebViewClient
 
     private val lifecycleJob = SupervisorJob()
     internal val lifecycleScope = CoroutineScope(Dispatchers.Main.immediate + lifecycleJob)
@@ -181,7 +180,8 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
             Log.w("Rownd.hub", "Secure Hub messaging is unavailable in this WebView version")
             this.addJavascriptInterface(rowndJavascriptInterface, "rowndAndroidSDK")
         }
-        this.webViewClient = RowndWebViewClient(this, context)
+        rowndWebViewClient = RowndWebViewClient(this, context)
+        this.webViewClient = rowndWebViewClient
 
         val appFlags = Rownd.appHandleWrapper?.app?.get()?.applicationInfo?.flags ?: 0
         if (0 != appFlags.and(ApplicationInfo.FLAG_DEBUGGABLE)) {
@@ -304,6 +304,7 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
 class RowndWebViewClient(private val webView: RowndWebView, private val context: Context) : WebViewClientCompat() {
     private var timeout: Boolean = true
     private var pageLoadId: Long = 0
+    private var finishedHubPage: Pair<Long, String>? = null
 
     init {
         webView.lifecycleScope.launch(Dispatchers.IO) {
@@ -411,6 +412,7 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
         webView.rowndJavascriptInterface.invalidateEmailVerificationRequests()
         timeout = false
         pageLoadId += 1
+        finishedHubPage = null
         super.onPageStarted(webView, url, favicon)
         Log.d("Rownd.hub", "Started loading ${urlForLogging(url)}")
         setIsLoading(true)
@@ -439,25 +441,21 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
         setDebugFlags()
 
         view.setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
+        finishedHubPage = pageLoadId to url
 
-        val targetPageRequest = webView.pendingTargetPageRequest(url)
-        if (targetPageRequest == null) {
-            if (!webView.hasPendingTargetPageRequest()) {
-                setIsLoading(false)
-            }
+        if (!webView.hasPendingTargetPageRequest()) {
+            setIsLoading(false)
+        }
+    }
+
+    internal fun onHubLoaded() {
+        val (finishedPageLoadId, finishedUrl) = finishedHubPage ?: return
+        if (pageLoadId != finishedPageLoadId) {
             return
         }
-        val finishedPageLoadId = pageLoadId
 
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.VISUAL_STATE_CALLBACK)) {
-            WebViewCompat.postVisualStateCallback(view, 1) {
-                displayTargetPage(view, targetPageRequest, finishedPageLoadId)
-            }
-        } else {
-            // If VISUAL_STATE_CALLBACK isn't supported on this platform, try to display the
-            // appropriate content.
-            displayTargetPage(view, targetPageRequest, finishedPageLoadId)
-        }
+        val targetPageRequest = webView.pendingTargetPageRequest(finishedUrl) ?: return
+        displayTargetPage(webView, targetPageRequest, finishedPageLoadId)
     }
 
     override fun onReceivedError(
@@ -758,9 +756,10 @@ class RowndJavascriptInterface constructor(
                             parentWebView.rowndClient.userRepo.loadUserAsync()
                             scheduleSignInCompletedAuthenticationFallback(authenticationMessage)
 
-                            Executors.newSingleThreadScheduledExecutor().schedule({
+                            parentWebView.lifecycleScope.launch {
+                                delay(HUB_CLOSE_AFTER_MILLISECONDS)
                                 parentWebView.dismiss?.invoke()
-                            }, HUB_CLOSE_AFTER_MILLISECONDS, TimeUnit.MILLISECONDS)
+                            }
                         } catch (e: Exception) {
                             Log.e("Rownd.hub", "Hub authentication bootstrap failed", e)
                         }
@@ -787,9 +786,10 @@ class RowndJavascriptInterface constructor(
 
                 MessageType.signOut -> {
                     resetSignInCompletedDeduper()
-                    Executors.newSingleThreadScheduledExecutor().schedule({
+                    parentWebView.lifecycleScope.launch {
+                        delay(HUB_CLOSE_AFTER_MILLISECONDS)
                         parentWebView.dismiss?.invoke()
-                    }, HUB_CLOSE_AFTER_MILLISECONDS, TimeUnit.MILLISECONDS)
+                    }
 
                     Rownd.signOut()
                 }
@@ -872,7 +872,9 @@ class RowndJavascriptInterface constructor(
                 }
 
                 MessageType.HubLoaded -> {
-                    // The hub sends this as a readiness signal; no native action is required.
+                    parentWebView.lifecycleScope.launch {
+                        parentWebView.rowndWebViewClient.onHubLoaded()
+                    }
                 }
 
                 MessageType.AuthChallengeInitiated -> {
