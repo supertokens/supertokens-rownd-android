@@ -23,7 +23,8 @@ class HubComposableBottomSheet(
     activity: RowndBottomSheetActivity,
     override val onDismiss: () -> Unit = {},
     private val targetPage: HubPageSelector = HubPageSelector.Unknown,
-    private val jsFnArgsAsJson: String? = null
+    private val jsFnArgsAsJson: String? = null,
+    private val onWebViewReady: (RowndWebView) -> Boolean = { false },
 ) : ComposableBottomSheet(activity) {
     override val shouldDisplayLoader = true
 
@@ -48,9 +49,13 @@ class HubComposableBottomSheet(
         existingWebView = null
         viewModel?.webView()?.value = null
 
-        webView?.dismiss = null
+        webView?.releaseDismissHandler(this)
         (webView?.parent as? ViewGroup)?.removeView(webView)
         webView?.destroy()
+    }
+
+    internal fun detach() {
+        (activeWebView ?: existingWebView)?.releaseDismissHandler(this)
     }
 
     override fun dismiss() {
@@ -89,7 +94,7 @@ class HubComposableBottomSheet(
                     } else {
                         activeWebView = currentWebView
                         isReusingWebView = false
-                        viewModel?.webView()?.postValue(currentWebView)
+                        viewModel?.webView()?.value = currentWebView
                     }
 
                     return@AndroidViewBinding view
@@ -108,12 +113,14 @@ class HubComposableBottomSheet(
                             setCanTouchBackgroundToDismiss(it)
                         }
                     }
-                    hubWebView.dismiss = {
+                    hubWebView.claimDismissHandler(this@HubComposableBottomSheet) {
                         hubWebView.rowndJavascriptInterface.invalidateEmailVerificationRequests()
                         this@HubComposableBottomSheet.dismiss()
                     }
+                    if (isDismissing) return@update
+                    val appliedPendingRequest = onWebViewReady(hubWebView)
                     if (!hasLoadedUrl) {
-                        if (!isReusingWebView) {
+                        if (!isReusingWebView && !appliedPendingRequest) {
                             hubWebView.loadNewPage(
                                 this@HubComposableBottomSheet.targetPage,
                                 this@HubComposableBottomSheet.jsFnArgsAsJson,

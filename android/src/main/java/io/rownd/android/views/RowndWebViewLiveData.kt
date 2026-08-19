@@ -14,6 +14,11 @@ class RowndWebViewLiveData(private val rowndClient: RowndClient) : MutableLiveDa
         super.postValue(value)
     }
 
+    override fun setValue(value: RowndWebView?) {
+        value?.rowndClient = rowndClient
+        super.setValue(value)
+    }
+
     override fun onActive() {
         if (value != null && value?.parent == null) {
             parentHolder?.addView(value, parentViewIndex ?: 0)

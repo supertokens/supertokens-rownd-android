@@ -282,6 +282,52 @@ class RowndWebViewAuthenticationInstrumentedTest {
     }
 
     @Test
+    fun latestAuthenticationMessageWins() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val oldSession = HarnessClient.createSTSession("webview-old-auth-user")
+        val latestSession = HarnessClient.createSTSession("webview-latest-auth-user")
+        val bridge = createJavascriptInterface(HubPageSelector.SignIn)
+
+        bridge.postSecureMessage(buildAuthenticationMessage(oldSession.accessToken, oldSession.refreshToken))
+        bridge.postSecureMessage(buildAuthenticationMessage(latestSession.accessToken, latestSession.refreshToken))
+
+        waitUntil {
+            runBlocking { SuperTokensSessionBridge.getAccessToken(context) } == latestSession.accessToken &&
+                Rownd.stateRepo.state.value.auth.accessToken == latestSession.accessToken
+        }
+
+        assertEquals(latestSession.refreshToken, SuperTokensSessionBridge.getRefreshToken(context))
+        assertEquals(latestSession.accessToken, Rownd.stateRepo.state.value.auth.accessToken)
+    }
+
+    @Test
+    fun replacingDismissOwnerPreventsOldActivityCallback() {
+        val oldDismissalCount = AtomicInteger()
+        val replacementDismissalCount = AtomicInteger()
+        val replacementDismissed = CountDownLatch(1)
+        val bridge = createJavascriptInterface(HubPageSelector.SignIn)
+        val webView = webViews.last()
+        val oldOwner = Any()
+        val replacementOwner = Any()
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            webView.claimDismissHandler(oldOwner) {
+                oldDismissalCount.incrementAndGet()
+            }
+            webView.releaseDismissHandler(oldOwner)
+            bridge.postSecureMessage("""{"type":"close_hub_view_controller"}""")
+            webView.claimDismissHandler(replacementOwner) {
+                replacementDismissalCount.incrementAndGet()
+                replacementDismissed.countDown()
+            }
+        }
+
+        assertTrue("Replacement activity did not receive dismissal", replacementDismissed.await(1, TimeUnit.SECONDS))
+        assertEquals(0, oldDismissalCount.get())
+        assertEquals(1, replacementDismissalCount.get())
+    }
+
+    @Test
     fun closeHubSupersedesPendingAuthenticationDismissal() {
         val stSession = HarnessClient.createSTSession("webview-close-after-auth-user")
         val dismissalCount = AtomicInteger()

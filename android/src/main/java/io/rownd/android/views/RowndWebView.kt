@@ -7,7 +7,6 @@ import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
-import android.os.Looper
 import android.util.AttributeSet
 import android.util.Log
 import android.view.KeyEvent
@@ -58,11 +57,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
 import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 
 val json = Json { ignoreUnknownKeys = true }
@@ -79,6 +81,7 @@ enum class HubPageSelector {
 }
 
 private const val HUB_CLOSE_AFTER_MILLISECONDS: Long = 1500
+private const val AUTHENTICATED_TARGET_READY_TIMEOUT_MILLISECONDS: Long = 5000
 private const val SIGN_IN_COMPLETED_AUTHENTICATION_FALLBACK_DELAY_MILLISECONDS: Long = 500
 private const val NATIVE_EMAIL_VERIFICATION_EVENT = "rownd:native-email-verification"
 
@@ -108,7 +111,16 @@ private fun trustedOriginRule(baseUrl: String): String? = runCatching {
 @SuppressLint("SetJavaScriptEnabled")
 class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, attrs), DialogChild {
     override var dialog: DialogFragment? = null
-    internal var dismiss: (() -> Unit)? = null
+    private var dismissOwner: Any? = null
+    private var dismissHandler: (() -> Unit)? = null
+    private var dismissPending = false
+    internal var dismiss: (() -> Unit)?
+        get() = dismissHandler
+        set(value) {
+            dismissOwner = null
+            dismissHandler = value
+            dispatchPendingDismissal()
+        }
     internal var targetPage: HubPageSelector = HubPageSelector.Unknown
     internal var jsFunctionArgsAsJson: String = DEFAULT_JS_FN_ARGS
     internal var progressBar: ProgressBar? = null
@@ -191,6 +203,9 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
     }
 
     override fun destroy() {
+        dismissOwner = null
+        dismissHandler = null
+        dismissPending = false
         rowndJavascriptInterface.dispose()
         lifecycleJob.cancel()
         super.destroy()
@@ -208,13 +223,43 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
                     if (this.canGoBack()) {
                         this.goBack()
                     } else {
-                        dismiss?.invoke()
+                        requestDismiss()
                     }
                     return true
                 }
             }
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    internal fun claimDismissHandler(owner: Any, handler: () -> Unit) {
+        dismissOwner = owner
+        dismissHandler = handler
+        dispatchPendingDismissal()
+    }
+
+    internal fun releaseDismissHandler(owner: Any) {
+        if (dismissOwner === owner) {
+            dismissOwner = null
+            dismissHandler = null
+        }
+    }
+
+    internal fun requestDismiss(): Boolean {
+        val handler = dismissHandler
+        if (handler == null) {
+            dismissPending = true
+            return true
+        }
+        handler.invoke()
+        return true
+    }
+
+    private fun dispatchPendingDismissal() {
+        if (!dismissPending) return
+        val handler = dismissHandler ?: return
+        dismissPending = false
+        handler.invoke()
     }
 
     internal fun loadNewPage(targetPage: HubPageSelector = HubPageSelector.SignIn, jsFnOptionsAsJson: String?) {
@@ -308,6 +353,9 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
     private var finishedHubPage: Pair<Long, String>? = null
     private var hubLoadedPageLoadId: Long? = null
     private var hubAuthenticationPageLoadId: Long? = null
+    private val pageLoadGeneration = AtomicLong()
+    private var authenticatedTargetReadyJob: Job? = null
+    internal var authenticatedTargetReadyTimeoutMilliseconds = AUTHENTICATED_TARGET_READY_TIMEOUT_MILLISECONDS
 
     init {
         webView.lifecycleScope.launch(Dispatchers.IO) {
@@ -414,7 +462,9 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
         webView.rowndJavascriptInterface.invalidateEmailVerificationRequests()
         timeout = false
-        pageLoadId += 1
+        pageLoadId = pageLoadGeneration.incrementAndGet()
+        authenticatedTargetReadyJob?.cancel()
+        authenticatedTargetReadyJob = null
         finishedHubPage = null
         hubLoadedPageLoadId = null
         hubAuthenticationPageLoadId = null
@@ -454,13 +504,19 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
         }
     }
 
-    internal fun onHubLoaded() {
-        hubLoadedPageLoadId = pageLoadId
+    internal fun currentPageLoadId(): Long = pageLoadGeneration.get()
+
+    internal fun onHubLoaded(messagePageLoadId: Long = currentPageLoadId()) {
+        if (messagePageLoadId != pageLoadId) return
+        hubLoadedPageLoadId = messagePageLoadId
         maybeDisplayTargetPage()
     }
 
-    internal fun onHubAuthentication() {
-        hubAuthenticationPageLoadId = pageLoadId
+    internal fun onHubAuthentication(messagePageLoadId: Long = currentPageLoadId()) {
+        if (messagePageLoadId != pageLoadId) return
+        hubAuthenticationPageLoadId = messagePageLoadId
+        authenticatedTargetReadyJob?.cancel()
+        authenticatedTargetReadyJob = null
         maybeDisplayTargetPage()
     }
 
@@ -476,9 +532,31 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
             targetPageRequest.targetPage.requiresHubAuthentication() &&
             hubAuthenticationPageLoadId != finishedPageLoadId
         ) {
+            scheduleAuthenticatedTargetFallback(targetPageRequest, finishedPageLoadId, finishedUrl)
             return false
         }
+        authenticatedTargetReadyJob?.cancel()
+        authenticatedTargetReadyJob = null
         return displayTargetPage(webView, targetPageRequest, finishedPageLoadId)
+    }
+
+    private fun scheduleAuthenticatedTargetFallback(
+        targetPageRequest: RowndWebView.PendingTargetPageRequest,
+        finishedPageLoadId: Long,
+        finishedUrl: String,
+    ) {
+        if (authenticatedTargetReadyJob?.isActive == true) return
+        authenticatedTargetReadyJob = webView.lifecycleScope.launch {
+            delay(authenticatedTargetReadyTimeoutMilliseconds)
+            if (
+                pageLoadId == finishedPageLoadId &&
+                hubLoadedPageLoadId == finishedPageLoadId &&
+                webView.pendingTargetPageRequest(finishedUrl)?.id == targetPageRequest.id
+            ) {
+                Log.w("Rownd.hub", "Hub authentication readiness timed out; displaying the requested page")
+                displayTargetPage(webView, targetPageRequest, finishedPageLoadId)
+            }
+        }
     }
 
     private fun HubPageSelector.requiresHubAuthentication(): Boolean = when (this) {
@@ -590,6 +668,8 @@ class RowndJavascriptInterface constructor(
     private var disposed = false
     private val dismissalInvoked = AtomicBoolean(false)
     private var dismissalJob: Job? = null
+    private val authenticationMutex = Mutex()
+    private val authenticationGeneration = AtomicLong()
 
     @Synchronized
     private fun dismissHub(delayMilliseconds: Long = 0) {
@@ -604,7 +684,7 @@ class RowndJavascriptInterface constructor(
             dismissalJob = parentWebView.lifecycleScope.launch {
                 delay(delayMilliseconds)
                 if (!disposed && dismissalInvoked.compareAndSet(false, true)) {
-                    parentWebView.dismiss?.invoke()
+                    parentWebView.requestDismiss()
                 }
             }
             return
@@ -614,7 +694,7 @@ class RowndJavascriptInterface constructor(
         dismissalJob = null
         parentWebView.lifecycleScope.launch {
             if (!disposed && dismissalInvoked.compareAndSet(false, true)) {
-                parentWebView.dismiss?.invoke()
+                parentWebView.requestDismiss()
             }
         }
     }
@@ -783,7 +863,10 @@ class RowndJavascriptInterface constructor(
                         Log.e("Rownd.hub", "Hub authentication message is missing refresh_token")
                         return
                     }
-                    parentWebView.rowndWebViewClient.onHubAuthentication()
+                    val messagePageLoadId = parentWebView.rowndWebViewClient.currentPageLoadId()
+                    parentWebView.lifecycleScope.launch {
+                        parentWebView.rowndWebViewClient.onHubAuthentication(messagePageLoadId)
+                    }
                     if (
                         parentWebView.targetPage != HubPageSelector.SignIn &&
                         parentWebView.targetPage != HubPageSelector.DeepLink
@@ -793,9 +876,20 @@ class RowndJavascriptInterface constructor(
 
                     val appContext = parentWebView.context.applicationContext
 
-                    fun launchPostBootstrap(includeBootstrap: Boolean) = bridgeScope.launch {
-                        try {
-                            if (includeBootstrap) {
+                    val messageGeneration = authenticationGeneration.incrementAndGet()
+                    bridgeScope.launch {
+                        if (!SuperTokensSessionBridge.awaitInitialized()) {
+                            Log.e("Rownd.hub", "Skipping post-authentication user load because SuperTokens is not initialized")
+                            return@launch
+                        }
+
+                        var authenticationCommitted = false
+                        authenticationMutex.withLock {
+                            if (disposed || messageGeneration != authenticationGeneration.get()) {
+                                return@withLock
+                            }
+
+                            try {
                                 SuperTokensSessionBridge.bootstrapSession(
                                     context = appContext,
                                     accessToken = authenticationMessage.payload.accessToken,
@@ -804,48 +898,36 @@ class RowndJavascriptInterface constructor(
                                     antiCSRF = authenticationMessage.payload.antiCsrf,
                                     replaceExisting = true,
                                 )
-                            }
-                        } catch (e: Exception) {
-                            Log.e("Rownd.hub", "Hub authentication bootstrap failed", e)
-                            return@launch
-                        }
-
-                        try {
-                            if (!SuperTokensSessionBridge.awaitInitialized()) {
-                                Log.e("Rownd.hub", "Skipping post-authentication user load because SuperTokens is not initialized")
-                                return@launch
+                            } catch (e: Exception) {
+                                Log.e("Rownd.hub", "Hub authentication bootstrap failed", e)
+                                return@withLock
                             }
 
-                            SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
-                                context = appContext,
-                                store = parentWebView.rowndClient.stateRepo.getStore(),
-                            )
+                            if (disposed || messageGeneration != authenticationGeneration.get()) {
+                                return@withLock
+                            }
 
-                            parentWebView.rowndClient.signInRepo.reset()
-                            parentWebView.rowndClient.userRepo.loadUserAsync()
-                            scheduleSignInCompletedAuthenticationFallback(authenticationMessage)
-                        } catch (e: Exception) {
-                            Log.e("Rownd.hub", "Hub post-authentication initialization failed", e)
-                        } finally {
-                            dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
+                            try {
+                                SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+                                    context = appContext,
+                                    store = parentWebView.rowndClient.stateRepo.getStore(),
+                                )
+
+                                parentWebView.rowndClient.signInRepo.reset()
+                                scheduleSignInCompletedAuthenticationFallback(authenticationMessage)
+                                authenticationCommitted = true
+                            } catch (e: Exception) {
+                                Log.e("Rownd.hub", "Hub post-authentication initialization failed", e)
+                            } finally {
+                                if (messageGeneration == authenticationGeneration.get()) {
+                                    dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
+                                }
+                            }
                         }
-                    }
 
-                    if (Looper.myLooper() == Looper.getMainLooper()) {
-                        launchPostBootstrap(includeBootstrap = true)
-                    } else {
-                        try {
-                            SuperTokensSessionBridge.bootstrapSession(
-                                context = appContext,
-                                accessToken = authenticationMessage.payload.accessToken,
-                                refreshToken = refreshToken,
-                                frontToken = authenticationMessage.payload.frontToken,
-                                antiCSRF = authenticationMessage.payload.antiCsrf,
-                                replaceExisting = true,
-                            )
-                            launchPostBootstrap(includeBootstrap = false)
-                        } catch (e: Exception) {
-                            Log.e("Rownd.hub", "Hub authentication bootstrap failed", e)
+                        if (!authenticationCommitted) return@launch
+                        parentWebView.rowndClient.userRepo.loadUserIfCurrent {
+                            !disposed && messageGeneration == authenticationGeneration.get()
                         }
                     }
                 }
@@ -853,8 +935,14 @@ class RowndJavascriptInterface constructor(
                 MessageType.signOut -> {
                     resetSignInCompletedDeduper()
                     dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
-
-                    Rownd.signOut()
+                    authenticationGeneration.incrementAndGet()
+                    bridgeScope.launch {
+                        authenticationMutex.withLock {
+                            if (!disposed) {
+                                Rownd.signOut()
+                            }
+                        }
+                    }
                 }
 
                 MessageType.triggerSignInWithGoogle -> {
@@ -935,34 +1023,29 @@ class RowndJavascriptInterface constructor(
                 }
 
                 MessageType.HubLoaded -> {
+                    val messagePageLoadId = parentWebView.rowndWebViewClient.currentPageLoadId()
                     parentWebView.lifecycleScope.launch {
-                        parentWebView.rowndWebViewClient.onHubLoaded()
+                        parentWebView.rowndWebViewClient.onHubLoaded(messagePageLoadId)
                     }
                 }
 
                 MessageType.AuthChallengeInitiated -> {
                     val authChallengeMessage = (interopMessage as AuthChallengeInitiatedMessage)
-                    Rownd.store.dispatch(
-                        StateAction.SetAuth(
-                            parentWebView.rowndClient.stateRepo.state.value.auth.copy(
-                                challengeId = authChallengeMessage.payload.challengeId,
-                                userIdentifier = authChallengeMessage.payload.userIdentifier,
-                            )
+                    parentWebView.rowndClient.stateRepo.getStore().dispatch(
+                        StateAction.SetAuthChallenge(
+                            challengeId = authChallengeMessage.payload.challengeId,
+                            userIdentifier = authChallengeMessage.payload.userIdentifier,
                         )
                     )
                 }
 
                 MessageType.AuthChallengeCleared -> {
-                    parentWebView.rowndClient.store.currentState.auth.let {
-                        Rownd.store.dispatch(
-                            StateAction.SetAuth(
-                                it.copy(
-                                    challengeId = null,
-                                    userIdentifier = null,
-                                )
-                            )
+                    parentWebView.rowndClient.stateRepo.getStore().dispatch(
+                        StateAction.SetAuthChallenge(
+                            challengeId = null,
+                            userIdentifier = null,
                         )
-                    }
+                    )
                 }
 
                 else -> {

@@ -13,9 +13,11 @@ import io.rownd.android.util.AuthenticatedApiClient
 import io.rownd.android.util.RowndContext
 import io.rownd.android.util.RowndException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 import io.rownd.android.models.network.User as NetworkUser
@@ -30,6 +32,7 @@ class UserRepo @Inject constructor() {
 
     @Inject
     lateinit var authenticatedApiClient: AuthenticatedApiClient
+    private val loadGeneration = AtomicLong()
 
     internal fun setIsLoading(value: Boolean) {
         stateRepo.getStore().dispatch(StateAction.SetUserIsLoading(value))
@@ -37,29 +40,50 @@ class UserRepo @Inject constructor() {
 
     internal fun loadUserAsync(): Deferred<User?> {
         return CoroutineScope(Dispatchers.IO).async {
-            try {
-                setIsLoading(value = true)
-                val user: NetworkUser = authenticatedApiClient.client.get(rowndPluginUrl("user")) {
-                    headers { remove("x-rownd-app-key") }
-                }.body()
-                stateRepo.getStore().dispatch(StateAction.SetUser(user.asDomainModel(stateRepo, this@UserRepo)))
+            loadUserIfCurrent { true }
+        }
+    }
+
+    internal suspend fun loadUserIfCurrent(isCurrentAuthentication: () -> Boolean): User? {
+        val generation = loadGeneration.incrementAndGet()
+        setIsLoading(value = true)
+        return try {
+            val user: NetworkUser = authenticatedApiClient.client.get(rowndPluginUrl("user")) {
+                headers { remove("x-rownd-app-key") }
+            }.body()
+            if (generation == loadGeneration.get()) {
                 setIsLoading(value = false)
-                return@async user.asDomainModel(stateRepo, this@UserRepo)
-            } catch (ex: ClientRequestException) {
+                if (isCurrentAuthentication()) {
+                    user.asDomainModel(stateRepo, this@UserRepo).also {
+                        stateRepo.getStore().dispatch(StateAction.SetUser(it))
+                    }
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+        } catch (ex: CancellationException) {
+            if (generation == loadGeneration.get()) {
+                setIsLoading(value = false)
+            }
+            throw ex
+        } catch (ex: ClientRequestException) {
+            if (generation == loadGeneration.get()) {
                 setIsLoading(value = false)
                 Log.e("RowndUsersApi", "Failed to fetch the user")
 
-                if (ex.response.status == HttpStatusCode.NotFound) {
-                    // This user doesn't exist
+                if (ex.response.status == HttpStatusCode.NotFound && isCurrentAuthentication()) {
                     rowndContext.client?.signOut()
                 }
-
-                return@async null
-            } catch (ex: Exception) {
+            }
+            null
+        } catch (ex: Exception) {
+            if (generation == loadGeneration.get()) {
                 setIsLoading(value = false)
                 Log.e("RowndUsersApi", "Failed to fetch the user")
-                return@async null
             }
+            null
         }
     }
 

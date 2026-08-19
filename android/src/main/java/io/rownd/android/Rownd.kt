@@ -89,6 +89,10 @@ class RowndClient(
     internal var telemetry = graph.telemetry()
     internal var authenticatedApiClient: AuthenticatedApiClient = graph.authenticatedApiClient()
 
+    private var pendingHubDisplayRequest: HubDisplayRequest? = null
+    private var isWaitingForAppConfig = false
+    private var isWaitingForResumedActivity = false
+
     var state = stateRepo.state
     var user = userRepo
 
@@ -224,22 +228,21 @@ class RowndClient(
         }
     }
 
-    private fun isAppConfigLoadingWithCallback(callback: () -> (Unit)): Boolean {
-        val scope = CoroutineScope(Dispatchers.IO)
+    private fun isAppConfigLoadingWithCallback(callback: () -> Unit): Boolean {
         val isLoading = state.value.appConfig.isLoading && state.value.appConfig.id == ""
-        if (isLoading) {
-            scope.launch {
-                store.stateAsStateFlow().collect {
-                    // Callback when the appConfig has loaded
-                    if (!it.appConfig.isLoading) {
-                        callback()
-                        scope.cancel()
-                        return@collect
-                    }
+        if (!isLoading) return false
+
+        val scope = CoroutineScope(Dispatchers.IO)
+        scope.launch {
+            store.stateAsStateFlow().collect {
+                if (!it.appConfig.isLoading) {
+                    callback()
+                    scope.cancel()
+                    return@collect
                 }
             }
         }
-        return isLoading
+        return true
     }
 
     fun requestSignIn(
@@ -421,19 +424,25 @@ class RowndClient(
             return
         }
 
-        val isAppConfigLoading = isAppConfigLoadingWithCallback {
-            displayHub(targetPage, jsFnOptions)
-        }
+        pendingHubDisplayRequest = HubDisplayRequest(targetPage, jsFnOptions)
+        displayPendingHubRequest()
+    }
 
-        if (isAppConfigLoading) {
+    private fun displayPendingHubRequest() {
+        val request = pendingHubDisplayRequest ?: return
+        if (state.value.appConfig.isLoading && state.value.appConfig.id == "") {
             Log.w("Rownd", "App config is not ready yet.")
+            waitForAppConfig()
             return
         }
 
         // Prevent Hub from displaying when Google One Tap is requested
         if (signInWithGoogle.isOneTapRequestedAndNotDisplayedYet()) {
-            if (targetPage === HubPageSelector.SignIn) {
-                signInWithGoogle.rememberedRequestSignIn = { displayHub(targetPage, jsFnOptions) }
+            pendingHubDisplayRequest = null
+            if (request.targetPage === HubPageSelector.SignIn) {
+                signInWithGoogle.rememberedRequestSignIn = {
+                    displayHub(request.targetPage, request.jsFnOptions)
+                }
             }
             return
         }
@@ -452,28 +461,52 @@ class RowndClient(
                 activity.isDestroyed ||
                 !isActivityResumed
             ) {
-                appHandleWrapper?.registerActivityListener(
-                    persistentListOf(Lifecycle.State.RESUMED),
-                    immediate = false,
-                    once = true
-                ) {
-                    displayHub(targetPage, jsFnOptions)
+                if (!isWaitingForResumedActivity) {
+                    val lifecycle = appHandleWrapper ?: return
+                    isWaitingForResumedActivity = true
+                    lifecycle.registerActivityListener(
+                        persistentListOf(Lifecycle.State.RESUMED),
+                        immediate = false,
+                        once = true
+                    ) {
+                        isWaitingForResumedActivity = false
+                        displayPendingHubRequest()
+                    }
                 }
                 return
             }
 
-            var jsFnOptionsStr: String? = null
-            if (jsFnOptions != null) {
-                jsFnOptionsStr = jsFnOptions.toJsonString()
-            }
-
-            appHandleWrapper?.app?.get()?.applicationContext?.let {
-                RowndBottomSheetActivity.launch(it, targetPage, jsFnOptionsStr)
-            }
+            val jsFnOptionsStr = request.jsFnOptions?.toJsonString()
+            val context = appHandleWrapper?.app?.get()?.applicationContext ?: return
+            RowndBottomSheetActivity.launch(context, request.targetPage, jsFnOptionsStr)
+            pendingHubDisplayRequest = null
         } catch (ex: Exception) {
-            Log.w("Rownd", "Failed to trigger Rownd bottom sheet for target: $targetPage", ex)
+            Log.w("Rownd", "Failed to trigger Rownd bottom sheet for target: ${request.targetPage}", ex)
         }
     }
+
+    private fun waitForAppConfig() {
+        if (isWaitingForAppConfig) return
+        isWaitingForAppConfig = true
+        val scope = CoroutineScope(Dispatchers.IO)
+        scope.launch {
+            store.stateAsStateFlow().collect {
+                if (!it.appConfig.isLoading) {
+                    scope.cancel()
+                    Handler(Looper.getMainLooper()).post {
+                        isWaitingForAppConfig = false
+                        displayPendingHubRequest()
+                    }
+                    return@collect
+                }
+            }
+        }
+    }
+
+    private data class HubDisplayRequest(
+        val targetPage: HubPageSelector,
+        val jsFnOptions: RowndSignInOptionsBase?,
+    )
 
     internal fun getDeviceSize(context: Context): DisplayMetrics {
         val metrics = DisplayMetrics()

@@ -13,6 +13,7 @@ import kotlinx.serialization.json.Json
 
 class RowndBottomSheetActivity : ComponentActivity() {
     private var bottomSheetHolder: HubComposableBottomSheet? = null
+    private var pendingSheetRequest: SheetRequest? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -34,7 +35,8 @@ class RowndBottomSheetActivity : ComponentActivity() {
             this,
             onDismiss = { dismiss() },
             targetPage = targetPage,
-            jsFnArgsAsJson = jsFnOptions
+            jsFnArgsAsJson = jsFnOptions,
+            onWebViewReady = ::applyPendingSheetRequest,
         )
 
         setContent {
@@ -43,6 +45,7 @@ class RowndBottomSheetActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        bottomSheetHolder?.detach()
         if (!isChangingConfigurations) {
             bottomSheetHolder?.dispose()
         }
@@ -60,8 +63,26 @@ class RowndBottomSheetActivity : ComponentActivity() {
         val targetPage = intent.getSerializableExtra(EXTRA_TARGET_PAGE) as? HubPageSelector ?: HubPageSelector.Unknown
         val jsFnOptions = intent.getStringExtra(EXTRA_JS_FN_OPTIONS)
 
-        bottomSheetHolder?.existingWebView?.loadNewPage(targetPage, jsFnOptions)
+        val request = SheetRequest(targetPage, jsFnOptions)
+        val webView = bottomSheetHolder?.existingWebView
+        if (webView == null) {
+            pendingSheetRequest = request
+        } else {
+            webView.loadNewPage(request.targetPage, request.jsFnOptions)
+        }
     }
+
+    private fun applyPendingSheetRequest(webView: RowndWebView): Boolean {
+        val request = pendingSheetRequest ?: return false
+        pendingSheetRequest = null
+        webView.loadNewPage(request.targetPage, request.jsFnOptions)
+        return true
+    }
+
+    private data class SheetRequest(
+        val targetPage: HubPageSelector,
+        val jsFnOptions: String?,
+    )
 
     private fun dismiss() {
         finish()

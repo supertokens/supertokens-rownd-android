@@ -228,6 +228,69 @@ class RowndWebViewInstrumentedTest {
         assertEquals(1, javascriptProbe.targetInvocationCount.get())
     }
 
+    @Test
+    fun authenticatedTargetFallsBackOnceWhenAuthenticationReadinessTimesOut() {
+        val targetUrl = requestUrl(requestId = 1, config = "authentication-timeout")
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.authenticatedTargetReadyTimeoutMilliseconds = 50
+            webView.prepareTargetPageRequest(
+                HubPageSelector.ManageAccount,
+                null,
+                targetUrl,
+            )
+        }
+
+        loadDocument(targetUrl)
+        javascriptProbe.awaitTargetInvocation("Manage Account was not invoked after authentication readiness timed out")
+        awaitCompletedLoad("The timed-out authenticated target did not finish loading")
+
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.onHubAuthentication()
+        }
+        awaitJavascriptQueue()
+
+        assertEquals(listOf("manage-account"), javascriptProbe.targetMarkers)
+        assertEquals("Late authentication must not replay the target", 1, javascriptProbe.targetInvocationCount.get())
+    }
+
+    @Test
+    fun readinessFromPreviousNavigationDoesNotReadyCurrentNavigation() {
+        val firstUrl = requestUrl(requestId = 1, config = "first-navigation")
+        instrumentation.runOnMainSync {
+            webView.prepareTargetPageRequest(
+                HubPageSelector.SignIn,
+                """{"marker":"first-navigation"}""",
+                firstUrl,
+            )
+        }
+        loadDocument(firstUrl, signalHubLoaded = false)
+        val firstPageLoadId = webView.rowndWebViewClient.currentPageLoadId()
+
+        val secondUrl = requestUrl(requestId = 2, config = "second-navigation")
+        instrumentation.runOnMainSync {
+            webView.prepareTargetPageRequest(
+                HubPageSelector.SignIn,
+                """{"marker":"second-navigation"}""",
+                secondUrl,
+            )
+        }
+        loadDocument(secondUrl, signalHubLoaded = false)
+
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.onHubLoaded(firstPageLoadId)
+        }
+        awaitJavascriptQueue()
+        assertEquals("Stale readiness must not invoke the current target", 0, javascriptProbe.targetInvocationCount.get())
+
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.onHubLoaded()
+        }
+        javascriptProbe.awaitTargetInvocation("Current navigation readiness did not invoke its target")
+
+        assertEquals(listOf("second-navigation"), javascriptProbe.targetMarkers)
+        assertEquals(1, javascriptProbe.targetInvocationCount.get())
+    }
+
     private fun prepareAndLoadTarget(
         marker: String,
         targetUrl: String,
@@ -248,7 +311,7 @@ class RowndWebViewInstrumentedTest {
         awaitJavascriptQueue()
     }
 
-    private fun loadDocument(url: String) {
+    private fun loadDocument(url: String, signalHubLoaded: Boolean = true) {
         instrumentation.runOnMainSync {
             webView.loadDataWithBaseURL(
                 url,
@@ -260,9 +323,11 @@ class RowndWebViewInstrumentedTest {
         }
         javascriptProbe.awaitDocumentLoad("The Hub document did not load for $url")
         javascriptProbe.awaitPageFinished("The Hub document did not finish loading for $url")
-        evaluateJavascript(
-            """window.rowndAndroidSDK.postMessage(JSON.stringify({type: "hub_loaded"}))""",
-        )
+        if (signalHubLoaded) {
+            evaluateJavascript(
+                """window.rowndAndroidSDK.postMessage(JSON.stringify({type: "hub_loaded"}))""",
+            )
+        }
     }
 
     private fun requestUrl(requestId: Int, config: String): String =
