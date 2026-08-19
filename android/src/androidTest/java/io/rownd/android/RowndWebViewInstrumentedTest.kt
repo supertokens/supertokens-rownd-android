@@ -174,6 +174,60 @@ class RowndWebViewInstrumentedTest {
         assertEquals(1, javascriptProbe.targetInvocationCount.get())
     }
 
+    @Test
+    fun hubLoadedBeforePageFinishedInvokesTargetExactlyOnce() {
+        val targetUrl = requestUrl(requestId = 1, config = "early-hub-loaded")
+        instrumentation.runOnMainSync {
+            webView.prepareTargetPageRequest(
+                HubPageSelector.SignIn,
+                """{"marker":"early-hub-loaded"}""",
+                targetUrl,
+            )
+            webView.loadDataWithBaseURL(
+                targetUrl,
+                HUB_DOCUMENT_WITH_EARLY_HUB_LOADED,
+                "text/html",
+                "UTF-8",
+                null,
+            )
+        }
+
+        javascriptProbe.awaitDocumentLoad("The early Hub document did not load")
+        javascriptProbe.awaitPageFinished("The early Hub document did not finish loading")
+        javascriptProbe.awaitTargetInvocation("The target was not invoked after both Hub readiness signals")
+        awaitCompletedLoad("The early Hub target request did not finish loading")
+        awaitJavascriptQueue()
+
+        assertEquals(listOf("early-hub-loaded"), javascriptProbe.targetMarkers)
+        assertEquals(1, javascriptProbe.targetInvocationCount.get())
+    }
+
+    @Test
+    fun authenticatedTargetWaitsForHubAuthentication() {
+        val targetUrl = requestUrl(requestId = 1, config = "authenticated-target")
+        instrumentation.runOnMainSync {
+            webView.prepareTargetPageRequest(
+                HubPageSelector.ManageAccount,
+                null,
+                targetUrl,
+            )
+        }
+
+        loadDocument(targetUrl)
+        awaitJavascriptQueue()
+        assertEquals("Manage Account must wait for Hub authentication", 0, javascriptProbe.targetInvocationCount.get())
+
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.onHubAuthentication()
+        }
+        javascriptProbe.awaitTargetInvocation("Manage Account was not invoked after Hub authentication")
+        awaitCompletedLoad("The authenticated target request did not finish loading")
+        awaitJavascriptQueue()
+
+        assertEquals(listOf("manage-account"), javascriptProbe.targetMarkers)
+        assertEquals(1, javascriptProbe.targetInvocationCount.get())
+    }
+
     private fun prepareAndLoadTarget(
         marker: String,
         targetUrl: String,
@@ -302,8 +356,37 @@ class RowndWebViewInstrumentedTest {
                     },
                     requestSignIn: function(options) {
                       $JAVASCRIPT_PROBE_NAME.recordTarget(options && options.marker);
+                    },
+                    user: {
+                      manageAccount: function() {
+                        $JAVASCRIPT_PROBE_NAME.recordTarget("manage-account");
+                      }
                     }
                   };
+                  $JAVASCRIPT_PROBE_NAME.documentLoaded();
+                </script>
+              </body>
+            </html>
+        """.trimIndent()
+        val HUB_DOCUMENT_WITH_EARLY_HUB_LOADED = """
+            <!doctype html>
+            <html>
+              <body>
+                <script>
+                  window.rownd = {
+                    setSessionStorage: function() {
+                      $JAVASCRIPT_PROBE_NAME.pageFinished();
+                    },
+                    requestSignIn: function(options) {
+                      $JAVASCRIPT_PROBE_NAME.recordTarget(options && options.marker);
+                    },
+                    user: {
+                      manageAccount: function() {
+                        $JAVASCRIPT_PROBE_NAME.recordTarget("manage-account");
+                      }
+                    }
+                  };
+                  window.rowndAndroidSDK.postMessage(JSON.stringify({type: "hub_loaded"}));
                   $JAVASCRIPT_PROBE_NAME.documentLoaded();
                 </script>
               </body>

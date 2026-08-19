@@ -19,12 +19,15 @@ import androidx.test.espresso.web.webdriver.DriverAtoms.webKeys
 import androidx.test.espresso.web.webdriver.Locator
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import com.supertokens.session.SuperTokensInterceptor
 import io.rownd.android.Rownd
 import io.rownd.android.util.SuperTokensSessionBridge
+import io.rownd.android.views.RowndBottomSheetActivity
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -112,6 +115,10 @@ class RealHubE2ETest {
 
         waitForCompletedConsumes(1)
         waitForSignedInApp()
+        waitUntil("RowndBottomSheetActivity to close after magic-link authentication") {
+            !hasActiveBottomSheetActivity()
+        }
+        assertFalse("RowndBottomSheetActivity must close after authentication", hasActiveBottomSheetActivity())
         assertEquals(1, SandboxObservability.events.value.signInCompletedCount)
         assertProtectedRequestSucceeds()
         val originalAccessToken = runBlocking { Rownd.getAccessToken() }
@@ -285,6 +292,19 @@ class RealHubE2ETest {
             setPackage(context.packageName)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         })
+    }
+
+    private fun hasActiveBottomSheetActivity(): Boolean {
+        var hasActiveActivity = false
+        instrumentation.runOnMainSync {
+            val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+            hasActiveActivity = Stage.entries
+                .filter { it != Stage.DESTROYED }
+                .any { stage ->
+                    monitor.getActivitiesInStage(stage).any { it is RowndBottomSheetActivity }
+                }
+        }
+        return hasActiveActivity
     }
 
     private fun toCustomScheme(link: String): Uri {
