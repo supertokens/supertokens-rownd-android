@@ -664,15 +664,25 @@ Run integration tests:
 npm run test:integration
 ```
 
-Run real-Hub E2E tests on a connected emulator:
+Hub E2E tests require Node.js 22, Docker, a connected Android emulator, and read access to the private Hub repository. Prepare the pinned Hub revision next to this repository:
 
 ```sh
+gh repo clone supertokens/supertokens-rownd-hub ../supertokens-rownd-hub
+git -C ../supertokens-rownd-hub checkout 2146e7ad6f67473d7d5aadab2f94cc5373c5ff0b
+npm ci --prefix ../supertokens-rownd-hub
+```
+
+Then install this repository's dependencies and run the suite:
+
+```sh
+npm ci
 npm run test:e2e
 ```
 
-The E2E suite uses the Hub deployment at `https://rownd-hub.supertokens.com`, then verifies OTP and magic-link authentication through the Android WebView bridge, replay handling, restored-session account management, Hub profile-update persistence and native-state synchronization, and Hub-originated sign-out.
+The E2E suite builds and serves the local Hub, then verifies OTP and magic-link authentication through the Android WebView bridge, replay handling, restored-session account management, Hub profile-update persistence and native-state synchronization, and Hub-originated sign-out. Set `ANDROID_HUB_DIR` when the Hub checkout is not at `../supertokens-rownd-hub`.
 
 The PR and release workflows run both E2E suites before merging or publishing.
+Their local-Hub checkout uses `ROWND_HUB_REPOSITORY_TOKEN`, which must be a fine-grained token with read-only Contents access to `supertokens/supertokens-rownd-hub`. GitHub does not provide repository secrets to fork or Dependabot PRs, so the private-Hub matrix entry is skipped for those PRs.
 
 Releases can also be started manually from GitHub Actions. E2E tests run by default; select `skip_tests` only when an explicit test bypass is required.
 
@@ -687,5 +697,6 @@ This starts the harness, verifies Chrome custom-scheme dispatch to the local exa
 Useful overrides:
 
 - `ANDROID_HOST`: host address reachable from the Android device, default `10.0.2.2`
-- `ANDROID_HUB_URL`: Hub URL reachable from the Android device; `test:e2e` defaults to `https://rownd-hub.supertokens.com`
+- `ANDROID_HUB_DIR`: local Hub checkout, default `../supertokens-rownd-hub`
+- `ANDROID_HUB_PORT`: local Hub port, default `8787`
 - `ANDROID_HARNESS_PORT`: local harness port, default `3138`
