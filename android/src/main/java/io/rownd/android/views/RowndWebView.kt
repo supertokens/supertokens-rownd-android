@@ -7,6 +7,7 @@ import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
+import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
 import android.util.Log
@@ -62,8 +63,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
 import java.net.URI
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 
 val json = Json { ignoreUnknownKeys = true }
@@ -559,6 +559,42 @@ class RowndJavascriptInterface constructor(
     private var emailVerificationNavigationGeneration = 0
     @Volatile
     private var disposed = false
+    private val dismissalPosted = AtomicBoolean(false)
+    private var dismissalJob: Job? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun postDismissal() {
+        if (disposed || !dismissalPosted.compareAndSet(false, true)) {
+            return
+        }
+
+        mainHandler.post {
+            if (!disposed) {
+                parentWebView.dismiss?.invoke()
+            }
+        }
+    }
+
+    @Synchronized
+    private fun dismissHub(delayMilliseconds: Long = 0) {
+        if (disposed || dismissalPosted.get()) {
+            return
+        }
+
+        if (delayMilliseconds > 0) {
+            if (dismissalJob?.isActive == true) {
+                return
+            }
+            dismissalJob = bridgeScope.launch {
+                delay(delayMilliseconds)
+                postDismissal()
+            }
+        } else {
+            dismissalJob?.cancel()
+            dismissalJob = null
+            postDismissal()
+        }
+    }
 
     private fun scheduleSignInCompletedAuthenticationFallback(authenticationMessage: AuthenticationMessage) {
         if (disposed || !signInCompletedDeduper.shouldScheduleAuthenticationFallback() || signInCompletedFallbackJob?.isActive == true) {
@@ -731,19 +767,22 @@ class RowndJavascriptInterface constructor(
                     }
                     val appContext = parentWebView.context.applicationContext
 
-                    fun launchPostBootstrap(includeBootstrap: Boolean) = bridgeScope.launch {
+                    bridgeScope.launch {
                         try {
-                            if (includeBootstrap) {
-                                SuperTokensSessionBridge.bootstrapSession(
-                                    context = appContext,
-                                    accessToken = authenticationMessage.payload.accessToken,
-                                    refreshToken = refreshToken,
-                                    frontToken = authenticationMessage.payload.frontToken,
-                                    antiCSRF = authenticationMessage.payload.antiCsrf,
-                                    replaceExisting = true,
-                                )
-                            }
+                            SuperTokensSessionBridge.bootstrapSession(
+                                context = appContext,
+                                accessToken = authenticationMessage.payload.accessToken,
+                                refreshToken = refreshToken,
+                                frontToken = authenticationMessage.payload.frontToken,
+                                antiCSRF = authenticationMessage.payload.antiCsrf,
+                                replaceExisting = true,
+                            )
+                        } catch (e: Exception) {
+                            Log.e("Rownd.hub", "Hub authentication bootstrap failed", e)
+                            return@launch
+                        }
 
+                        try {
                             if (!SuperTokensSessionBridge.awaitInitialized()) {
                                 Log.e("Rownd.hub", "Skipping post-authentication user load because SuperTokens is not initialized")
                                 return@launch
@@ -757,39 +796,17 @@ class RowndJavascriptInterface constructor(
                             parentWebView.rowndClient.signInRepo.reset()
                             parentWebView.rowndClient.userRepo.loadUserAsync()
                             scheduleSignInCompletedAuthenticationFallback(authenticationMessage)
-
-                            Executors.newSingleThreadScheduledExecutor().schedule({
-                                parentWebView.dismiss?.invoke()
-                            }, HUB_CLOSE_AFTER_MILLISECONDS, TimeUnit.MILLISECONDS)
                         } catch (e: Exception) {
-                            Log.e("Rownd.hub", "Hub authentication bootstrap failed", e)
-                        }
-                    }
-
-                    if (Looper.myLooper() == Looper.getMainLooper()) {
-                        launchPostBootstrap(includeBootstrap = true)
-                    } else {
-                        try {
-                            SuperTokensSessionBridge.bootstrapSession(
-                                context = appContext,
-                                accessToken = authenticationMessage.payload.accessToken,
-                                refreshToken = refreshToken,
-                                frontToken = authenticationMessage.payload.frontToken,
-                                antiCSRF = authenticationMessage.payload.antiCsrf,
-                                replaceExisting = true,
-                            )
-                            launchPostBootstrap(includeBootstrap = false)
-                        } catch (e: Exception) {
-                            Log.e("Rownd.hub", "Hub authentication bootstrap failed", e)
+                            Log.e("Rownd.hub", "Hub post-authentication initialization failed", e)
+                        } finally {
+                            dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
                         }
                     }
                 }
 
                 MessageType.signOut -> {
                     resetSignInCompletedDeduper()
-                    Executors.newSingleThreadScheduledExecutor().schedule({
-                        parentWebView.dismiss?.invoke()
-                    }, HUB_CLOSE_AFTER_MILLISECONDS, TimeUnit.MILLISECONDS)
+                    dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
 
                     Rownd.signOut()
                 }
@@ -797,7 +814,7 @@ class RowndJavascriptInterface constructor(
                 MessageType.triggerSignInWithGoogle -> {
                     val signInWithGoogleMessage = (interopMessage as TriggerSignInWithGoogleMessage).payload
                     parentWebView.rowndClient.signInWithGoogle.signIn(intent = signInWithGoogleMessage?.intent, hint = signInWithGoogleMessage?.hint, wasUserInitiated = true)
-                    parentWebView.dismiss?.invoke()
+                    dismissHub()
                 }
 
                 MessageType.UserDataUpdate -> {
@@ -812,7 +829,7 @@ class RowndJavascriptInterface constructor(
                 }
 
                 MessageType.CloseHubView -> {
-                    parentWebView.dismiss?.invoke()
+                    dismissHub()
                 }
 
                 MessageType.tryAgain -> {

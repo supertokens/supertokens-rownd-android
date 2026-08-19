@@ -14,12 +14,15 @@ import androidx.test.espresso.web.webdriver.DriverAtoms.webKeys
 import androidx.test.espresso.web.webdriver.Locator
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import com.supertokens.session.SuperTokensInterceptor
 import io.rownd.android.Rownd
 import io.rownd.android.util.SuperTokensSessionBridge
+import io.rownd.android.views.RowndBottomSheetActivity
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -102,6 +105,10 @@ class RealHubE2ETest {
         dispatchActionView(customSchemeLink)
 
         waitForSignedInApp()
+        waitUntil("RowndBottomSheetActivity to close after magic-link authentication") {
+            resumedBottomSheetActivity() == null
+        }
+        assertEquals("RowndBottomSheetActivity must close after authentication", null, resumedBottomSheetActivity())
         assertEquals(1, SandboxObservability.events.value.signInCompletedCount)
         assertProtectedRequestSucceeds()
         val originalAccessToken = runBlocking { Rownd.getAccessToken() }
@@ -259,6 +266,17 @@ class RealHubE2ETest {
             setPackage(context.packageName)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         })
+    }
+
+    private fun resumedBottomSheetActivity(): RowndBottomSheetActivity? {
+        var activity: RowndBottomSheetActivity? = null
+        instrumentation.runOnMainSync {
+            activity = ActivityLifecycleMonitorRegistry.getInstance()
+                .getActivitiesInStage(Stage.RESUMED)
+                .filterIsInstance<RowndBottomSheetActivity>()
+                .singleOrNull()
+        }
+        return activity
     }
 
     private fun toCustomScheme(link: String): Uri {

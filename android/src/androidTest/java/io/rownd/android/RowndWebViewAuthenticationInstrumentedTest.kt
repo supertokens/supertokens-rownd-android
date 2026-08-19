@@ -2,6 +2,7 @@ package io.rownd.android
 
 import android.app.Application
 import android.content.Context
+import android.os.Looper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.supertokens.session.SuperTokens
@@ -254,6 +255,33 @@ class RowndWebViewAuthenticationInstrumentedTest {
     }
 
     @Test
+    fun deepLinkNewUserAuthenticationDismissesExactlyOnceOnMainLooper() {
+        val stSession = HarnessClient.createSTSession("webview-deeplink-new-user")
+        val dismissalCount = AtomicInteger()
+        val dismissedOnMainLooper = AtomicReference(false)
+        val dismissed = CountDownLatch(1)
+        val bridge = createJavascriptInterface(HubPageSelector.DeepLink) {
+            dismissedOnMainLooper.set(Looper.myLooper() == Looper.getMainLooper())
+            dismissalCount.incrementAndGet()
+            dismissed.countDown()
+        }
+
+        bridge.postSecureMessage(buildAuthenticationMessage(
+            stSession.accessToken,
+            stSession.refreshToken,
+            userType = RowndSignInUserType.NewUser,
+            appVariantUserType = RowndSignInUserType.NewUser,
+        ))
+
+        assertTrue("Deep-link authentication must dismiss the Hub", dismissed.await(5, TimeUnit.SECONDS))
+        Thread.sleep(300)
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+
+        assertTrue("Hub dismissal must run on the main looper", dismissedOnMainLooper.get())
+        assertEquals("Deep-link authentication must dismiss exactly once", 1, dismissalCount.get())
+    }
+
+    @Test
     fun nativeEmailVerificationAdoptsReplacementSession() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val userId = "pending-email-user"
@@ -291,6 +319,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
     fun destroyingWebViewCancelsPendingSignInCompletedFallback() {
         val stSession = HarnessClient.createSTSession("destroyed-webview-auth-user")
         val completionEvent = CountDownLatch(1)
+        val dismissalCount = AtomicInteger()
         val listener: (RowndEvent) -> Unit = {
             if (it.event == RowndEventType.SignInCompleted) {
                 completionEvent.countDown()
@@ -299,7 +328,9 @@ class RowndWebViewAuthenticationInstrumentedTest {
 
         Rownd.addEventListener(listener)
         try {
-            val bridge = createJavascriptInterface(HubPageSelector.DeepLink)
+            val bridge = createJavascriptInterface(HubPageSelector.DeepLink) {
+                dismissalCount.incrementAndGet()
+            }
             bridge.postSecureMessage(buildAuthenticationMessage(stSession.accessToken, stSession.refreshToken))
 
             waitUntil { Rownd.stateRepo.state.value.auth.accessToken == stSession.accessToken }
@@ -309,6 +340,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
                 "A destroyed WebView must not emit its delayed sign_in_completed fallback",
                 completionEvent.await(2, TimeUnit.SECONDS),
             )
+            assertEquals("A destroyed WebView must not run its delayed dismissal", 0, dismissalCount.get())
         } finally {
             Rownd.removeEventListener(listener)
         }
