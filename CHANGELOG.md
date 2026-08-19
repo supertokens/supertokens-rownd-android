@@ -1,5 +1,12 @@
 
 
+## [0.1.9](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.8...v0.1.9) (2026-08-19)
+
+
+### Bug Fixes
+
+* synchronize Hub lifecycle with activity state ([862e256](https://github.com/supertokens/supertokens-rownd-android/commit/862e2560b99a19dfe791f4bfd04aefe94744a4fa))
+
 ## [0.1.8](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.7...v0.1.8) (2026-08-18)
 
 
