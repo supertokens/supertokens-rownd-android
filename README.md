@@ -674,6 +674,8 @@ The E2E suite uses the Hub deployment at `https://rownd-hub.supertokens.com`, th
 
 The PR and release workflows run both E2E suites before merging or publishing.
 
+Releases can also be started manually from GitHub Actions. E2E tests run by default; select `skip_tests` only when an explicit test bypass is required.
+
 Run pending-email verification coverage on a connected emulator with Chrome installed:
 
 ```sh
