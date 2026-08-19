@@ -130,8 +130,9 @@ class RowndWebViewAuthenticationInstrumentedTest {
     @Test
     fun authenticationMessageUsesProvidedFrontToken() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val accessToken = jwtGenerator.generateTestJwt()
-        val refreshToken = jwtGenerator.generateTestJwt()
+        val stSession = HarnessClient.createSTSession("provided-front-token-user")
+        val accessToken = stSession.accessToken
+        val refreshToken = stSession.refreshToken
         val frontToken = SuperTokensSessionBridge.buildFrontToken(jwtGenerator.generateTestJwt())
         val antiCSRF = "anti-csrf-token"
         val interop = buildAuthenticationMessage(accessToken, refreshToken, frontToken, antiCSRF)
