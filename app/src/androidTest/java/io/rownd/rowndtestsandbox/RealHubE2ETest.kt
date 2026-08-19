@@ -102,6 +102,7 @@ class RealHubE2ETest {
         assertEquals("resolved challenge must be cleared", null, Rownd.state.value.auth.challengeId)
         assertEquals("sign-in completion must be emitted once", 1, SandboxObservability.events.value.signInCompletedCount)
         assertProtectedRequestSucceeds()
+        assertCompletedConsumesRemain(1)
     }
 
     @Test
@@ -129,9 +130,7 @@ class RealHubE2ETest {
             device.findObject(By.res("e2e.action.manage-account")) == null
         }
         waitForResource("e2e.action.manage-account")
-        val replay = waitForCompletedConsumes(1)
-
-        assertEquals(1, replay.getInt("count"))
+        assertCompletedConsumesRemain(1)
         assertTrue("existing session must survive replay", Rownd.state.value.auth.isAuthenticated)
         assertTrue(runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
         assertEquals(originalSessionHandle, sessionHandle(runBlocking { Rownd.getAccessToken() }))
@@ -145,6 +144,7 @@ class RealHubE2ETest {
         openEmailChallenge(email)
         submitOtp(waitForCapture(email).getString("userInputCode"))
         waitForSignedInApp()
+        val accessTokenBeforeSignOut = requireNotNull(runBlocking { Rownd.getAccessToken() })
 
         scenario!!.recreate()
         waitUntil("session to restore after activity recreation") { Rownd.state.value.auth.isAuthenticated }
@@ -160,6 +160,7 @@ class RealHubE2ETest {
             !Rownd.state.value.auth.isAuthenticated &&
                 !runBlocking { SuperTokensSessionBridge.doesSessionExist(context) }
         }
+        assertAccessTokenRejected(accessTokenBeforeSignOut)
         scenario!!.recreate()
         waitForResource("e2e.action.open-auth")
         assertFalse(Rownd.state.value.auth.isAuthenticated)
@@ -270,6 +271,20 @@ class RealHubE2ETest {
         }
     }
 
+    private fun assertAccessTokenRejected(accessToken: String) {
+        val response = OkHttpClient().newCall(
+            Request.Builder()
+                .url("${BuildConfig.API_URL}/test/protected")
+                .header("Authorization", "Bearer $accessToken")
+                .header("rid", "session")
+                .header("st-auth-mode", "header")
+                .build()
+        ).execute()
+        response.use {
+            assertEquals("Hub sign-out must revoke the server session", 401, it.code)
+        }
+    }
+
     private fun getBackendUserData(): JSONObject {
         val response = OkHttpClient.Builder()
             .addInterceptor(SuperTokensInterceptor())
@@ -340,6 +355,21 @@ class RealHubE2ETest {
             result.getInt("count") >= count && result.getJSONArray("statuses").length() >= count
         }
         return result
+    }
+
+    private fun assertCompletedConsumesRemain(expectedCount: Int, settleMs: Long = 1_000) {
+        waitForCompletedConsumes(expectedCount)
+        val deadline = System.currentTimeMillis() + settleMs
+        do {
+            val result = getHarness("/test/passwordless/consumes")
+            assertEquals("passwordless consume count must remain stable", expectedCount, result.getInt("count"))
+            val statuses = result.getJSONArray("statuses")
+            assertEquals(expectedCount, statuses.length())
+            for (index in 0 until statuses.length()) {
+                assertEquals("passwordless consume must succeed", 200, statuses.getInt(index))
+            }
+            SystemClock.sleep(100)
+        } while (System.currentTimeMillis() < deadline)
     }
 
     private fun sessionHandle(accessToken: String?): String? {

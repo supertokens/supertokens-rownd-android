@@ -916,7 +916,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     res.json({ token, pendingVerificationId, userId });
   });
 
-  app.get("/test/protected", verifySession() as any, async (req: any, res) => {
+  app.get("/test/protected", verifySession({ checkDatabase: true }) as any, async (req: any, res) => {
     res.json({
       userId: req.session.getUserId(),
       accessTokenPayload: req.session.getAccessTokenPayload(),
