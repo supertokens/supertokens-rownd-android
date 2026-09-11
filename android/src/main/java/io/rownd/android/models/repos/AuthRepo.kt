@@ -80,14 +80,15 @@ class AuthRepo @Inject constructor() {
         val signOutGeneration: Long = SuperTokensSessionBridge.currentSignOutGeneration(),
     )
 
-    internal suspend fun getLatestAuthState(): AuthState? {
+    internal suspend fun getLatestAuthState(forceRefresh: Boolean = false): AuthState? {
         val context = rowndContext.client?.appHandleWrapper?.app?.get()?.applicationContext
             ?: return null
-        val accessToken = SuperTokensSessionBridge.getAccessToken(context) ?: return null
-        return stateRepo.state.value.auth.copy(accessToken = accessToken)
+        return SuperTokensSessionBridge.resolveAuthState(context, stateRepo.getStore(), forceRefresh)
     }
 
     internal suspend fun getAccessToken(): String? = getLatestAuthState()?.accessToken
+
+    internal suspend fun refreshAccessToken(): String? = getLatestAuthState(forceRefresh = true)?.accessToken
 
     internal suspend fun migrateLegacySessionIfNeeded(context: Context) {
         val job = legacyMigrationMutex.withLock {

@@ -49,6 +49,7 @@ type HarnessState = {
   passwordlessConsumeStatuses: number[];
   requestLog: RequestCapture[];
   refreshSimulationCompleted: boolean;
+  refreshUnavailable: boolean;
   userData: Record<string, unknown>;
   pendingEmailVerifications: Map<string, PendingEmailVerification>;
   signOutGate?: { path: string; skip: number; reached: boolean; release: () => void; wait: Promise<void> };
@@ -113,6 +114,7 @@ function createEmptyState(): HarnessState {
     passwordlessConsumeStatuses: [],
     requestLog: [],
     refreshSimulationCompleted: false,
+    refreshUnavailable: false,
     userData: { user_id: "harness-user", email: "harness-user@example.com" },
     pendingEmailVerifications: new Map(),
   };
@@ -574,6 +576,10 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     const state = getState(req as express.Request);
     if (req.method === "POST" && req.path === "/auth/session/refresh") {
       state.counters.stRefresh += 1;
+      if (state.refreshUnavailable) {
+        res.status(503).json({ status: "ERROR", message: "Temporary refresh outage" });
+        return;
+      }
     }
     if (req.method === "POST" && req.path === "/auth/plugin/rownd/migrate") {
       state.counters.migrate += 1;
@@ -945,6 +951,15 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   app.post("/test/st-session-exists", async (req, res) => {
     const session = await Session.getSessionInformation(String(req.body.sessionHandle));
     res.json({ exists: session !== undefined });
+  });
+
+  app.post("/test/refresh-availability", (req, res) => {
+    if (typeof req.body?.unavailable !== "boolean") {
+      res.status(400).json({ status: "ERROR", message: "unavailable must be a boolean" });
+      return;
+    }
+    getState(req).refreshUnavailable = req.body.unavailable;
+    res.json({ status: "OK" });
   });
 
   app.post("/test/pending-email-verification", (req, res) => {

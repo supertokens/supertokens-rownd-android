@@ -56,13 +56,30 @@ class LegacyMigrationProductionEngineInstrumentedTest {
 
         @BeforeClass @JvmStatic
         fun startServer() {
+            clearSession()
+            // The native SDK ignores repeated builds, including changes to the API origin.
+            SuperTokens.resetForTests()
+            SuperTokensSessionBridge.isInitialized.set(false)
             server = LocalMigrationServer()
             SuperTokens.Builder(context, server.origin).apiBasePath("/auth").tokenTransferMethod("header").build()
             SuperTokensSessionBridge.isInitialized.set(true)
         }
 
         @AfterClass @JvmStatic
-        fun stopServer() = server.close()
+        fun stopServer() {
+            try {
+                clearSession()
+            } finally {
+                SuperTokens.resetForTests()
+                SuperTokensSessionBridge.isInitialized.set(false)
+                if (::server.isInitialized) server.close()
+            }
+        }
+
+        private fun clearSession() {
+            SuperTokensSessionBridge.clearLocalSession(context)
+            context.getSharedPreferences("supertokens-android-shared-preferences", Context.MODE_PRIVATE).edit().clear().commit()
+        }
     }
 
     private lateinit var rownd: RowndClient
@@ -91,12 +108,9 @@ class LegacyMigrationProductionEngineInstrumentedTest {
         SuperTokensSessionBridge.writeSession = originalWriteSession
         rownd.authenticatedApiClient.client.close()
         rownd.authRepo.legacyMigrationApiClient.client.close()
+        rownd.authRepo.legacyTokenApiClient.client.close()
+        rownd.appHandleWrapper?.unregister()
         clearSession()
-    }
-
-    private fun clearSession() {
-        SuperTokensSessionBridge.clearLocalSession(context)
-        context.getSharedPreferences("supertokens-android-shared-preferences", Context.MODE_PRIVATE).edit().clear().commit()
     }
 
     @Test

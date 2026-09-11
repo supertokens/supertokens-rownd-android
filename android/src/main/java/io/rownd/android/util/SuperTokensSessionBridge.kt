@@ -3,11 +3,14 @@ package io.rownd.android.util
 import android.content.Context
 import android.os.Looper
 import android.util.Log
+import com.auth0.android.jwt.JWT
 import java.util.Base64
 import com.supertokens.session.EventHandler
 import com.supertokens.session.FrontToken
 import com.supertokens.session.SuperTokens
 import io.rownd.android.models.domain.AuthState
+import io.rownd.android.models.Store
+import io.rownd.android.models.repos.GlobalState
 import io.rownd.android.models.repos.StateAction
 import io.rownd.android.models.repos.StateRepo
 import kotlinx.coroutines.CoroutineScope
@@ -18,11 +21,15 @@ import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.io.IOException
 
 private const val TAG = "Rownd.SuperTokens"
 private const val SUPER_TOKENS_PREFS = "supertokens-android-shared-preferences"
@@ -129,6 +136,89 @@ object SuperTokensSessionBridge {
             SuperTokens.getAccessToken(context)
         }
 
+    private fun getAccessTokenForAuthentication(context: Context): String? {
+        val token = SuperTokens.getAccessToken(context)
+        // The native getter suppresses refresh API/transport errors. Retained
+        // credentials mean absence has not been established and callers can retry.
+        if (token == null && !getRefreshToken(context).isNullOrBlank()) {
+            throw ServerException("Session refresh failed temporarily; retry when the service is available")
+        }
+        return token
+    }
+
+    internal suspend fun resolveAuthState(
+        context: Context,
+        store: Store<GlobalState, StateAction>,
+        forceRefresh: Boolean = false,
+        afterTokenRead: suspend () -> Unit = {},
+    ): AuthState? = withContext(Dispatchers.IO) {
+        if (!isInitialized.get()) throw ServerException("Session SDK is not initialized; retry after configuration")
+        sessionMutationMutex.withLock {
+            val generation = currentSignOutGeneration()
+            val previousToken = store.currentState.auth.accessToken
+            val nativeTokenBefore = storedAccessToken(context)
+            if (forceRefresh) attemptRefresh(context)
+            val token = getAccessTokenForAuthentication(context)
+            afterTokenRead()
+            currentCoroutineContext().ensureActive()
+
+            synchronized(sessionCommitLock) {
+                if (generation != currentSignOutGeneration()) {
+                    // Native refresh can finish after synchronous local sign-out.
+                    // Remove only credentials belonging to that signed-out session.
+                    if (sameSession(nativeTokenBefore, storedAccessToken(context))) {
+                        clearLocalSession(context)
+                    }
+                    if (!getRefreshToken(context).isNullOrBlank()) {
+                        throw ServerException("Session changed during token retrieval; retry")
+                    }
+                    return@synchronized null
+                }
+                if (storedAccessToken(context) != token || store.currentState.auth.accessToken != previousToken ||
+                    (token == null && !getRefreshToken(context).isNullOrBlank())) {
+                    throw ServerException("Session changed during token retrieval; retry")
+                }
+                // A missing native session must not discard legacy credentials still
+                // awaiting migration. Only reconcile native compatibility state here.
+                if (token == null && sessionHandle(previousToken) == null) return@synchronized null
+
+                store.dispatch(StateAction.ReconcileNativeSession(
+                    expectedAccessToken = previousToken,
+                    accessToken = token,
+                    preserveProfile = sameSession(previousToken, token),
+                    isCurrent = {
+                        generation == currentSignOutGeneration() && storedAccessToken(context) == token &&
+                            (token != null || getRefreshToken(context).isNullOrBlank())
+                    },
+                ))
+                val auth = store.currentState.auth
+                if (auth.accessToken != token) {
+                    throw ServerException("Session changed during token retrieval; retry")
+                }
+                auth.takeIf { token != null }
+            }
+        }
+    }
+
+    private fun storedAccessToken(context: Context): String? =
+        sharedPrefs(context).getString(ACCESS_TOKEN_STORAGE_KEY, null)
+
+    private fun sessionHandle(token: String?): String? =
+        token?.let { runCatching { JWT(it).getClaim("sessionHandle").asString() }.getOrNull() }
+
+    private fun sameSession(first: String?, second: String?): Boolean {
+        if (first == null || second == null) return false
+        return runCatching {
+            val old = JWT(first)
+            val current = JWT(second)
+            val handle = old.getClaim("sessionHandle").asString()
+            !handle.isNullOrBlank() && handle == current.getClaim("sessionHandle").asString() &&
+                (old.subject ?: old.getClaim("userId").asString()) == (current.subject ?: current.getClaim("userId").asString()) &&
+                (old.getClaim("tId").asString() ?: old.getClaim("tenantId").asString()) ==
+                    (current.getClaim("tId").asString() ?: current.getClaim("tenantId").asString())
+        }.getOrDefault(false)
+    }
+
     fun getRefreshToken(context: Context): String? =
         sharedPrefs(context).getString(REFRESH_TOKEN_STORAGE_KEY, null)
 
@@ -141,8 +231,12 @@ object SuperTokensSessionBridge {
     suspend fun attemptRefresh(context: Context): Boolean =
         withContext(Dispatchers.IO) {
             debugLog("Attempting SuperTokens session refresh")
-            runCatching { SuperTokens.attemptRefreshingSession(context) }.isSuccess
-                && SuperTokens.doesSessionExist(context)
+            try {
+                SuperTokens.attemptRefreshingSession(context) && getAccessTokenForAuthentication(context) != null
+            } catch (error: IOException) {
+                throw ServerException("Session refresh failed temporarily; retry when the service is available")
+                    .also { it.initCause(error) }
+            }
         }
 
     suspend fun signOut(context: Context) =

@@ -402,14 +402,7 @@ class RowndClient(
             ?: throw NoAccessTokenPresentException("No access token was available. The user is likely not signed in.")
     }
 
-    suspend fun _refreshToken(): String? {
-        val context = appHandleWrapper?.app?.get()?.applicationContext ?: return null
-        return if (SuperTokensSessionBridge.attemptRefresh(context)) {
-            SuperTokensSessionBridge.getAccessToken(context)
-        } else {
-            null
-        }
-    }
+    suspend fun _refreshToken(): String? = authRepo.refreshAccessToken()
 
     // Internal stuff
     internal fun displayHub(

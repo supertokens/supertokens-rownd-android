@@ -18,6 +18,7 @@ import io.rownd.android.util.LegacyMigrationApiClient
 import io.rownd.android.util.LegacyTokenApiClient
 import io.rownd.android.util.SuperTokensSessionBridge
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -36,13 +37,12 @@ class LegacyRefreshRecoveryInstrumentedTest {
 
     @Before
     fun setUp() = runBlocking {
-        try {
-            SuperTokens.Builder(context, "https://api.example.com")
-                .apiBasePath("/auth").tokenTransferMethod("header").build()
-        } catch (_: Exception) {
-            // Other instrumentation suites may have initialized the singleton.
-        }
-        SuperTokensSessionBridge.signOut(context)
+        SuperTokensSessionBridge.clearLocalSession(context)
+        SuperTokens.resetForTests()
+        SuperTokensSessionBridge.isInitialized.set(false)
+        SuperTokens.Builder(context, "https://api.example.com")
+            .apiBasePath("/auth").tokenTransferMethod("header").build()
+        SuperTokensSessionBridge.isInitialized.set(true)
         val config = MockEngineConfig().apply {
             addHandler {
                 migrationCalls += 1
@@ -59,6 +59,16 @@ class LegacyRefreshRecoveryInstrumentedTest {
             refreshToken = "old-refresh",
         )))
         rownd.stateRepo.getStore().dispatch(StateAction.SetUser(User(data = mapOf("user_id" to "legacy-user"), isLoading = true)))
+    }
+
+    @After
+    fun tearDown() {
+        rownd.authRepo.legacyMigrationApiClient.client.close()
+        rownd.authRepo.legacyTokenApiClient.client.close()
+        rownd.authenticatedApiClient.client.close()
+        SuperTokensSessionBridge.clearLocalSession(context)
+        SuperTokens.resetForTests()
+        SuperTokensSessionBridge.isInitialized.set(false)
     }
 
     @Test

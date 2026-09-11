@@ -62,14 +62,12 @@ class LegacyMigrationTerminalInstrumentedTest {
 
     @Before
     fun setUp() {
-        try {
-            SuperTokens.Builder(context, "https://api.example.com")
-                .apiBasePath("/auth").tokenTransferMethod("header").build()
-        } catch (_: Exception) {
-            // The SDK singleton may already be initialized by another instrumentation class.
-        }
-        SuperTokensSessionBridge.isInitialized.set(true)
         clearSession()
+        SuperTokens.resetForTests()
+        SuperTokensSessionBridge.isInitialized.set(false)
+        SuperTokens.Builder(context, "https://api.example.com")
+            .apiBasePath("/auth").tokenTransferMethod("header").build()
+        SuperTokensSessionBridge.isInitialized.set(true)
         val engine = MockEngineConfig().apply {
             addHandler { request ->
                 if (request.url.encodedPath.endsWith("/user")) {
@@ -106,6 +104,8 @@ class LegacyMigrationTerminalInstrumentedTest {
         rownd.authRepo.legacyMigrationApiClient.client.close()
         rownd.authenticatedApiClient.client.close()
         clearSession()
+        SuperTokens.resetForTests()
+        SuperTokensSessionBridge.isInitialized.set(false)
     }
 
     private fun clearSession() {
