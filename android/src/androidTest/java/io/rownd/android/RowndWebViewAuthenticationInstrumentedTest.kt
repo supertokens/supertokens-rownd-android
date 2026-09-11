@@ -139,6 +139,120 @@ class RowndWebViewAuthenticationInstrumentedTest {
     }
 
     @Test
+    fun unsolicitedSignOutPreservesNativeSessionAndHub() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val session = HarnessClient.createSTSession("unsolicited-signout-user")
+        SuperTokensSessionBridge.bootstrapSession(context, session.accessToken, session.refreshToken)
+        Rownd.store.dispatch(StateAction.SetAuth(AuthState(accessToken = session.accessToken)))
+        val dismissals = AtomicInteger()
+        val bridge = createJavascriptInterface(HubPageSelector.SignIn) { dismissals.incrementAndGet() }
+
+        bridge.postSecureMessage("""{"type":"sign_out"}""")
+        bridge.postSecureMessage("""{"type":"sign_out","payload":{"was_user_initiated":false}}""")
+        Thread.sleep(1_800)
+
+        assertEquals(session.accessToken, runBlocking { SuperTokensSessionBridge.getAccessToken(context) })
+        assertEquals(session.accessToken, Rownd.stateRepo.state.value.auth.accessToken)
+        assertEquals(0, dismissals.get())
+    }
+
+    @Test
+    fun userInitiatedSignOutClearsNativeSession() {
+        assertExplicitSignOut(HubPageSelector.ManageAccount,
+            """{"type":"sign_out","payload":{"was_user_initiated":true}}""")
+    }
+
+    @Test
+    fun signOutTargetAcceptsMessageWithoutUserInitiatedFlag() {
+        assertExplicitSignOut(HubPageSelector.SignOut, """{"type":"sign_out"}""")
+    }
+
+    private fun assertExplicitSignOut(target: HubPageSelector, message: String) {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val session = HarnessClient.createSTSession("explicit-signout-user")
+        SuperTokensSessionBridge.bootstrapSession(context, session.accessToken, session.refreshToken)
+        Rownd.store.dispatch(StateAction.SetAuth(AuthState(accessToken = session.accessToken)))
+        val dismissed = CountDownLatch(1)
+        val bridge = createJavascriptInterface(target) { dismissed.countDown() }
+
+        bridge.postSecureMessage(message)
+
+        waitUntil { SuperTokensSessionBridge.getRefreshToken(context) == null }
+        assertTrue("Explicit sign-out must dismiss the Hub", dismissed.await(5, TimeUnit.SECONDS))
+        assertFalse(runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
+    }
+
+    @Test
+    fun failedAuthenticationSyncKeepsHubOpenAndAllowsRetry() {
+        assertAuthenticationSyncFailure { false }
+    }
+
+    @Test
+    fun throwingAuthenticationSyncKeepsHubOpenAndAllowsRetry() {
+        assertAuthenticationSyncFailure { throw IllegalStateException("Session sync failed") }
+    }
+
+    private fun assertAuthenticationSyncFailure(sync: suspend () -> Boolean) {
+        val session = HarnessClient.createSTSession("sync-retry-user")
+        val dismissals = AtomicInteger()
+        val completions = AtomicInteger()
+        val failureShown = CountDownLatch(1)
+        val listener: (RowndEvent) -> Unit = {
+            if (it.event == RowndEventType.SignInCompleted) completions.incrementAndGet()
+        }
+        val bridge = createJavascriptInterface(HubPageSelector.SignIn) { dismissals.incrementAndGet() }
+        val originalSync = bridge.syncAuthenticationState
+        bridge.syncAuthenticationState = sync
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            webViews.last().setIsLoading = { loading -> if (!loading) failureShown.countDown() }
+        }
+        Rownd.addEventListener(listener)
+        try {
+            val message = buildAuthenticationMessage(session.accessToken, session.refreshToken)
+            bridge.postSecureMessage(message)
+
+            assertTrue("Failure must show the recoverable error page", failureShown.await(5, TimeUnit.SECONDS))
+            val webView = webViews.last()
+            waitUntil {
+                evaluateJavascript(webView,
+                    "document.querySelector('button')?.textContent.trim() === 'Try again'") == "true"
+            }
+            Thread.sleep(1_800)
+            assertEquals("Failure must not dismiss the Hub", 0, dismissals.get())
+            assertEquals("Failure must not emit completion", 0, completions.get())
+            assertEquals(null, Rownd.stateRepo.state.value.auth.accessToken)
+
+            bridge.syncAuthenticationState = originalSync
+            evaluateJavascript(webView, "document.querySelector('button').click()")
+            waitUntil {
+                val pending = AtomicReference(false)
+                InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                    pending.set(webView.hasPendingTargetPageRequest())
+                }
+                pending.get()
+            }
+            bridge.postSecureMessage(message)
+            waitUntil { dismissals.get() == 1 && completions.get() == 1 }
+            assertEquals(session.accessToken, Rownd.stateRepo.state.value.auth.accessToken)
+        } finally {
+            Rownd.removeEventListener(listener)
+        }
+    }
+
+    private fun evaluateJavascript(webView: RowndWebView, script: String): String {
+        val result = AtomicReference<String>()
+        val completed = CountDownLatch(1)
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            webView.evaluateJavascript(script) {
+                result.set(it)
+                completed.countDown()
+            }
+        }
+        assertTrue("WebView JavaScript did not complete", completed.await(5, TimeUnit.SECONDS))
+        return result.get()
+    }
+
+    @Test
     fun authenticationMessageOutsideSignInDoesNotBootstrapSession() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val stSession = HarnessClient.createSTSession("ignored-auth-user")

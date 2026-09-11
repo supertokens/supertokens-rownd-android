@@ -53,8 +53,8 @@ export async function startLocalHub(): Promise<LocalHub> {
   await run("npm", ["run", "build"], hubDirectory);
 
   const child = spawn(
-    "npm",
-    ["exec", "--", "tsx", "./test/e2e/harness/hub-server.ts"],
+    process.execPath,
+    ["--import", "tsx", "./test/e2e/harness/hub-server.ts"],
     {
       cwd: hubDirectory,
       env: { ...process.env, E2E_HUB_PORT: String(port) },

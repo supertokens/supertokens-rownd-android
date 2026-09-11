@@ -37,6 +37,7 @@ import io.rownd.android.models.HubResizeMessage
 import io.rownd.android.models.MessageType
 import io.rownd.android.models.VerifyEmailMessage
 import io.rownd.android.models.RowndHubInteropMessage
+import io.rownd.android.models.SignOutMessage
 import io.rownd.android.models.TriggerSignInWithGoogleMessage
 import io.rownd.android.models.UserDataUpdateMessage
 import io.rownd.android.models.repos.StateAction
@@ -51,6 +52,7 @@ import io.rownd.android.util.redactSensitiveKeys
 import io.rownd.android.util.signInCompletedEventData
 import io.rownd.android.views.html.noInternetHTML
 import kotlinx.collections.immutable.persistentListOf
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -381,10 +383,20 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
         }
     }
 
-    private fun loadNoInternetHTML() {
-        webView.post {
+    internal fun loadNoInternetHTML() {
+        webView.lifecycleScope.launch {
             setIsLoading(false)
-            webView.loadDataWithBaseURL(null, noInternetHTML(context), "text/html", "utf-8", null)
+            // The trusted-origin bridge is unavailable on this local about:blank page.
+            webView.addJavascriptInterface(object {
+                @JavascriptInterface
+                fun postMessage(message: String) {
+                    if (message == """{"type":"try_again"}""") {
+                        webView.rowndJavascriptInterface.postMessage(message)
+                    }
+                }
+            }, "rowndAndroidSDKRetry")
+            val html = noInternetHTML(context).replace("rowndAndroidSDK", "rowndAndroidSDKRetry")
+            webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
         }
     }
 
@@ -670,6 +682,22 @@ class RowndJavascriptInterface constructor(
     private val authenticationMutex = SuperTokensSessionBridge.sessionMutationMutex
     private val authenticationGeneration = AtomicLong()
 
+    internal var syncAuthenticationState: suspend () -> Boolean = {
+        SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+            context = parentWebView.context.applicationContext,
+            store = parentWebView.rowndClient.stateRepo.getStore(),
+        )
+    }
+
+    private fun showAuthenticationFailure(messageGeneration: Long, signOutGeneration: Long) {
+        parentWebView.lifecycleScope.launch {
+            if (!disposed && messageGeneration == authenticationGeneration.get() &&
+                signOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration()) {
+                parentWebView.rowndWebViewClient.loadNoInternetHTML()
+            }
+        }
+    }
+
     @Synchronized
     private fun dismissHub(delayMilliseconds: Long = 0) {
         if (disposed || dismissalInvoked.get()) {
@@ -883,6 +911,7 @@ class RowndJavascriptInterface constructor(
                     bridgeScope.launch {
                         if (!SuperTokensSessionBridge.awaitInitialized()) {
                             Log.e("Rownd.hub", "Skipping post-authentication user load because SuperTokens is not initialized")
+                            showAuthenticationFailure(messageGeneration, signOutGeneration)
                             return@launch
                         }
 
@@ -904,7 +933,9 @@ class RowndJavascriptInterface constructor(
                                     isCurrent = ::isCurrentAuthentication,
                                 )) return@withLock
                             } catch (e: Exception) {
+                                if (e is CancellationException) throw e
                                 Log.e("Rownd.hub", "Hub authentication bootstrap failed", e)
+                                showAuthenticationFailure(messageGeneration, signOutGeneration)
                                 return@withLock
                             }
 
@@ -913,10 +944,7 @@ class RowndJavascriptInterface constructor(
                             }
 
                             try {
-                                SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
-                                    context = appContext,
-                                    store = parentWebView.rowndClient.stateRepo.getStore(),
-                                )
+                                check(syncAuthenticationState()) { "Native session was not adopted" }
 
                                 if (!isCurrentAuthentication()) {
                                     return@withLock
@@ -925,12 +953,11 @@ class RowndJavascriptInterface constructor(
                                 parentWebView.rowndClient.signInRepo.reset()
                                 scheduleSignInCompletedAuthenticationFallback(authenticationMessage, signOutGeneration)
                                 authenticationCommitted = true
+                                dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
                             } catch (e: Exception) {
+                                if (e is CancellationException) throw e
                                 Log.e("Rownd.hub", "Hub post-authentication initialization failed", e)
-                            } finally {
-                                if (messageGeneration == authenticationGeneration.get()) {
-                                    dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
-                                }
+                                showAuthenticationFailure(messageGeneration, signOutGeneration)
                             }
                         }
 
@@ -942,6 +969,13 @@ class RowndJavascriptInterface constructor(
                 }
 
                 MessageType.signOut -> {
+                    val signOutMessage = interopMessage as SignOutMessage
+                    // Hub expiry and initialization races must not sign out the native session.
+                    if (parentWebView.targetPage != HubPageSelector.SignOut &&
+                        signOutMessage.payload?.wasUserInitiated != true
+                    ) {
+                        return
+                    }
                     resetSignInCompletedDeduper()
                     dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
                     authenticationGeneration.incrementAndGet()

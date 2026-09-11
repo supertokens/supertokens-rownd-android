@@ -95,8 +95,15 @@ data class AuthenticationPayload(
 
 @Serializable
 data class SignOutMessage(
-    override var type: MessageType = MessageType.signOut
+    override var type: MessageType = MessageType.signOut,
+    var payload: SignOutPayload? = null,
 ) : RowndHubInteropMessage()
+
+@Serializable
+data class SignOutPayload(
+    @SerialName("was_user_initiated")
+    var wasUserInitiated: Boolean? = null,
+)
 
 @Serializable
 data class TryAgainMessage(
