@@ -42,6 +42,9 @@ open class KtorApiClient @Inject constructor(engine: HttpClientEngine, rowndCont
                     header.equals("Authorization", ignoreCase = true) ||
                         header.equals("Cookie", ignoreCase = true) ||
                         header.equals("Set-Cookie", ignoreCase = true) ||
+                        header.equals("st-access-token", ignoreCase = true) ||
+                        header.equals("st-refresh-token", ignoreCase = true) ||
+                        header.equals("front-token", ignoreCase = true) ||
                         header.equals("anti-csrf", ignoreCase = true)
                 }
             }

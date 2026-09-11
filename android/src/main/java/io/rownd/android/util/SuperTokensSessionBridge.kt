@@ -17,10 +17,12 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 private const val TAG = "Rownd.SuperTokens"
 private const val SUPER_TOKENS_PREFS = "supertokens-android-shared-preferences"
@@ -31,6 +33,30 @@ private const val LAST_ACCESS_TOKEN_UPDATE_STORAGE_KEY = "st-storage-item-st-las
 private const val ANTI_CSRF_STORAGE_KEY = "supertokens-android-anticsrf-key"
 
 object SuperTokensSessionBridge {
+    internal val sessionMutationMutex = Mutex()
+    internal var writeSession: (() -> Unit) -> Unit = { write -> write() }
+    private val sessionCommitLock = Any()
+    private val signOutGeneration = AtomicLong()
+
+    internal fun currentSignOutGeneration(): Long = signOutGeneration.get()
+
+    // Reactive refresh on 401 needs only these header credentials, not the SDK's front-token state.
+    internal class SignedOutSession(val accessToken: String, val refreshToken: String?, val antiCSRF: String?)
+
+    // Invalidation, local cleanup, and compatibility state reset are synchronous with native
+    // writes. Network revocation uses the captured session and must never clear current storage.
+    internal fun beginSignOut(context: Context?, resetAuthState: () -> Unit): SignedOutSession? =
+        synchronized(sessionCommitLock) {
+            signOutGeneration.incrementAndGet()
+            val session = context?.let {
+                sharedPrefs(it).getString(ACCESS_TOKEN_STORAGE_KEY, null)?.let { token ->
+                    SignedOutSession(token, getRefreshToken(it), getAntiCSRF(it))
+                }
+            }
+            context?.let { clearLocalSession(it) }
+            resetAuthState()
+            session
+        }
 
     val isInitialized = AtomicBoolean(false)
     private var enableDebugMode = false
@@ -163,35 +189,64 @@ object SuperTokensSessionBridge {
         antiCSRF: String? = null,
         replaceExisting: Boolean = false,
     ) {
+        bootstrapSessionIfCurrent(context, accessToken, refreshToken, frontToken, antiCSRF,
+            replaceExisting, currentSignOutGeneration())
+    }
+
+    internal fun bootstrapSessionIfCurrent(
+        context: Context,
+        accessToken: String,
+        refreshToken: String,
+        frontToken: String?,
+        antiCSRF: String?,
+        replaceExisting: Boolean,
+        expectedSignOutGeneration: Long,
+        isCurrent: () -> Boolean = { true },
+    ): Boolean {
         check(Looper.myLooper() != Looper.getMainLooper()) {
             "bootstrapSession must be called off the main thread"
         }
-        if (!replaceExisting && SuperTokens.doesSessionExist(context)) return
-        if (replaceExisting) {
-            clearLocalSession(context)
-        }
+        if (expectedSignOutGeneration != currentSignOutGeneration() || !isCurrent()) return false
+        if (!replaceExisting && SuperTokens.doesSessionExist(context)) return false
         debugLog("Bootstrapping SuperTokens session from Rownd Hub auth result")
 
         val resolvedFrontToken = frontToken ?: buildFrontToken(accessToken)
-        val editor = sharedPrefs(context).edit()
-            .putString(ACCESS_TOKEN_STORAGE_KEY, accessToken)
-            .putString(REFRESH_TOKEN_STORAGE_KEY, refreshToken)
-            .putString(LAST_ACCESS_TOKEN_UPDATE_STORAGE_KEY, "${System.currentTimeMillis()}")
+        var committed = false
+        writeSession {
+            synchronized(sessionCommitLock) {
+                if (expectedSignOutGeneration != currentSignOutGeneration() || !isCurrent()) return@synchronized
+                if (!replaceExisting && !getFrontToken(context).isNullOrBlank() &&
+                    !getRefreshToken(context).isNullOrBlank() &&
+                    !sharedPrefs(context).getString(ACCESS_TOKEN_STORAGE_KEY, null).isNullOrBlank()) return@synchronized
+                if (replaceExisting) clearLocalSession(context)
+                val editor = sharedPrefs(context).edit()
+                    .putString(ACCESS_TOKEN_STORAGE_KEY, accessToken)
+                    .putString(REFRESH_TOKEN_STORAGE_KEY, refreshToken)
+                    .putString(LAST_ACCESS_TOKEN_UPDATE_STORAGE_KEY, "${System.currentTimeMillis()}")
 
-        if (!antiCSRF.isNullOrEmpty()) {
-            editor.putString(ANTI_CSRF_STORAGE_KEY, antiCSRF)
+                if (!antiCSRF.isNullOrEmpty()) {
+                    editor.putString(ANTI_CSRF_STORAGE_KEY, antiCSRF)
+                }
+
+                editor.apply()
+                FrontToken.setToken(context, resolvedFrontToken)
+                committed = true
+            }
         }
-
-        editor.apply()
-        FrontToken.setToken(context, resolvedFrontToken)
+        return committed
     }
 
     // MARK: - Rownd compatibility state sync
 
     suspend fun syncRowndAuthStateFromSuperTokens(context: Context, store: io.rownd.android.models.Store<io.rownd.android.models.repos.GlobalState, StateAction>): Boolean {
+        val generation = currentSignOutGeneration()
         val accessToken = getAccessToken(context) ?: return false
-        store.dispatch(StateAction.SetAuth(AuthState(accessToken = accessToken, refreshToken = null)))
-        return true
+        return synchronized(sessionCommitLock) {
+            if (generation != currentSignOutGeneration() ||
+                sharedPrefs(context).getString(ACCESS_TOKEN_STORAGE_KEY, null) != accessToken) return@synchronized false
+            store.dispatch(StateAction.SetAuth(AuthState(accessToken = accessToken, refreshToken = null)))
+            true
+        }
     }
 
     // MARK: - Helpers

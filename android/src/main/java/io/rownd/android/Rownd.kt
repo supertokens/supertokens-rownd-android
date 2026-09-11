@@ -310,31 +310,30 @@ class RowndClient(
     }
 
     fun signOut() {
+        val revocationUrl = authRepo.sessionRevocationUrl()
+        val context = config.applicationContext ?: appHandleWrapper?.app?.get()?.applicationContext
+        val session = SuperTokensSessionBridge.beginSignOut(context) {
+            store.dispatch(StateAction.SetAuth(AuthState()))
+            store.dispatch(StateAction.SetUser(User()))
+        }
         val existingHubWebView = rowndContext.hubViewModel?.webView()?.value
         HubSessionStorage.clear(config, existingHubWebView)
         rowndContext.hubViewModel?.webView()?.postValue(null)
-        store.dispatch(StateAction.SetAuth(AuthState()))
-        store.dispatch(StateAction.SetUser(User()))
-
-        appHandleWrapper?.app?.get()?.applicationContext?.let { context ->
+        if (session != null) {
             if (Looper.myLooper() == Looper.getMainLooper()) {
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
-                        SuperTokensSessionBridge.signOut(context)
+                        authRepo.revokeSignedOutSession(session, revocationUrl)
                     } catch (ex: Exception) {
-                        Log.e("Rownd", "Failed to sign out of SuperTokens session", ex)
-                    } finally {
-                        SuperTokensSessionBridge.clearLocalSession(context)
+                        Log.e("Rownd", "Remote SuperTokens session revocation unconfirmed", ex)
                     }
                 }
             } else {
                 runBlocking {
                     try {
-                        SuperTokensSessionBridge.signOut(context)
+                        authRepo.revokeSignedOutSession(session, revocationUrl)
                     } catch (ex: Exception) {
-                        Log.e("Rownd", "Failed to sign out of SuperTokens session", ex)
-                    } finally {
-                        SuperTokensSessionBridge.clearLocalSession(context)
+                        Log.e("Rownd", "Remote SuperTokens session revocation unconfirmed", ex)
                     }
                 }
             }

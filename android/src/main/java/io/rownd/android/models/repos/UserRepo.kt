@@ -46,6 +46,9 @@ class UserRepo @Inject constructor() {
 
     internal suspend fun loadUserIfCurrent(isCurrentAuthentication: () -> Boolean): User? {
         val generation = loadGeneration.incrementAndGet()
+        val requestedAccessToken = stateRepo.state.value.auth.accessToken
+        fun isCurrentUser() = isCurrentAuthentication() &&
+            stateRepo.state.value.auth.accessToken == requestedAccessToken
         setIsLoading(value = true)
         return try {
             val user: NetworkUser = authenticatedApiClient.client.get(rowndPluginUrl("user")) {
@@ -53,7 +56,7 @@ class UserRepo @Inject constructor() {
             }.body()
             if (generation == loadGeneration.get()) {
                 setIsLoading(value = false)
-                if (isCurrentAuthentication()) {
+                if (isCurrentUser()) {
                     user.asDomainModel(stateRepo, this@UserRepo).also {
                         stateRepo.getStore().dispatch(StateAction.SetUser(it))
                     }
@@ -73,7 +76,7 @@ class UserRepo @Inject constructor() {
                 setIsLoading(value = false)
                 Log.e("RowndUsersApi", "Failed to fetch the user")
 
-                if (ex.response.status == HttpStatusCode.NotFound && isCurrentAuthentication()) {
+                if (ex.response.status == HttpStatusCode.NotFound && isCurrentUser()) {
                     rowndContext.client?.signOut()
                 }
             }

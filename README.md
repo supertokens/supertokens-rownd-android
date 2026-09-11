@@ -217,6 +217,22 @@ Register your `Application` class in `AndroidManifest.xml`:
 
 After initialization, call `Rownd.requestSignIn(...)` when the user should authenticate. This displays the Rownd interface and, after a successful sign-in, stores the Rownd auth state and bootstraps the SuperTokens session.
 
+### Legacy-session migration
+
+An unsuccessful migration request clears only the attempted legacy credentials and associated cached profile after bounded retries. This includes any non-2xx HTTP status, unrecognized or malformed error bodies, network failures/timeouts, and incomplete or malformed success headers or failed session adoption. HTTP 409 succeeds only if a usable native SuperTokens session actually exists; otherwise it follows the same failure policy. HTTP 410 remains useful for backend diagnostics, but its status/code no longer controls native cleanup.
+
+Hosts observing `Rownd.state` receive ordinary signed-out `AuthState`/`User` values, resolving the attempted session's loading flags. This does not synthesize a Hub `SignOut` event. Hosts can finish their own startup loader and use normal `Rownd.requestSignIn(options)`. There are at most two migration attempts per startup operation, with each request retaining the configured HTTP transport retry policy. Exhausted attempts are abandoned rather than retried indefinitely on later launches.
+
+Legacy token refresh **before** the migration request remains distinct: refresh HTTP 400/401 clears invalid legacy credentials; transient refresh/network failures or incomplete refresh responses retain credentials and finish only migration-owned auth loading. Rotated legacy credentials are persisted before migration begins, then cleared if the actual migration subsequently fails. No legacy credentials means no migration-owned loading changes.
+
+Endpoint validation and request preparation also finish before transport handoff. Preparation failures retain legacy credentials and the cached profile, resolving only migration-owned auth loading. Retries reuse the same prepared request and captured endpoint even if configuration changes. Once the prepared request is handed to transport, DNS, connection, and timeout failures follow the bounded migration-failure cleanup policy above.
+
+Migration uses dedicated OkHttp transport without `SuperTokensInterceptor`, preserving normal HTTP configuration. Session headers are validated before committing under the Hub-authentication mutex and native write guard. Credential/generation checks leave newer legacy credentials untouched, and an existing usable native session wins and is synchronized instead. Failure cleanup never invokes global SuperTokens sign-out or clears SDK storage. The signed-out state is persisted normally, so a subsequent launch does not retry the cleared legacy credentials.
+
+Ordinary `Rownd.signOut()` synchronously invalidates pending native installations and clears local auth/session state at the same guarded write boundary used by migration and Hub authentication. Remote revocation uses the captured old session through non-intercepted transport; its delayed response cannot clear a newer login. This also avoids acquiring the Hub mutex again when sign-out is invoked by its bridge handler.
+
+If revocation returns HTTP 401, sign-out uses the captured refresh credential and anti-CSRF token to refresh that old session once, then retries revocation once at the captured API endpoint. Refreshed credentials stay request-local and are never installed in SDK storage. A refresh HTTP 401 ends the attempt because that credential is no longer usable; other refresh failures or a failed revoke retry are logged as unconfirmed remote revocation. Local sign-out remains immediate, including when the backend is unavailable.
+
 ```kotlin
 Rownd.requestSignIn(RowndSignInOptions())
 ```

@@ -1,6 +1,7 @@
 package io.rownd.android.util
 
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.call.body
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -21,12 +22,15 @@ import javax.inject.Singleton
 // Must not have SuperTokensInterceptor registered — it sends a legacy Rownd access token, not ST headers.
 // Remove this class once the migration window closes.
 @Singleton
-class LegacyTokenApiClient @Inject constructor(
-    rowndContext: RowndContext
+class LegacyTokenApiClient internal constructor(
+    rowndContext: RowndContext,
+    engine: HttpClientEngine,
 ) {
+    @Inject constructor(rowndContext: RowndContext) : this(rowndContext, OkHttp.create())
+
     internal var baseUrl = "https://api.rownd.io"
 
-    val client = HttpClient(OkHttp) {
+    val client = HttpClient(engine) {
         install(ContentNegotiation) {
             json(Json {
                 prettyPrint = true

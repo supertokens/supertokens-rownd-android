@@ -79,6 +79,12 @@ object GlobalStateSerializer : Serializer<GlobalState> {
 sealed class StateAction : Action {
     data class SetGlobalState(val value: GlobalState) : StateAction()
     data class SetAuth(val value: AuthState) : StateAction()
+    internal data class CompleteLegacyMigration(
+        val expected: AuthState,
+        val value: AuthState,
+        val clearUser: Boolean = false,
+        val isCurrent: () -> Boolean = { true },
+    ) : StateAction()
     data class SetAuthChallenge(val challengeId: String?, val userIdentifier: String?) : StateAction()
     data class SetSignIn(val value: SignInState): StateAction()
     data class SetAppConfig(val value: AppConfigState) : StateAction()
@@ -100,6 +106,10 @@ class StateRepo @Inject constructor() {
 
     private val store = Store<GlobalState, StateAction>(GlobalState()) { state, action ->
         when (action) {
+            is StateAction.CompleteLegacyMigration -> if (
+                state.auth.accessToken == action.expected.accessToken &&
+                state.auth.refreshToken == action.expected.refreshToken && action.isCurrent()
+            ) state.copy(auth = action.value, user = if (action.clearUser) User() else state.user) else state
             is StateAction.SetAuth -> state.copy(auth = action.value)
             is StateAction.SetAuthChallenge -> state.copy(auth = state.auth.copy(
                 challengeId = action.challengeId,

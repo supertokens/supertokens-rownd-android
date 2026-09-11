@@ -141,7 +141,7 @@ class LegacySessionMigrationInstrumentedTest {
     }
 
     @Test
-    fun existingSuperTokensSessionSkipsMigrationAndClearsLegacyAuth() {
+    fun existingSuperTokensSessionSkipsMigrationAndSyncsAuth() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val stSession = HarnessClient.createSTSession("existing-st-user")
         SuperTokensSessionBridge.bootstrapSession(context, stSession.accessToken, stSession.refreshToken)
@@ -162,7 +162,8 @@ class LegacySessionMigrationInstrumentedTest {
         assertEquals("existing SuperTokens session should not call legacy refresh", 0, counters.legacyRefresh)
         assertEquals("existing SuperTokens session should not call migrate", 0, counters.migrate)
         assertTrue("existing SuperTokens session should remain", runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
-        assertNull("legacy Rownd auth should be cleared when SuperTokens already owns the session", Rownd.state.value.auth.accessToken)
+        assertTrue("compatibility auth should synchronize the existing SuperTokens session", Rownd.state.value.auth.accessToken == stSession.accessToken)
+        assertNull("legacy refresh credentials should be cleared", Rownd.state.value.auth.refreshToken)
     }
 
     private fun testAppConfig(): AppConfigState {

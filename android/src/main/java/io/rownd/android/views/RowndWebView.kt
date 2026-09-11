@@ -57,7 +57,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -668,7 +667,7 @@ class RowndJavascriptInterface constructor(
     private var disposed = false
     private val dismissalInvoked = AtomicBoolean(false)
     private var dismissalJob: Job? = null
-    private val authenticationMutex = Mutex()
+    private val authenticationMutex = SuperTokensSessionBridge.sessionMutationMutex
     private val authenticationGeneration = AtomicLong()
 
     @Synchronized
@@ -699,7 +698,7 @@ class RowndJavascriptInterface constructor(
         }
     }
 
-    private fun scheduleSignInCompletedAuthenticationFallback(authenticationMessage: AuthenticationMessage) {
+    private fun scheduleSignInCompletedAuthenticationFallback(authenticationMessage: AuthenticationMessage, signOutGeneration: Long) {
         if (disposed || !signInCompletedDeduper.shouldScheduleAuthenticationFallback() || signInCompletedFallbackJob?.isActive == true) {
             Log.d("Rownd.hub", "Skipping duplicate sign_in_completed event")
             return
@@ -707,7 +706,8 @@ class RowndJavascriptInterface constructor(
 
         signInCompletedFallbackJob = bridgeScope.launch {
             delay(SIGN_IN_COMPLETED_AUTHENTICATION_FALLBACK_DELAY_MILLISECONDS)
-            if (disposed || !signInCompletedDeduper.shouldEmitForAuthenticationFallback()) {
+            if (disposed || signOutGeneration != SuperTokensSessionBridge.currentSignOutGeneration() ||
+                !signInCompletedDeduper.shouldEmitForAuthenticationFallback()) {
                 Log.d("Rownd.hub", "Skipping duplicate sign_in_completed event")
                 return@launch
             }
@@ -877,6 +877,9 @@ class RowndJavascriptInterface constructor(
                     val appContext = parentWebView.context.applicationContext
 
                     val messageGeneration = authenticationGeneration.incrementAndGet()
+                    val signOutGeneration = SuperTokensSessionBridge.currentSignOutGeneration()
+                    fun isCurrentAuthentication() = !disposed && messageGeneration == authenticationGeneration.get() &&
+                        signOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration()
                     bridgeScope.launch {
                         if (!SuperTokensSessionBridge.awaitInitialized()) {
                             Log.e("Rownd.hub", "Skipping post-authentication user load because SuperTokens is not initialized")
@@ -885,25 +888,27 @@ class RowndJavascriptInterface constructor(
 
                         var authenticationCommitted = false
                         authenticationMutex.withLock {
-                            if (disposed || messageGeneration != authenticationGeneration.get()) {
+                            if (!isCurrentAuthentication()) {
                                 return@withLock
                             }
 
                             try {
-                                SuperTokensSessionBridge.bootstrapSession(
+                                if (!SuperTokensSessionBridge.bootstrapSessionIfCurrent(
                                     context = appContext,
                                     accessToken = authenticationMessage.payload.accessToken,
                                     refreshToken = refreshToken,
                                     frontToken = authenticationMessage.payload.frontToken,
                                     antiCSRF = authenticationMessage.payload.antiCsrf,
                                     replaceExisting = true,
-                                )
+                                    expectedSignOutGeneration = signOutGeneration,
+                                    isCurrent = ::isCurrentAuthentication,
+                                )) return@withLock
                             } catch (e: Exception) {
                                 Log.e("Rownd.hub", "Hub authentication bootstrap failed", e)
                                 return@withLock
                             }
 
-                            if (disposed || messageGeneration != authenticationGeneration.get()) {
+                            if (!isCurrentAuthentication()) {
                                 return@withLock
                             }
 
@@ -913,8 +918,12 @@ class RowndJavascriptInterface constructor(
                                     store = parentWebView.rowndClient.stateRepo.getStore(),
                                 )
 
+                                if (!isCurrentAuthentication()) {
+                                    return@withLock
+                                }
+
                                 parentWebView.rowndClient.signInRepo.reset()
-                                scheduleSignInCompletedAuthenticationFallback(authenticationMessage)
+                                scheduleSignInCompletedAuthenticationFallback(authenticationMessage, signOutGeneration)
                                 authenticationCommitted = true
                             } catch (e: Exception) {
                                 Log.e("Rownd.hub", "Hub post-authentication initialization failed", e)
@@ -927,7 +936,7 @@ class RowndJavascriptInterface constructor(
 
                         if (!authenticationCommitted) return@launch
                         parentWebView.rowndClient.userRepo.loadUserIfCurrent {
-                            !disposed && messageGeneration == authenticationGeneration.get()
+                            isCurrentAuthentication()
                         }
                     }
                 }

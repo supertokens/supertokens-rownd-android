@@ -51,6 +51,7 @@ type HarnessState = {
   refreshSimulationCompleted: boolean;
   userData: Record<string, unknown>;
   pendingEmailVerifications: Map<string, PendingEmailVerification>;
+  signOutGate?: { path: string; skip: number; reached: boolean; release: () => void; wait: Promise<void> };
 };
 
 type PendingEmailVerification = {
@@ -516,6 +517,34 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   );
   app.use(express.json());
 
+  // Gate real session endpoints so native sign-out races are deterministic without mocking Core.
+  app.post("/test/signout-gate", (req, res) => {
+    const state = getState(req);
+    state.signOutGate?.release();
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    state.signOutGate = { path: String(req.body.path), skip: Number(req.body.skip || 0), reached: false, release, wait };
+    res.json({ status: "OK" });
+  });
+  app.get("/test/signout-gate", (req, res) => {
+    res.json({ reached: getState(req).signOutGate?.reached === true });
+  });
+  app.post("/test/signout-gate/release", (req, res) => {
+    getState(req).signOutGate?.release();
+    res.json({ status: "OK" });
+  });
+  app.use(async (req, _res, next) => {
+    const gate = getState(req).signOutGate;
+    if (req.method === "POST" && gate?.path === req.path && !gate.reached) {
+      if (gate.skip > 0) gate.skip -= 1;
+      else {
+        gate.reached = true;
+        await gate.wait;
+      }
+    }
+    next();
+  });
+
   app.get("/test/email-verification-launcher", (req, res) => {
     const names = [
       "token",
@@ -889,7 +918,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       {},
       {},
     );
-    const accessToken =
+    let accessToken =
       typeof res.getHeader("st-access-token") === "string"
         ? (res.getHeader("st-access-token") as string)
         : "";
@@ -897,11 +926,25 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       typeof res.getHeader("st-refresh-token") === "string"
         ? (res.getHeader("st-refresh-token") as string)
         : "";
+    if (req.body?.shortLivedAccess === true) {
+      // Keep the real session claims and refresh token; Core signs a short-lived access JWT.
+      const claims = JSON.parse(Buffer.from(accessToken.split(".")[1], "base64url").toString());
+      delete claims.exp;
+      delete claims.iat;
+      const signed = await Session.createJWT(claims, 3, false);
+      if (signed.status !== "OK") throw new Error("Failed to sign short-lived access token");
+      accessToken = signed.jwt;
+    }
     res.json({
       access_token: accessToken,
       refresh_token: refreshToken,
       user_id: userId,
     });
+  });
+
+  app.post("/test/st-session-exists", async (req, res) => {
+    const session = await Session.getSessionInformation(String(req.body.sessionHandle));
+    res.json({ exists: session !== undefined });
   });
 
   app.post("/test/pending-email-verification", (req, res) => {

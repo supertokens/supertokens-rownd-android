@@ -36,6 +36,7 @@ import java.util.Date
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(AndroidJUnit4::class)
@@ -79,6 +80,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
         runBlocking { SuperTokensSessionBridge.signOut(context) }
         sharedPrefs(context).edit().clear().commit()
         Rownd._registerActivityLifecycle(context.applicationContext as Application)
+        Rownd.config.apiUrl = harnessConfig.androidUrl
         Rownd.store = Rownd.stateRepo.getStore()
         Rownd.store.dispatch(StateAction.SetAuth(AuthState()))
     }
@@ -93,6 +95,47 @@ class RowndWebViewAuthenticationInstrumentedTest {
             webViews.forEach(RowndWebView::destroy)
         }
         webViews.clear()
+    }
+
+    @Test
+    fun ordinaryNativeSignOutCancelsPausedHubAuthentication() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val session = HarnessClient.createSTSession("paused-hub-signout-user")
+        val reachedWrite = CountDownLatch(1)
+        val releaseWrite = CountDownLatch(1)
+        val finishedWrite = CountDownLatch(1)
+        val originalWrite = SuperTokensSessionBridge.writeSession
+        val pauseOnce = AtomicBoolean(true)
+        val completions = AtomicInteger()
+        val listener: (RowndEvent) -> Unit = {
+            if (it.event == RowndEventType.SignInCompleted) completions.incrementAndGet()
+        }
+        val bridge = createJavascriptInterface(HubPageSelector.SignIn)
+        SuperTokensSessionBridge.writeSession = { write ->
+            if (pauseOnce.compareAndSet(true, false)) {
+                reachedWrite.countDown()
+                check(releaseWrite.await(10, TimeUnit.SECONDS)) { "Hub installation gate timed out" }
+            }
+            originalWrite(write)
+            finishedWrite.countDown()
+        }
+        Rownd.addEventListener(listener)
+        try {
+            bridge.postSecureMessage(buildAuthenticationMessage(session.accessToken, session.refreshToken))
+            assertTrue("Hub must reach the native installation boundary", reachedWrite.await(10, TimeUnit.SECONDS))
+            Rownd.signOut()
+            assertFalse(runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
+            releaseWrite.countDown()
+            assertTrue(finishedWrite.await(5, TimeUnit.SECONDS))
+            assertFalse("Old Hub authentication must not recreate the session", runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
+            assertEquals(AuthState(), Rownd.stateRepo.state.value.auth)
+            Thread.sleep(750)
+            assertEquals("Cancelled authentication must not emit completion", 0, completions.get())
+        } finally {
+            releaseWrite.countDown()
+            SuperTokensSessionBridge.writeSession = originalWrite
+            Rownd.removeEventListener(listener)
+        }
     }
 
     @Test

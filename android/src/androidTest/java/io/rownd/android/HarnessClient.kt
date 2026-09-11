@@ -108,10 +108,23 @@ object HarnessClient {
         return json.decodeFromString(response)
     }
 
-    fun createSTSession(userId: String = "test-user"): STSessionResponse {
-        val body: Map<String, Any> = mapOf("userId" to userId)
+    fun createSTSession(userId: String = "test-user", shortLivedAccess: Boolean = false): STSessionResponse {
+        val body: Map<String, Any> = mapOf("userId" to userId, "shortLivedAccess" to shortLivedAccess)
         val response = post("/test/st-session", body, "default")
         return json.decodeFromString(response)
+    }
+
+    fun sessionExists(sessionHandle: String): Boolean =
+        org.json.JSONObject(post("/test/st-session-exists", mapOf("sessionHandle" to sessionHandle), "default")).getBoolean("exists")
+
+    fun armSignOutGate(path: String, skip: Int = 0) {
+        post("/test/signout-gate", mapOf("path" to path, "skip" to skip), "default")
+    }
+
+    fun signOutGateReached(): Boolean = org.json.JSONObject(get("/test/signout-gate", "default")).getBoolean("reached")
+
+    fun releaseSignOutGate() {
+        post("/test/signout-gate/release", emptyMap(), "default")
     }
 
     fun createPendingEmailVerification(userId: String): PendingEmailVerificationResponse {
