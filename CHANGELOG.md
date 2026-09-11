@@ -1,5 +1,14 @@
 
 
+## [0.1.11](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.10...v0.1.11) (2026-09-11)
+
+
+### Bug Fixes
+
+* clear failed legacy migrations and guard native session adoption ([5289dcf](https://github.com/supertokens/supertokens-rownd-android/commit/5289dcf01c9a9e4fabdb6b2ad010bb5c9a965885))
+* preserve Android sessions during temporary refresh failures ([ec125a8](https://github.com/supertokens/supertokens-rownd-android/commit/ec125a8694df338239bb115eb8636cc25187d084))
+* preserve native sessions during Hub authentication failures ([332415f](https://github.com/supertokens/supertokens-rownd-android/commit/332415f8053d582ecdc7d40385a1aa9b2e7a09ea))
+
 ## [0.1.10](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.9...v0.1.10) (2026-08-19)
 
 
