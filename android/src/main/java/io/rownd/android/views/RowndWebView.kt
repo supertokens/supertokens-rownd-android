@@ -38,7 +38,9 @@ import io.rownd.android.models.MessageType
 import io.rownd.android.models.VerifyEmailMessage
 import io.rownd.android.models.RowndHubInteropMessage
 import io.rownd.android.models.SignOutMessage
+import io.rownd.android.models.SignInMessage
 import io.rownd.android.models.TriggerSignInWithGoogleMessage
+import io.rownd.android.models.TriggerSignInWithGooglePayload
 import io.rownd.android.models.UserDataUpdateMessage
 import io.rownd.android.models.repos.StateAction
 import io.rownd.android.util.Constants
@@ -46,6 +48,7 @@ import io.rownd.android.util.RowndEvent
 import io.rownd.android.util.RowndEventType
 import io.rownd.android.util.SignInCompletedEventDeduper
 import io.rownd.android.util.SuperTokensSessionBridge
+import io.rownd.android.util.NativeEmailVerificationRequest
 import io.rownd.android.util.nativeEmailVerificationRequest
 import io.rownd.android.util.performNativeEmailVerification
 import io.rownd.android.util.redactSensitiveKeys
@@ -128,6 +131,9 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
     internal var setIsLoading: ((isLoading: Boolean) -> Unit)? = null
     internal var animateBottomSheet: ((to: SheetDetent) -> Unit)? = null
     internal var setCanTouchBackgroundToDismiss: ((to: Boolean) -> Unit)? = null
+    internal var nativeSignInHandoff: (() -> Unit)? = null
+    internal var isDestroyed = false
+        private set
 
     internal lateinit var rowndClient: RowndClient
     internal val rowndJavascriptInterface: RowndJavascriptInterface
@@ -187,7 +193,7 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
             }
             WebViewCompat.addDocumentStartJavaScript(
                 this,
-                "window.__rowndNativeEmailVerificationBridge = true;",
+                "window.__rowndNativeEmailVerificationBridge = true; window.__rowndNativeSignInHandoff = true;",
                 allowedOrigins,
             )
         } else {
@@ -204,6 +210,9 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
     }
 
     override fun destroy() {
+        if (isDestroyed) return
+        isDestroyed = true
+        nativeSignInHandoff = null
         dismissOwner = null
         dismissHandler = null
         dismissPending = false
@@ -247,6 +256,7 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
     }
 
     internal fun requestDismiss(): Boolean {
+        if (isDestroyed) return false
         val handler = dismissHandler
         if (handler == null) {
             dismissPending = true
@@ -471,6 +481,7 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
     }
 
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+        if (webView.isDestroyed) return
         webView.rowndJavascriptInterface.invalidateEmailVerificationRequests()
         timeout = false
         pageLoadId = pageLoadGeneration.incrementAndGet()
@@ -491,6 +502,7 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
     }
 
     override fun onPageFinished(view: WebView, url: String) {
+        if (webView.isDestroyed) return
         super.onPageFinished(view, url)
 
         if (view.progress < 100) {
@@ -689,6 +701,12 @@ class RowndJavascriptInterface constructor(
         )
     }
 
+    internal var startNativeGoogleSignIn: (TriggerSignInWithGooglePayload?) -> Unit = { payload ->
+        parentWebView.rowndClient.signInWithGoogle.signIn(
+            intent = payload?.intent, hint = payload?.hint, wasUserInitiated = true,
+        )
+    }
+
     private fun showAuthenticationFailure(messageGeneration: Long, signOutGeneration: Long) {
         parentWebView.lifecycleScope.launch {
             if (!disposed && messageGeneration == authenticationGeneration.get() &&
@@ -769,11 +787,10 @@ class RowndJavascriptInterface constructor(
         emailVerificationRequestId = null
     }
 
-    private fun verifyEmail(requestId: String) {
-        val requestedUrl = parentWebView.url
+    private fun authorizedEmailVerificationRequest(requestId: String): NativeEmailVerificationRequest? {
         val verificationRequest = nativeEmailVerificationRequest(
             targetPage = parentWebView.targetPage,
-            currentUrl = requestedUrl,
+            currentUrl = parentWebView.url,
             trustedBaseUrl = Rownd.config.baseUrl,
             trustedApiDomain = Rownd.config.supertokens.appInfo.apiDomain,
             trustedApiBasePath = Rownd.config.supertokens.appInfo.apiBasePath ?: Rownd.config.apiBasePath,
@@ -785,8 +802,14 @@ class RowndJavascriptInterface constructor(
             verificationRequest == null
         ) {
             Log.w("Rownd.hub", "Ignoring unauthorized native email-verification request")
-            return
+            return null
         }
+        return verificationRequest
+    }
+
+    private fun verifyEmail(requestId: String) {
+        val requestedUrl = parentWebView.url
+        val verificationRequest = authorizedEmailVerificationRequest(requestId) ?: return
 
         emailVerificationJob?.cancel()
         emailVerificationRequestId = requestId
@@ -884,6 +907,17 @@ class RowndJavascriptInterface constructor(
             }
 
             when (interopMessage.type) {
+                MessageType.SignIn -> {
+                    val request = interopMessage as SignInMessage
+                    if (request.payload?.wasUserInitiated != true ||
+                        !parentWebView.secureHubMessagingAvailable ||
+                        parentWebView.targetPage != HubPageSelector.ManageAccount ||
+                        trustedOriginRule(parentWebView.url ?: "") != trustedOriginRule(Rownd.config.baseUrl)
+                    ) return
+
+                    parentWebView.nativeSignInHandoff?.invoke()
+                }
+
                 MessageType.authentication -> {
                     val authenticationMessage = interopMessage as AuthenticationMessage
                     val refreshToken = authenticationMessage.payload.refreshToken
@@ -977,6 +1011,7 @@ class RowndJavascriptInterface constructor(
                         return
                     }
                     resetSignInCompletedDeduper()
+                    parentWebView.rowndClient.signInHandoffRevision.incrementAndGet()
                     dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
                     authenticationGeneration.incrementAndGet()
                     bridgeScope.launch {
@@ -990,8 +1025,21 @@ class RowndJavascriptInterface constructor(
 
                 MessageType.triggerSignInWithGoogle -> {
                     val signInWithGoogleMessage = (interopMessage as TriggerSignInWithGoogleMessage).payload
-                    parentWebView.rowndClient.signInWithGoogle.signIn(intent = signInWithGoogleMessage?.intent, hint = signInWithGoogleMessage?.hint, wasUserInitiated = true)
-                    dismissHub()
+                    parentWebView.rowndClient.signInHandoffRevision.incrementAndGet()
+                    if (parentWebView.targetPage == HubPageSelector.ManageAccount) {
+                        // Transfer ownership to native Google before it can suspend. Retiring
+                        // this bridge makes a competing recovery handoff from it unreachable.
+                        dispose()
+                        parentWebView.nativeSignInHandoff = null
+                        try {
+                            startNativeGoogleSignIn(signInWithGoogleMessage)
+                        } finally {
+                            parentWebView.requestDismiss()
+                        }
+                    } else {
+                        startNativeGoogleSignIn(signInWithGoogleMessage)
+                        dismissHub()
+                    }
                 }
 
                 MessageType.UserDataUpdate -> {
@@ -1062,6 +1110,9 @@ class RowndJavascriptInterface constructor(
 
                 MessageType.VerifyEmail -> {
                     val request = interopMessage as VerifyEmailMessage
+                    if (authorizedEmailVerificationRequest(request.payload.requestId) != null) {
+                        parentWebView.rowndClient.signInHandoffRevision.incrementAndGet()
+                    }
                     parentWebView.post { verifyEmail(request.payload.requestId) }
                 }
 

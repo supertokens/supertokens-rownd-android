@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.viewinterop.AndroidViewBinding
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.Observer
 import com.composables.core.SheetDetent
 import io.rownd.android.databinding.HubViewLayoutBinding
 import kotlinx.coroutines.launch
@@ -33,18 +34,18 @@ class HubComposableBottomSheet(
     private var viewModel: RowndWebViewModel? = null
     private var activeWebView: RowndWebView? = null
     private var isReusingWebView: Boolean = false
+    private val webViewObserver = Observer<RowndWebView?> { existingWebView = it }
 
     init {
         viewModel = ViewModelProvider(this.activity)[RowndWebViewModel::class.java]
-        viewModel?.webView()?.observe(this.activity) {
-            existingWebView = it
-        }
+        viewModel?.webView()?.observe(this.activity, webViewObserver)
     }
     internal fun dispose() {
         if (isDismissing) return
         isDismissing = true
 
         val webView = activeWebView ?: existingWebView
+        viewModel?.webView()?.removeObserver(webViewObserver)
         activeWebView = null
         existingWebView = null
         viewModel?.webView()?.value = null
@@ -55,10 +56,14 @@ class HubComposableBottomSheet(
     }
 
     internal fun detach() {
-        (activeWebView ?: existingWebView)?.releaseDismissHandler(this)
+        (activeWebView ?: existingWebView)?.let {
+            it.releaseDismissHandler(this)
+            it.nativeSignInHandoff = null
+        }
     }
 
     override fun dismiss() {
+        if (isDismissing) return
         dispose()
         super.dismiss()
     }

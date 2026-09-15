@@ -12,6 +12,7 @@ class LegacyBridgeAuthorizationTest {
         val sensitiveTypes = listOf(
             MessageType.authentication,
             MessageType.signOut,
+            MessageType.SignIn,
             MessageType.AuthChallengeInitiated,
             MessageType.AuthChallengeCleared,
             MessageType.UserDataUpdate,

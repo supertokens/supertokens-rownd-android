@@ -56,6 +56,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import kotlinx.serialization.json.Json
+import java.util.concurrent.atomic.AtomicLong
 
 // The default Rownd instance
 val Rownd = RowndClient(DaggerRowndGraph.create())
@@ -92,6 +93,7 @@ class RowndClient(
     private var pendingHubDisplayRequest: HubDisplayRequest? = null
     private var isWaitingForAppConfig = false
     private var isWaitingForResumedActivity = false
+    internal val signInHandoffRevision = AtomicLong()
 
     var state = stateRepo.state
     var user = userRepo
@@ -264,6 +266,7 @@ class RowndClient(
     }
 
     fun requestSignIn(with: RowndSignInHint, signInOptions: RowndSignInOptions) {
+        signInHandoffRevision.incrementAndGet()
         val isAppConfigLoading = isAppConfigLoadingWithCallback {
             requestSignIn(with, signInOptions)
         }
@@ -303,6 +306,7 @@ class RowndClient(
     }
 
     fun signOut(scope: RowndSignOutScope) {
+        signInHandoffRevision.incrementAndGet()
         when (scope) {
             RowndSignOutScope.Local -> signOut()
             RowndSignOutScope.All -> authRepo.signOutUser()
@@ -310,6 +314,7 @@ class RowndClient(
     }
 
     fun signOut() {
+        signInHandoffRevision.incrementAndGet()
         val revocationUrl = authRepo.sessionRevocationUrl()
         val context = config.applicationContext ?: appHandleWrapper?.app?.get()?.applicationContext
         val session = SuperTokensSessionBridge.beginSignOut(context) {
@@ -409,6 +414,7 @@ class RowndClient(
         targetPage: HubPageSelector,
         jsFnOptions: RowndSignInOptionsBase? = null
     ) {
+        signInHandoffRevision.incrementAndGet()
         if (Looper.myLooper() != Looper.getMainLooper()) {
             Handler(Looper.getMainLooper()).post {
                 displayHub(targetPage, jsFnOptions)

@@ -11,6 +11,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.web.sugar.Web.onWebView
 import androidx.test.espresso.web.webdriver.DriverAtoms.findElement
@@ -28,6 +29,8 @@ import com.supertokens.session.SuperTokensInterceptor
 import io.rownd.android.Rownd
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.views.RowndBottomSheetActivity
+import io.rownd.android.views.RowndWebView
+import io.rownd.android.views.RowndWebViewModel
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -36,6 +39,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -101,6 +105,30 @@ class RealHubE2ETest {
         waitForSignedInApp()
         assertEquals("resolved challenge must be cleared", null, Rownd.state.value.auth.challengeId)
         assertEquals("sign-in completion must be emitted once", 1, SandboxObservability.events.value.signInCompletedCount)
+        assertProtectedRequestSucceeds()
+        assertCompletedConsumesRemain(1)
+    }
+
+    @Test
+    fun signedOutManageAccountHandsOffToNewWebViewAndCompletesNativeSignIn() {
+        launchApp()
+        instrumentation.runOnMainSync { Rownd.manageAccount() }
+        waitForText("Sign in or sign up")
+        val source = requireNotNull(activeHubWebView())
+
+        onWebView()
+            .withElement(findElement(Locator.XPATH, "//button[normalize-space()='Sign in or sign up']"))
+            .perform(webClick())
+
+        // The replacement sheet needs the Compose test clock to advance.
+        composeRule.waitUntil(timeoutMillis = 15_000) { activeHubWebView()?.let { it !== source } == true }
+        assertNotSame(source, activeHubWebView())
+        val email = uniqueEmail("manage-recovery")
+        enterEmailChallenge(email)
+        submitOtp(waitForCapture(email).getString("userInputCode"))
+
+        waitForSignedInApp()
+        assertEquals(1, SandboxObservability.events.value.signInCompletedCount)
         assertProtectedRequestSucceeds()
         assertCompletedConsumesRemain(1)
     }
@@ -219,6 +247,10 @@ class RealHubE2ETest {
 
     private fun openEmailChallenge(email: String) {
         clickResource("e2e.action.open-auth")
+        enterEmailChallenge(email)
+    }
+
+    private fun enterEmailChallenge(email: String) {
         waitForTextContaining("Email")
         onWebView()
             .withElement(findElement(Locator.ID, "rph-sign-in-identifier-input"))
@@ -320,6 +352,20 @@ class RealHubE2ETest {
                 }
         }
         return hasActiveActivity
+    }
+
+    private fun activeHubWebView(): RowndWebView? {
+        var webView: RowndWebView? = null
+        instrumentation.runOnMainSync {
+            val activity = ActivityLifecycleMonitorRegistry.getInstance()
+                .getActivitiesInStage(Stage.RESUMED)
+                .filterIsInstance<RowndBottomSheetActivity>()
+                .singleOrNull()
+            if (activity != null) {
+                webView = ViewModelProvider(activity)[RowndWebViewModel::class.java].webView().value
+            }
+        }
+        return webView
     }
 
     private fun toCustomScheme(link: String): Uri {

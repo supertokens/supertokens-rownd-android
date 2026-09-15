@@ -107,6 +107,7 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
         hint: String?,
         wasUserInitiated: Boolean? = true
     ) {
+        rowndContext.client?.signInHandoffRevision?.incrementAndGet()
         val tracer = rowndContext.telemetry?.getTracer()
         val span = rowndContext.telemetry?.startSpan("signInWithGoogle")
         currentSpan = span

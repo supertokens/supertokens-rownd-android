@@ -7,8 +7,11 @@ import io.rownd.android.util.RowndEvent
 import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonContentPolymorphicSerializer
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -26,6 +29,9 @@ enum class MessageType {
 
     @SerialName("sign_out")
     signOut,
+
+    @SerialName("sign_in")
+    SignIn,
 
     @SerialName("try_again")
     tryAgain,
@@ -91,6 +97,18 @@ data class AuthenticationPayload(
 
     @SerialName("app_variant_user_type")
     var appVariantUserType: RowndSignInUserType? = null,
+)
+
+@Serializable
+data class SignInMessage(
+    override var type: MessageType = MessageType.SignIn,
+    var payload: SignInPayload? = null,
+) : RowndHubInteropMessage()
+
+@Serializable
+data class SignInPayload(
+    @SerialName("was_user_initiated")
+    var wasUserInitiated: Boolean? = null,
 )
 
 @Serializable
@@ -215,6 +233,13 @@ object RowndHubInteropMessageSerializer : JsonContentPolymorphicSerializer<Rownd
         return when (val messageType = element.jsonObject["type"]?.jsonPrimitive?.content) {
             "authentication" -> AuthenticationMessage.serializer()
             "sign_out" -> SignOutMessage.serializer()
+            "sign_in" -> {
+                val userInitiated = (element.jsonObject["payload"] as? JsonObject)?.get("was_user_initiated")
+                if (userInitiated is JsonPrimitive && userInitiated.isString) {
+                    throw SerializationException("was_user_initiated must be a boolean")
+                }
+                SignInMessage.serializer()
+            }
             "try_again" -> TryAgainMessage.serializer()
             "trigger_sign_in_with_google" -> TriggerSignInWithGoogleMessage.serializer()
             "user_data_update" -> UserDataUpdateMessage.serializer()
