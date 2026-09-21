@@ -14,11 +14,13 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModelProvider
 import io.rownd.android.R
 import io.rownd.android.Rownd
 import io.rownd.android.RowndSignInOptions
 import io.rownd.android.util.SuperTokensSessionBridge
 import kotlinx.serialization.json.Json
+import java.util.UUID
 
 class RowndBottomSheetActivity : ComponentActivity() {
     private var bottomSheetHolder by mutableStateOf<HubComposableBottomSheet?>(null)
@@ -38,10 +40,28 @@ class RowndBottomSheetActivity : ComponentActivity() {
 
         Rownd.signInWithGoogle.registerIntentLauncher(this)
 
+        savedInstanceState?.getBundle(STATE_PRESENTATION)?.let { intent.replaceExtras(it) }
+        val handoff = intent.getBundleExtra(EXTRA_HANDOFF)?.let {
+            if (it.getString("process") != processId) {
+                finish()
+                return
+            }
+            SignInHandoff(it.getLong("revision"), it.getLong("generation"))
+        }
+        if (handoff != null && !handoff.isCurrent()) {
+            // Configuration changes can retain a replacement that was created after state saving.
+            val retainedWebView = ViewModelProvider(this)[RowndWebViewModel::class.java].webView()
+            retainedWebView.value?.destroy()
+            retainedWebView.value = null
+            finish()
+            return
+        }
         val targetPage = intent.getSerializableExtra(EXTRA_TARGET_PAGE) as? HubPageSelector ?: HubPageSelector.Unknown
         val jsFnOptions = intent.getStringExtra(EXTRA_JS_FN_OPTIONS)
 
-        showSheet(targetPage, jsFnOptions)
+        showSheet(targetPage, jsFnOptions, handoff)
+        // A retained replacement may not have received its initial navigation yet.
+        if (handoff != null) pendingSheetRequest = SheetRequest(targetPage, jsFnOptions)
 
         setContent {
             val sheet = bottomSheetHolder
@@ -59,6 +79,11 @@ class RowndBottomSheetActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBundle(STATE_PRESENTATION, intent.extras)
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleSheetRequest(intent)
@@ -68,6 +93,7 @@ class RowndBottomSheetActivity : ComponentActivity() {
         Rownd.signInHandoffRevision.incrementAndGet()
         val targetPage = intent.getSerializableExtra(EXTRA_TARGET_PAGE) as? HubPageSelector ?: HubPageSelector.Unknown
         val jsFnOptions = intent.getStringExtra(EXTRA_JS_FN_OPTIONS)
+        persistPresentation(targetPage, jsFnOptions, null)
 
         val request = SheetRequest(targetPage, jsFnOptions)
         if (bottomSheetHolder?.isDismissing == true || pendingSignInHandoff != null) {
@@ -90,6 +116,7 @@ class RowndBottomSheetActivity : ComponentActivity() {
             bottomSheetHolder?.dismiss()
             return true
         }
+        intent.removeExtra(EXTRA_HANDOFF)
         webView.nativeSignInHandoff = { replaceManageAccountWithSignIn(webView) }
         val request = pendingSheetRequest ?: return false
         pendingSheetRequest = null
@@ -98,6 +125,7 @@ class RowndBottomSheetActivity : ComponentActivity() {
     }
 
     private fun showSheet(targetPage: HubPageSelector, jsFnOptions: String?, handoff: SignInHandoff? = null) {
+        persistPresentation(targetPage, jsFnOptions, handoff)
         pendingSheetRequest = null
         pendingSignInHandoff = handoff
         bottomSheetHolder = HubComposableBottomSheet(
@@ -107,6 +135,20 @@ class RowndBottomSheetActivity : ComponentActivity() {
             jsFnArgsAsJson = jsFnOptions,
             onWebViewReady = ::applyPendingSheetRequest,
         )
+    }
+
+    private fun persistPresentation(targetPage: HubPageSelector, jsFnOptions: String?, handoff: SignInHandoff?) {
+        intent.putExtra(EXTRA_TARGET_PAGE, targetPage)
+        intent.putExtra(EXTRA_JS_FN_OPTIONS, jsFnOptions)
+        intent.removeExtra(EXTRA_HANDOFF)
+        handoff?.let {
+            intent.putExtra(EXTRA_HANDOFF, Bundle().apply {
+                // Generation counters reset after process death; never revive an uncommitted handoff then.
+                putString("process", processId)
+                putLong("revision", it.presentationRevision)
+                putLong("generation", it.signOutGeneration)
+            })
+        }
     }
 
     internal fun replaceManageAccountWithSignIn(source: RowndWebView) {
@@ -121,6 +163,9 @@ class RowndBottomSheetActivity : ComponentActivity() {
             Rownd.signInHandoffRevision.incrementAndGet(),
             SuperTokensSessionBridge.currentSignOutGeneration(),
         )
+        val options = RowndSignInOptions().toJsonString()
+        pendingSignInHandoff = handoff
+        persistPresentation(HubPageSelector.SignIn, options, handoff)
         // Retire the bridge and its document before scheduling any replacement. A new target
         // on this WebView would let delayed Profile messages authenticate or close SignIn.
         sheet.dispose()
@@ -133,7 +178,7 @@ class RowndBottomSheetActivity : ComponentActivity() {
                 return@post
             }
 
-            showSheet(HubPageSelector.SignIn, RowndSignInOptions().toJsonString(), handoff)
+            showSheet(HubPageSelector.SignIn, options, handoff)
         }
     }
 
@@ -160,6 +205,9 @@ class RowndBottomSheetActivity : ComponentActivity() {
     companion object {
         private const val EXTRA_TARGET_PAGE = "extra_target_page"
         private const val EXTRA_JS_FN_OPTIONS = "extra_js_fn_options"
+        private const val EXTRA_HANDOFF = "extra_sign_in_handoff"
+        private const val STATE_PRESENTATION = "rownd_presentation"
+        private val processId = UUID.randomUUID().toString()
 
         val json = Json { encodeDefaults = true }
 

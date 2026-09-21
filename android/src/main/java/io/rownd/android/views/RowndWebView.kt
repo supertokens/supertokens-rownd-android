@@ -1081,16 +1081,11 @@ class RowndJavascriptInterface constructor(
                         return
                     }
                     resetSignInCompletedDeduper()
-                    parentWebView.rowndClient.signInHandoffRevision.incrementAndGet()
                     dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
                     authenticationGeneration.incrementAndGet()
-                    bridgeScope.launch {
-                        authenticationMutex.withLock {
-                            if (!disposed) {
-                                Rownd.signOut()
-                            }
-                        }
-                    }
+                    // Invalidate at acceptance, before recovery can destroy this bridge.
+                    // beginSignOut serializes local writes; revocation owns captured credentials.
+                    Rownd.signOut()
                 }
 
                 MessageType.triggerSignInWithGoogle -> {

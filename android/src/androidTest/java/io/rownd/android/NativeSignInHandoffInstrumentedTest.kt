@@ -3,6 +3,7 @@ package io.rownd.android
 import android.app.Application
 import android.content.Intent
 import android.graphics.Bitmap
+import android.os.Bundle
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -20,6 +21,9 @@ import io.rownd.android.views.RowndBottomSheetActivity
 import io.rownd.android.views.RowndWebView
 import io.rownd.android.views.RowndWebViewModel
 import kotlinx.collections.immutable.persistentListOf
+import kotlinx.coroutines.runBlocking
+import io.rownd.android.models.domain.AuthState
+import io.rownd.android.models.repos.StateAction
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -63,6 +67,12 @@ class NativeSignInHandoffInstrumentedTest {
                                 override fun onPageStarted(webView: WebView?, url: String?, favicon: Bitmap?) {
                                     view?.rowndWebViewClient?.onPageStarted(webView, url, favicon)
                                 }
+
+                                override fun onPageFinished(webView: WebView, url: String) {
+                                    view?.rowndWebViewClient?.onPageFinished(webView, url)
+                                    // A tiny fixture can execute inline script before onPageStarted.
+                                    webView.evaluateJavascript("rowndAndroidSDK.postMessage('{\"type\":\"hub_loaded\"}')", null)
+                                }
                             }
                         }
                 }
@@ -87,6 +97,95 @@ class NativeSignInHandoffInstrumentedTest {
         Rownd.appHandleWrapper = previousLifecycle
         Rownd.config.baseUrl = previousBaseUrl
         Rownd.config.pendingHubDeepLinkUrl = null
+    }
+
+    @Test
+    fun acceptedSignOutClearsCredentialsWhileMutationIsLockedAndSurvivesRecovery() {
+        val source = currentWebView()!!
+        val prefs = app.getSharedPreferences("supertokens-android-shared-preferences", 0)
+        val generation = SuperTokensSessionBridge.currentSignOutGeneration()
+        // A refresh token without an access token avoids network revocation in this fixture.
+        prefs.edit().putString("st-storage-item-st-refresh-token", "old-refresh").commit()
+        Rownd.store.dispatch(StateAction.SetAuth(AuthState(accessToken = "old-access", refreshToken = "old-refresh")))
+        runBlocking { SuperTokensSessionBridge.sessionMutationMutex.lock() }
+        try {
+            onMain {
+                source.rowndJavascriptInterface.postSecureMessage("""{"type":"sign_out","payload":{"was_user_initiated":true}}""")
+                assertEquals(generation + 1, SuperTokensSessionBridge.currentSignOutGeneration())
+                assertEquals(null, SuperTokensSessionBridge.getRefreshToken(app))
+                assertEquals(null, Rownd.store.currentState.auth.accessToken)
+                source.rowndJavascriptInterface.postSecureMessage(SIGN_IN)
+                assertTrue(source.isDestroyed)
+            }
+            awaitWebView { it !== source && it.targetPage == HubPageSelector.SignIn }
+            prefs.edit().putString("st-storage-item-st-refresh-token", "new-refresh").commit()
+        } finally {
+            SuperTokensSessionBridge.sessionMutationMutex.unlock()
+        }
+        instrumentation.waitForIdleSync()
+        assertEquals("new-refresh", SuperTokensSessionBridge.getRefreshToken(app))
+        assertEquals(generation + 1, SuperTokensSessionBridge.currentSignOutGeneration())
+        prefs.edit().remove("st-storage-item-st-refresh-token").commit()
+    }
+
+    @Test
+    fun activeRecoveryRestoresSignInWithoutARetainedWebView() {
+        val source = currentWebView()!!
+        onMain { source.rowndJavascriptInterface.postSecureMessage(SIGN_IN) }
+        val replacement = awaitWebView { it !== source && it.targetPage == HubPageSelector.SignIn }
+        val restoredIntent = snapshotPresentation()
+        scenario!!.close()
+        scenario = ActivityScenario.launch(restoredIntent)
+        val restored = awaitWebView { it.targetPage == HubPageSelector.SignIn }
+        assertNotSame(replacement, restored)
+        assertEquals(RowndSignInOptions().toJsonString(), restored.jsFunctionArgsAsJson)
+        scenario!!.recreate()
+        awaitWebView { it.targetPage == HubPageSelector.SignIn }
+    }
+
+    @Test
+    fun pendingRecoveryRestoresSignInWithoutReturningToManageAccount() {
+        restorePendingRecovery(invalidate = false)
+        awaitWebView { it.targetPage == HubPageSelector.SignIn }
+    }
+
+    @Test
+    fun invalidatedPendingRecoveryIsNotRevivedByRestoration() {
+        restorePendingRecovery(invalidate = true)
+        awaitCondition { scenario!!.state == Lifecycle.State.DESTROYED }
+    }
+
+    @Test
+    fun pendingRecoveryFromAnEarlierProcessIsNotRevived() {
+        restorePendingRecovery(invalidate = false, previousProcess = true)
+        awaitCondition { scenario!!.state == Lifecycle.State.DESTROYED }
+    }
+
+    private fun restorePendingRecovery(invalidate: Boolean, previousProcess: Boolean = false) {
+        val source = currentWebView()!!
+        lateinit var restoredIntent: Intent
+        scenario!!.onActivity { activity ->
+            source.rowndJavascriptInterface.postSecureMessage(SIGN_IN)
+            assertTrue(source.isDestroyed)
+            restoredIntent = snapshotPresentation(activity)
+            if (previousProcess) restoredIntent.getBundleExtra("extra_sign_in_handoff")!!.putString("process", "previous-process")
+            if (invalidate) SuperTokensSessionBridge.beginSignOut(null) {}
+        }
+        scenario!!.close()
+        scenario = ActivityScenario.launch(restoredIntent)
+    }
+
+    private fun snapshotPresentation(): Intent {
+        lateinit var result: Intent
+        scenario!!.onActivity { result = snapshotPresentation(it) }
+        return result
+    }
+
+    private fun snapshotPresentation(activity: RowndBottomSheetActivity): Intent {
+        val saved = Bundle()
+        instrumentation.callActivityOnSaveInstanceState(activity, saved)
+        return Intent(instrumentation.targetContext, RowndBottomSheetActivity::class.java)
+            .replaceExtras(requireNotNull(saved.getBundle("rownd_presentation")))
     }
 
     @Test
@@ -334,6 +433,9 @@ class NativeSignInHandoffInstrumentedTest {
         private const val HUB_ORIGIN = "https://handoff.rownd.test"
         private const val SIGN_IN = """{"type":"sign_in","payload":{"was_user_initiated":true}}"""
         private const val GOOGLE = """{"type":"trigger_sign_in_with_google"}"""
-        private const val DOCUMENT = """<html><head><script>window.capabilityAtDocumentStart = window.__rowndNativeSignInHandoff === true;</script></head><body>Manage Account</body></html>"""
+        private const val DOCUMENT = """<html><head><script>
+            window.capabilityAtDocumentStart = window.__rowndNativeSignInHandoff === true;
+            window.rownd = {requestSignIn: function() {}, user: {manageAccount: function() {}}};
+        </script></head><body>Manage Account</body></html>"""
     }
 }
