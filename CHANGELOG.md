@@ -1,5 +1,14 @@
 
 
+## [0.1.12](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.11...v0.1.12) (2026-09-21)
+
+
+### Bug Fixes
+
+* preserve accepted sign-out and restore sign-in handoffs ([77542ef](https://github.com/supertokens/supertokens-rownd-android/commit/77542ef94dc3749787ffa821f45af25db01d0dea))
+* recover signed-out ManageAccount in a fresh native sign-in sheet ([412c3c2](https://github.com/supertokens/supertokens-rownd-android/commit/412c3c20b6de85b7bbbc52be7c2c533dad66b396))
+* replace stuck Hub loaders with retryable errors ([8034d81](https://github.com/supertokens/supertokens-rownd-android/commit/8034d81dd00668ea49b5b5e27018ee589e93c8db))
+
 ## [0.1.11](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.10...v0.1.11) (2026-09-11)
 
 
