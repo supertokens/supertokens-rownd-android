@@ -1,5 +1,12 @@
 
 
+## [0.1.13](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.12...v0.1.13) (2026-09-21)
+
+
+### Bug Fixes
+
+* **android:** add close action to Hub load error screen ([804f0c7](https://github.com/supertokens/supertokens-rownd-android/commit/804f0c7de72eddae5c5746ad825918d3493c09b9))
+
 ## [0.1.12](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.11...v0.1.12) (2026-09-21)
 
 
