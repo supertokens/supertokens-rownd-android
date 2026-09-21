@@ -475,6 +475,21 @@ In addition to the StateFlow APIs, Rownd provides imperative APIs that you can c
 
 Opens the Rownd sign-in dialog for authentication.
 
+If the Hub cannot become ready within 20 seconds, the dialog replaces its loading animation with an **Unable to load this page** screen and a **Try again** button. Main-page network/HTTP failures, TLS failures during loading, and JavaScript errors invoking the requested Hub page also show this screen. Retry starts a fresh load with the same target and sign-in options. The deadline covers opening the dialog, not the time the user spends authenticating. Diagnostic messages use the `Rownd.hub` log tag.
+
+The screen explains the failure and displays a support code, also logged under `Rownd.hub`:
+
+- `HUB_PREPARATION_FAILED`: the SDK could not prepare the Hub URL.
+- `HUB_LOAD_TIMEOUT`: navigation did not finish before the deadline (including a stalled URL-preparation step).
+- `HUB_INIT_TIMEOUT`: the document finished loading, but the Hub did not signal readiness.
+- `HUB_REQUEST_MISMATCH`: the Hub became ready, but the URL did not match the pending request, for example after a redirect removed `rph_sdk_request_id`.
+- `HUB_NETWORK_ERROR`: main-page navigation failed.
+- `HUB_HTTP_ERROR`: the main-page server response failed; the HTTP status is recorded in logs.
+- `HUB_TLS_ERROR`: certificate validation failed; the SDK cancels the connection.
+- `HUB_SCRIPT_ERROR`: invoking the requested Hub page failed or did not return before the deadline.
+
+These codes identify the failed stage, not necessarily its underlying cause. For example, `HUB_INIT_TIMEOUT` can result from a missing JavaScript bundle or stalled app-config request.
+
 ### Rownd.requestSignIn(RowndSignInHint): Unit
 
 Initiates a sign-in using the specified hint, bypassing the authentication method selector. For example, this could be used to steer a new user toward a specific sign-in method.

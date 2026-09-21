@@ -3,8 +3,9 @@ package io.rownd.android.views.html
 import android.content.Context
 import io.rownd.android.Rownd
 import io.rownd.android.util.convertRGBtoString
+import io.rownd.android.views.HubLoadError
 
-fun noInternetHTML(context: Context): String {
+internal fun noInternetHTML(context: Context, error: HubLoadError? = null): String {
     val appConfig = Rownd.store.currentState.appConfig
     val fontSize = Rownd.config.customizations.defaultFontSize
     val primaryColor = appConfig?.config?.customizations?.primaryColor ?: "#5b13df"
@@ -47,10 +48,11 @@ fun noInternetHTML(context: Context): String {
                 </script>
             </head>
             <body>
-                <h1>You're offline</h1>
-                <p>Please check your connection and try again</p>
-                <div class="wifi ${if (isDarkMode) "wifi-dark" else ""}"></div>
+                <h1>${if (error == null) "You're offline" else "Unable to load this page"}</h1>
+                <p>${error?.message ?: "Please check your connection and try again"}</p>
+                ${if (error == null) """<div class="wifi ${if (isDarkMode) "wifi-dark" else ""}"></div>""" else ""}
                 <button onclick="tryAgain()">Try again<span></span></button>
+                ${error?.let { """<p class="error-code">Error code: <code>${it.code}</code><br>Share this code with support if the problem continues.</p>""" } ?: ""}
             </body>
         </html>
     """.trimIndent()
@@ -79,6 +81,18 @@ fun noInternetCSS(fontSize: Float, backgroundColor: String?, primaryColor: Strin
             font-size: 1.166em;
             margin-top: 0px;
             margin-bottom: 20px;
+            max-width: 300px;
+            padding: 0 24px;
+            text-align: center;
+            line-height: 1.5;
+        }
+        .error-code {
+            font-size: 0.9167em;
+            opacity: 0.75;
+            margin-top: 24px;
+        }
+        .error-code code {
+            user-select: all;
         }
         img {
             height: 80px;

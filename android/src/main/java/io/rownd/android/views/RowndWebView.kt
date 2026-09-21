@@ -6,14 +6,17 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.http.SslError
 import android.net.Uri
 import android.util.AttributeSet
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.webkit.JavascriptInterface
+import android.webkit.SslErrorHandler
 import android.webkit.URLUtil
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.widget.ProgressBar
 import android.widget.Toast
@@ -85,6 +88,7 @@ enum class HubPageSelector {
 }
 
 private const val HUB_CLOSE_AFTER_MILLISECONDS: Long = 1500
+private const val HUB_LOAD_TIMEOUT_MILLISECONDS: Long = 20000
 private const val AUTHENTICATED_TARGET_READY_TIMEOUT_MILLISECONDS: Long = 5000
 private const val SIGN_IN_COMPLETED_AUTHENTICATION_FALLBACK_DELAY_MILLISECONDS: Long = 500
 private const val NATIVE_EMAIL_VERIFICATION_EVENT = "rownd:native-email-verification"
@@ -144,6 +148,7 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
     internal val secureHubMessagingAvailable: Boolean
     private var targetPageRequestId: Long = 0
     private var pendingTargetPageRequest: PendingTargetPageRequest? = null
+    private var targetPageLoadJob: Job? = null
 
     init {
         this.setLayerType(LAYER_TYPE_HARDWARE, null)
@@ -274,20 +279,29 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
     }
 
     internal fun loadNewPage(targetPage: HubPageSelector = HubPageSelector.SignIn, jsFnOptionsAsJson: String?) {
-        val targetPageRequestId = beginTargetPageRequest(targetPage, jsFnOptionsAsJson)
-
-        this.let {
-            lifecycleScope.launch {
+        lifecycleScope.launch {
+            val targetPageRequestId = beginTargetPageRequest(targetPage, jsFnOptionsAsJson)
+            targetPageLoadJob = coroutineContext[Job]
+            try {
                 val targetUrl = rowndClient.config.hubLoaderUrl().toUri().buildUpon()
                     .appendQueryParameter(TARGET_PAGE_REQUEST_ID_PARAM, targetPageRequestId.toString())
                     .build()
                     .toString()
-                if (!it.setTargetPageRequestUrl(targetPageRequestId, targetUrl)) {
+                if (!setTargetPageRequestUrl(targetPageRequestId, targetUrl)) {
                     return@launch
                 }
-                it.loadUrl(targetUrl)
+                loadUrl(targetUrl)
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                Log.e("Rownd.hub", "Failed to prepare Hub page")
+                rowndWebViewClient.loadErrorHTML(HubLoadError.PREPARATION)
             }
         }
+    }
+
+    internal fun cancelTargetPageLoad() {
+        targetPageLoadJob?.cancel()
+        targetPageLoadJob = null
     }
 
     internal fun loadNewPage(targetPage: HubPageSelector = HubPageSelector.SignIn, jsFnOptions: RowndSignInOptionsBase) {
@@ -305,6 +319,8 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
 
     @Synchronized
     private fun beginTargetPageRequest(targetPage: HubPageSelector, jsFnOptionsAsJson: String?): Long {
+        cancelTargetPageLoad()
+        rowndWebViewClient.beginLoading()
         this.targetPage = targetPage
         this.jsFunctionArgsAsJson = jsFnOptionsAsJson ?: DEFAULT_JS_FN_ARGS
         targetPageRequestId += 1
@@ -359,7 +375,9 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
 }
 
 class RowndWebViewClient(private val webView: RowndWebView, private val context: Context) : WebViewClientCompat() {
-    private var timeout: Boolean = true
+    private var loadTimeoutJob: Job? = null
+    private var showingLoadError = false
+    internal var loadTimeoutMilliseconds = HUB_LOAD_TIMEOUT_MILLISECONDS
     private var pageLoadId: Long = 0
     private var finishedHubPage: Pair<Long, String>? = null
     private var hubLoadedPageLoadId: Long? = null
@@ -368,12 +386,24 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
     private var authenticatedTargetReadyJob: Job? = null
     internal var authenticatedTargetReadyTimeoutMilliseconds = AUTHENTICATED_TARGET_READY_TIMEOUT_MILLISECONDS
 
-    init {
-        webView.lifecycleScope.launch(Dispatchers.IO) {
-            delay(20000)
-            if (timeout) {
-                loadNoInternetHTML()
+    internal fun beginLoading() {
+        showingLoadError = false
+        pageLoadId = pageLoadGeneration.incrementAndGet()
+        finishedHubPage = null
+        hubLoadedPageLoadId = null
+        hubAuthenticationPageLoadId = null
+        loadTimeoutJob?.cancel()
+        authenticatedTargetReadyJob?.cancel()
+        setIsLoading(true)
+        loadTimeoutJob = webView.lifecycleScope.launch {
+            delay(loadTimeoutMilliseconds)
+            val error = when {
+                finishedHubPage == null -> HubLoadError.NAVIGATION_TIMEOUT
+                hubLoadedPageLoadId != pageLoadId -> HubLoadError.READINESS_TIMEOUT
+                webView.hasPendingTargetPageRequest() -> HubLoadError.REQUEST_MISMATCH
+                else -> HubLoadError.JAVASCRIPT
             }
+            loadErrorHTML(error)
         }
     }
 
@@ -385,6 +415,8 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
 
             webView.setIsLoading?.invoke(true)
         } else {
+            loadTimeoutJob?.cancel()
+            loadTimeoutJob = null
             if (webView.setIsLoading == null) {
                 webView.progressBar?.visibility = View.INVISIBLE
             }
@@ -394,7 +426,24 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
     }
 
     internal fun loadNoInternetHTML() {
+        showErrorPage(null)
+    }
+
+    internal fun loadErrorHTML(error: HubLoadError) {
+        showErrorPage(error)
+    }
+
+    private fun showErrorPage(error: HubLoadError?) {
         webView.lifecycleScope.launch {
+            if (webView.isDestroyed || showingLoadError) return@launch
+            error?.let { Log.w("Rownd.hub", "Hub load failed: ${it.code}") }
+            showingLoadError = true
+            pageLoadId = pageLoadGeneration.incrementAndGet()
+            finishedHubPage = null
+            authenticatedTargetReadyJob?.cancel()
+            authenticatedTargetReadyJob = null
+            webView.cancelTargetPageLoad()
+            webView.stopLoading()
             setIsLoading(false)
             // The trusted-origin bridge is unavailable on this local about:blank page.
             webView.addJavascriptInterface(object {
@@ -405,7 +454,7 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
                     }
                 }
             }, "rowndAndroidSDKRetry")
-            val html = noInternetHTML(context).replace("rowndAndroidSDK", "rowndAndroidSDKRetry")
+            val html = noInternetHTML(context, error).replace("rowndAndroidSDK", "rowndAndroidSDKRetry")
             webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
         }
     }
@@ -482,8 +531,10 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
 
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
         if (webView.isDestroyed) return
+        if (showingLoadError) return
         webView.rowndJavascriptInterface.invalidateEmailVerificationRequests()
-        timeout = false
+        // Redirects must not extend the deadline for the current load.
+        if (loadTimeoutJob?.isActive != true) beginLoading()
         pageLoadId = pageLoadGeneration.incrementAndGet()
         authenticatedTargetReadyJob?.cancel()
         authenticatedTargetReadyJob = null
@@ -504,6 +555,7 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
     override fun onPageFinished(view: WebView, url: String) {
         if (webView.isDestroyed) return
         super.onPageFinished(view, url)
+        if (showingLoadError) return
 
         if (view.progress < 100) {
             return
@@ -530,12 +582,14 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
     internal fun currentPageLoadId(): Long = pageLoadGeneration.get()
 
     internal fun onHubLoaded(messagePageLoadId: Long = currentPageLoadId()) {
+        if (showingLoadError) return
         if (messagePageLoadId != pageLoadId) return
         hubLoadedPageLoadId = messagePageLoadId
         maybeDisplayTargetPage()
     }
 
     internal fun onHubAuthentication(messagePageLoadId: Long = currentPageLoadId()) {
+        if (showingLoadError) return
         if (messagePageLoadId != pageLoadId) return
         hubAuthenticationPageLoadId = messagePageLoadId
         authenticatedTargetReadyJob?.cancel()
@@ -600,28 +654,22 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
             return
         }
 
-        try {
-            val targetUri = this.webView.url?.toUri()
-            val currentUri = request.url
+        Log.w("Rownd.hub", "Hub main-frame navigation failed")
+        loadErrorHTML(HubLoadError.NETWORK)
+    }
 
-            if (
-                targetUri?.host != currentUri.host &&
-                targetUri?.path != currentUri?.path
-                )
-            {
-                return
-            }
-        } catch (ex: Exception) {
-            // No-op
-        }
+    override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+        super.onReceivedHttpError(view, request, errorResponse)
+        if (!request.isForMainFrame) return
+        Log.w("Rownd.hub", "Hub main-frame HTTP error: ${errorResponse.statusCode}")
+        loadErrorHTML(HubLoadError.HTTP)
+    }
 
-        if (
-            WebViewFeature.isFeatureSupported(WebViewFeature.WEB_RESOURCE_ERROR_GET_DESCRIPTION) &&
-            error.description.contains("net::ERR")
-            )
-        {
-            loadNoInternetHTML()
-        }
+    override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
+        handler.cancel()
+        if (loadTimeoutJob?.isActive != true && error.url != webView.url) return
+        Log.w("Rownd.hub", "Hub TLS validation failed")
+        loadErrorHTML(HubLoadError.TLS)
     }
 
     private fun displayTargetPage(
@@ -635,16 +683,38 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
 
         val request = webView.consumeTargetPageRequest(targetPageRequest.id) ?: return false
 
-        when (request.targetPage) {
-            HubPageSelector.SignIn, HubPageSelector.Unknown -> evaluateJavascript("rownd.requestSignIn(${request.jsFunctionArgsAsJson})")
-            HubPageSelector.SignOut -> evaluateJavascript("rownd.signOut({\"show_success\":true})")
-            HubPageSelector.QrCode -> evaluateJavascript("rownd.generateQrCode(${request.jsFunctionArgsAsJson})")
-            HubPageSelector.ManageAccount -> evaluateJavascript("rownd.user.manageAccount()")
-            HubPageSelector.ConnectAuthenticator -> evaluateJavascript("rownd.connectAuthenticator(${request.jsFunctionArgsAsJson})")
-            HubPageSelector.DeepLink -> Unit
+        val script = when (request.targetPage) {
+            HubPageSelector.SignIn, HubPageSelector.Unknown -> "rownd.requestSignIn(${request.jsFunctionArgsAsJson})"
+            HubPageSelector.SignOut -> "rownd.signOut({\"show_success\":true})"
+            HubPageSelector.QrCode -> "rownd.generateQrCode(${request.jsFunctionArgsAsJson})"
+            HubPageSelector.ManageAccount -> "rownd.user.manageAccount()"
+            HubPageSelector.ConnectAuthenticator -> "rownd.connectAuthenticator(${request.jsFunctionArgsAsJson})"
+            HubPageSelector.DeepLink -> null
         }
 
-        setIsLoading(false)
+        if (script == null) {
+            setIsLoading(false)
+            return true
+        }
+
+        view.evaluateJavascript("""
+            (function() {
+                try {
+                    $script;
+                    return true;
+                } catch (_) {
+                    return false;
+                }
+            })();
+        """.trimIndent()) { result ->
+            if (webView.isDestroyed || showingLoadError || pageLoadId != finishedPageLoadId) return@evaluateJavascript
+            if (result == "true") {
+                setIsLoading(false)
+            } else {
+                Log.w("Rownd.hub", "Hub target page invocation failed")
+                loadErrorHTML(HubLoadError.JAVASCRIPT)
+            }
+        }
         return true
     }
 

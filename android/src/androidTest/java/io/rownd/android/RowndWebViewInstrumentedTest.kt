@@ -1,12 +1,18 @@
 package io.rownd.android
 
 import android.app.Instrumentation
+import android.app.Application
+import android.net.Uri
+import android.os.SystemClock
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.widget.FrameLayout
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.webkit.WebResourceErrorCompat
 import io.rownd.android.util.NewIntentTestActivity
 import io.rownd.android.views.HubPageSelector
 import io.rownd.android.views.RowndWebView
@@ -37,6 +43,7 @@ class RowndWebViewInstrumentedTest {
         instrumentation = InstrumentationRegistry.getInstrumentation()
         originalBaseUrl = Rownd.config.baseUrl
         Rownd.config.baseUrl = HUB_ORIGIN
+        Rownd.store = Rownd.stateRepo.getStore()
         javascriptProbe = JavascriptProbe()
 
         instrumentation.runOnMainSync {
@@ -289,6 +296,165 @@ class RowndWebViewInstrumentedTest {
 
         assertEquals(listOf("second-navigation"), javascriptProbe.targetMarkers)
         assertEquals(1, javascriptProbe.targetInvocationCount.get())
+    }
+
+    @Test
+    fun missingHubReadinessShowsRetryableErrorInsteadOfSpinning() {
+        val targetUrl = requestUrl(requestId = 1, config = "missing-readiness")
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.loadTimeoutMilliseconds = 1500
+            webView.prepareTargetPageRequest(HubPageSelector.SignIn, null, targetUrl)
+        }
+        loadDocument(targetUrl, signalHubLoaded = false)
+        val failedPageLoadId = webView.rowndWebViewClient.currentPageLoadId()
+
+        awaitCompletedLoad("Missing hub_loaded must stop the native loader")
+        awaitErrorPage()
+        assertErrorCode("HUB_INIT_TIMEOUT")
+        assertEquals("\"Try again\"", evaluateJavascript("document.querySelector('button').textContent"))
+        assertEquals("\"object\"", evaluateJavascript("typeof window.rowndAndroidSDKRetry"))
+
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.onHubLoaded(failedPageLoadId)
+        }
+        assertEquals(0, javascriptProbe.targetInvocationCount.get())
+        assertEquals("\"Unable to load this page\"", evaluateJavascript("document.querySelector('h1').textContent"))
+
+        completedLoads.drainPermits()
+        prepareAndLoadTarget("retry", requestUrl(requestId = 2, config = "recovered"))
+        assertEquals(listOf("retry"), javascriptProbe.targetMarkers)
+        assertTrue(
+            "Successful retry must cancel its loading deadline",
+            !completedLoads.tryAcquire(2, TimeUnit.SECONDS),
+        )
+    }
+
+    @Test
+    fun redirectWithoutRequestIdShowsErrorEvenWhenHubIsReady() {
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.loadTimeoutMilliseconds = 1500
+            webView.prepareTargetPageRequest(
+                HubPageSelector.SignIn, null, requestUrl(requestId = 1, config = "redirect"),
+            )
+        }
+        loadDocument("$HUB_ORIGIN/mobile_app?config=redirect")
+
+        awaitCompletedLoad("A lost request ID must not leave the loader active")
+        awaitErrorPage()
+        assertErrorCode("HUB_REQUEST_MISMATCH")
+        assertEquals(0, javascriptProbe.targetInvocationCount.get())
+    }
+
+    @Test
+    fun mainFrameHttpFailureShowsErrorButSubresourceFailureDoesNot() {
+        val targetUrl = requestUrl(requestId = 1, config = "http-error")
+        instrumentation.runOnMainSync {
+            webView.prepareTargetPageRequest(HubPageSelector.SignIn, null, targetUrl)
+        }
+        loadDocument(targetUrl, signalHubLoaded = false)
+        val response = WebResourceResponse("text/html", "UTF-8", 503, "Service Unavailable", emptyMap(), null)
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.onReceivedHttpError(webView, resourceRequest(false), response)
+        }
+        assertEquals("null", evaluateJavascript("document.querySelector('h1')"))
+
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.onReceivedHttpError(webView, resourceRequest(true), response)
+        }
+        awaitCompletedLoad("HTTP failure must stop the native loader")
+        awaitErrorPage()
+        assertErrorCode("HUB_HTTP_ERROR")
+    }
+
+    @Test
+    fun mainFrameNetworkFailureDoesNotDependOnErrorDescription() {
+        val targetUrl = requestUrl(requestId = 1, config = "network-error")
+        instrumentation.runOnMainSync {
+            webView.prepareTargetPageRequest(HubPageSelector.SignIn, null, targetUrl)
+        }
+        loadDocument(targetUrl, signalHubLoaded = false)
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.onReceivedError(webView, resourceRequest(true), object : WebResourceErrorCompat() {
+                override fun getErrorCode() = -2
+                override fun getDescription(): CharSequence = "Host lookup failed"
+            })
+        }
+        awaitCompletedLoad("Network failure must stop the native loader")
+        awaitErrorPage()
+        assertErrorCode("HUB_NETWORK_ERROR")
+    }
+
+    private fun resourceRequest(mainFrame: Boolean) = object : WebResourceRequest {
+        override fun getUrl(): Uri = Uri.parse(HUB_ORIGIN)
+        override fun isForMainFrame() = mainFrame
+        override fun isRedirect() = false
+        override fun hasGesture() = false
+        override fun getMethod() = "GET"
+        override fun getRequestHeaders(): Map<String, String> = emptyMap()
+    }
+
+    @Test
+    fun javascriptFailureOpeningSignInShowsError() {
+        val targetUrl = requestUrl(requestId = 1, config = "broken-sign-in")
+        instrumentation.runOnMainSync {
+            webView.prepareTargetPageRequest(HubPageSelector.SignIn, null, targetUrl)
+        }
+        loadDocument(targetUrl, signalHubLoaded = false)
+        evaluateJavascript("window.rownd.requestSignIn = function() { throw new Error('Unable to initialize'); }")
+        evaluateJavascript("window.rowndAndroidSDK.postMessage(JSON.stringify({type: 'hub_loaded'}))")
+
+        awaitCompletedLoad("A JavaScript initialization failure must stop the native loader")
+        awaitErrorPage()
+        assertErrorCode("HUB_SCRIPT_ERROR")
+    }
+
+    @Test
+    fun deadlineAlsoCoversPreparationBeforeNavigationStarts() {
+        instrumentation.runOnMainSync {
+            webView.rowndWebViewClient.loadTimeoutMilliseconds = 100
+            webView.prepareTargetPageRequest(
+                HubPageSelector.SignIn, null, requestUrl(requestId = 1, config = "never-navigates"),
+            )
+        }
+        awaitCompletedLoad("A page that never starts navigating must stop the native loader")
+        awaitErrorPage()
+        assertErrorCode("HUB_LOAD_TIMEOUT")
+    }
+
+    @Test
+    fun retryButtonStartsFreshLoadAndCanFailAgainWithoutSpinning() {
+        Rownd._registerActivityLifecycle(instrumentation.targetContext.applicationContext as Application)
+        instrumentation.runOnMainSync {
+            webView.rowndClient = Rownd
+            webView.rowndWebViewClient.loadTimeoutMilliseconds = 1500
+            webView.prepareTargetPageRequest(
+                HubPageSelector.SignIn, """{"intent":"sign_in"}""", requestUrl(requestId = 1, config = "retry-button"),
+            )
+        }
+        awaitCompletedLoad("Initial load must time out")
+        awaitErrorPage()
+        completedLoads.drainPermits()
+
+        evaluateJavascript("document.querySelector('button').click()")
+        awaitCompletedLoad("Retry against the unavailable Hub must stop loading again")
+        awaitErrorPage()
+        instrumentation.runOnMainSync {
+            assertEquals(HubPageSelector.SignIn, webView.targetPage)
+            assertEquals("""{"intent":"sign_in"}""", webView.jsFunctionArgsAsJson)
+        }
+    }
+
+    private fun awaitErrorPage() {
+        val deadline = SystemClock.elapsedRealtime() + TimeUnit.SECONDS.toMillis(WEBVIEW_TIMEOUT_SECONDS)
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (evaluateJavascript("document.querySelector('h1')?.textContent") == "\"Unable to load this page\"") return
+            SystemClock.sleep(50)
+        }
+        throw AssertionError("The local load-error page was not rendered")
+    }
+
+    private fun assertErrorCode(code: String) {
+        assertEquals("\"$code\"", evaluateJavascript("document.querySelector('.error-code code').textContent"))
     }
 
     private fun prepareAndLoadTarget(
