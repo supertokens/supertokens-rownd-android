@@ -449,7 +449,8 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
             webView.addJavascriptInterface(object {
                 @JavascriptInterface
                 fun postMessage(message: String) {
-                    if (message == """{"type":"try_again"}""") {
+                    if (message == """{"type":"try_again"}""" ||
+                        message == """{"type":"close_hub_view_controller"}""") {
                         webView.rowndJavascriptInterface.postMessage(message)
                     }
                 }

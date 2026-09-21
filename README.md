@@ -477,7 +477,7 @@ Opens the Rownd sign-in dialog for authentication.
 
 If the Hub cannot become ready within 20 seconds, the dialog replaces its loading animation with an **Unable to load this page** screen and a **Try again** button. Main-page network/HTTP failures, TLS failures during loading, and JavaScript errors invoking the requested Hub page also show this screen. Retry starts a fresh load with the same target and sign-in options. The deadline covers opening the dialog, not the time the user spends authenticating. Diagnostic messages use the `Rownd.hub` log tag.
 
-The screen explains the failure and displays a support code, also logged under `Rownd.hub`:
+The error screen also provides **Close**, which dismisses the sheet and returns to the host app. It explains the failure and displays a support code, also logged under `Rownd.hub`:
 
 - `HUB_PREPARATION_FAILED`: the SDK could not prepare the Hub URL.
 - `HUB_LOAD_TIMEOUT`: navigation did not finish before the deadline (including a stalled URL-preparation step).

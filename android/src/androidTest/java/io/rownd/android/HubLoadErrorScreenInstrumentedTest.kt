@@ -21,6 +21,7 @@ import io.rownd.android.views.RowndBottomSheetActivity
 import io.rownd.android.views.RowndWebViewModel
 import kotlinx.collections.immutable.persistentListOf
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -30,7 +31,7 @@ import java.util.concurrent.TimeUnit
 @RunWith(AndroidJUnit4::class)
 class HubLoadErrorScreenInstrumentedTest {
     @Test
-    fun readinessTimeoutDisplaysSupportCodeInNativeSheet() {
+    fun readinessTimeoutDisplaysSupportCodeAndCloseDismissesNativeSheet() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val app = instrumentation.targetContext.applicationContext as Application
         val previousLifecycle = Rownd.appHandleWrapper
@@ -76,7 +77,7 @@ class HubLoadErrorScreenInstrumentedTest {
         try {
             val intent = Intent(instrumentation.targetContext, RowndBottomSheetActivity::class.java)
                 .putExtra("extra_target_page", HubPageSelector.SignIn)
-            ActivityScenario.launch<RowndBottomSheetActivity>(intent).use {
+            ActivityScenario.launch<RowndBottomSheetActivity>(intent).use { scenario ->
                 assertTrue("The sheet must render the timeout code", errorRendered.await(10, TimeUnit.SECONDS))
                 if (InstrumentationRegistry.getArguments().getString("captureHubError") == "true") {
                     // Let the sheet and loading-overlay fade finish before capturing the rendered UI.
@@ -86,6 +87,15 @@ class HubLoadErrorScreenInstrumentedTest {
                     output.outputStream().use { stream -> screenshot.compress(Bitmap.CompressFormat.PNG, 100, stream) }
                     screenshot.recycle()
                 }
+                scenario.onActivity { activity ->
+                    val webView = ViewModelProvider(activity)[RowndWebViewModel::class.java].webView().value!!
+                    webView.evaluateJavascript("document.querySelector('.close-button').click()", null)
+                }
+                val deadline = SystemClock.elapsedRealtime() + 5000
+                while (scenario.state != Lifecycle.State.DESTROYED && SystemClock.elapsedRealtime() < deadline) {
+                    SystemClock.sleep(50)
+                }
+                assertEquals("Close must dismiss the native sheet", Lifecycle.State.DESTROYED, scenario.state)
             }
         } finally {
             Rownd.appHandleWrapper?.unregister()

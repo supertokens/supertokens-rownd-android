@@ -33,16 +33,24 @@ internal fun noInternetHTML(context: Context, error: HubLoadError? = null): Stri
                     ${noInternetCSS(fontSize, backgroundColor, primaryColor, isDarkMode)}
                 </style>
                 <script>
+                    let retryTimer;
                     function tryAgain() {
                         if (window?.rowndAndroidSDK) {
                             const buttonElem = document.querySelector('button');
                             buttonElem.classList.add('loading');
-                            setTimeout(()=> {
+                            clearTimeout(retryTimer);
+                            retryTimer = setTimeout(()=> {
                                 window.rowndAndroidSDK.postMessage('{"type":"try_again"}');
                             }, 1000);
                             setTimeout(()=> {
                                 buttonElem.classList.remove('loading');
                             }, 4000);
+                        }
+                    }
+                    function closePage() {
+                        clearTimeout(retryTimer);
+                        if (window?.rowndAndroidSDK) {
+                            window.rowndAndroidSDK.postMessage('{"type":"close_hub_view_controller"}');
                         }
                     }
                 </script>
@@ -52,6 +60,7 @@ internal fun noInternetHTML(context: Context, error: HubLoadError? = null): Stri
                 <p>${error?.message ?: "Please check your connection and try again"}</p>
                 ${if (error == null) """<div class="wifi ${if (isDarkMode) "wifi-dark" else ""}"></div>""" else ""}
                 <button onclick="tryAgain()">Try again<span></span></button>
+                <button class="close-button" onclick="closePage()">Close</button>
                 ${error?.let { """<p class="error-code">Error code: <code>${it.code}</code><br>Share this code with support if the problem continues.</p>""" } ?: ""}
             </body>
         </html>
@@ -114,11 +123,18 @@ fun noInternetCSS(fontSize: Float, backgroundColor: String?, primaryColor: Strin
             margin-top: 20px;
             font-size: 1.166em;
             width: 80%;
+            min-height: 44px;
             padding: 10px 0px;
             border-radius: 12px;
             outline: none;
             border: none;
             position: relative;
+        }
+        .close-button {
+            margin-top: 10px;
+            background-color: transparent;
+            color: inherit;
+            border: 1px solid ${if (isDarkMode) "rgba(255,255,255,0.35)" else "rgba(0,0,0,0.25)"};
         }
         @keyframes button-loading-spinner {
             from {
