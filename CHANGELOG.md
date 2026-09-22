@@ -1,5 +1,12 @@
 
 
+## [0.1.14](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.13...v0.1.14) (2026-09-22)
+
+
+### Bug Fixes
+
+* preserve Hub sign-in method in fallback completion events ([aee104e](https://github.com/supertokens/supertokens-rownd-android/commit/aee104e6824d1c162884334120ee99a56ef93cf7))
+
 ## [0.1.13](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.12...v0.1.13) (2026-09-21)
 
 
