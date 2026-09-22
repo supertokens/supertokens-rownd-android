@@ -3,6 +3,7 @@ package io.rownd.android.util
 import io.rownd.android.Rownd
 import io.rownd.android.RowndSignInType
 import io.rownd.android.RowndSignInUserType
+import io.rownd.android.models.AuthenticationPayload
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -162,6 +163,15 @@ private fun JsonElement.asEventDataString(): String? {
     } else {
         toString()
     }
+}
+
+internal fun signInCompletedEventData(payload: AuthenticationPayload): Map<String, String?> {
+    val data = signInCompletedEventData(
+        userType = payload.userType,
+        appVariantUserType = payload.appVariantUserType ?: payload.userType,
+    ).toMutableMap()
+    payload.method?.let { data["method"] = it }
+    return data
 }
 
 internal fun signInCompletedEventData(

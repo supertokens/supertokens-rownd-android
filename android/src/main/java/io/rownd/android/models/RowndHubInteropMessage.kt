@@ -97,6 +97,8 @@ data class AuthenticationPayload(
 
     @SerialName("app_variant_user_type")
     var appVariantUserType: RowndSignInUserType? = null,
+
+    var method: String? = null,
 )
 
 @Serializable

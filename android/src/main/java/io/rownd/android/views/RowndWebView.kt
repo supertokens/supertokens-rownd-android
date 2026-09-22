@@ -832,11 +832,7 @@ class RowndJavascriptInterface constructor(
             parentWebView.rowndClient.eventEmitter.emit(
                 RowndEvent(
                     event = RowndEventType.SignInCompleted,
-                    data = signInCompletedEventData(
-                        userType = authenticationMessage.payload.userType,
-                        appVariantUserType = authenticationMessage.payload.appVariantUserType
-                            ?: authenticationMessage.payload.userType,
-                    ),
+                    data = signInCompletedEventData(authenticationMessage.payload),
                 )
             )
         }

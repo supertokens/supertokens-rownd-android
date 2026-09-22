@@ -666,6 +666,8 @@ Here's a list of events that the Rownd SDK emits and the corresponding data that
           app_variant_user_type: 'new_user' | 'existing_user' | optional
       }
       ```
+
+      <p><code>method</code> is an optional string identifying the sign-in method, including <code>email</code> or <code>phone</code> for passwordless sign-in. It may be absent when the Hub cannot determine the method or an older Hub version does not provide it. Treat missing or unrecognized values as unknown; do not default to <code>email</code>.</p>
     </td>
 
   </tr>

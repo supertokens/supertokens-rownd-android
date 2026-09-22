@@ -4,6 +4,7 @@ import io.rownd.android.models.AuthenticationMessage
 import io.rownd.android.models.EventMessage
 import io.rownd.android.models.RowndHubInteropMessage
 import io.rownd.android.util.RowndEventType
+import io.rownd.android.util.signInCompletedEventData
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -12,6 +13,48 @@ import org.junit.Test
 private val authMessageJson = Json { ignoreUnknownKeys = true }
 
 class AuthenticationMessageTest {
+
+    @Test
+    fun `authentication fallback preserves known and future sign in methods`() {
+        for (method in listOf("email", "phone", "google", "passkeys", "future_auth_method")) {
+            val message = authMessageJson.decodeFromString(
+                RowndHubInteropMessage.serializer(),
+                """{"type":"authentication","payload":{"access_token":"token","method":"$method","user_type":"existing_user","app_variant_user_type":"new_user"}}""",
+            ) as AuthenticationMessage
+
+            assertEquals(method, message.payload.method)
+            assertEquals(
+                mapOf("method" to method, "user_type" to "existing_user", "app_variant_user_type" to "new_user"),
+                signInCompletedEventData(message.payload),
+            )
+        }
+    }
+
+    @Test
+    fun `authentication fallback accepts absent and null methods with user type fallback`() {
+        for (methodField in listOf("", "\"method\":null,")) {
+            val message = authMessageJson.decodeFromString(
+                RowndHubInteropMessage.serializer(),
+                """{"type":"authentication","payload":{$methodField"access_token":"token","user_type":"existing_user"}}""",
+            ) as AuthenticationMessage
+
+            assertEquals(null, message.payload.method)
+            assertEquals(
+                mapOf("user_type" to "existing_user", "app_variant_user_type" to "existing_user"),
+                signInCompletedEventData(message.payload),
+            )
+        }
+    }
+
+    @Test
+    fun `authentication fallback omits absent metadata`() {
+        val message = authMessageJson.decodeFromString(
+            RowndHubInteropMessage.serializer(),
+            """{"type":"authentication","payload":{"access_token":"token"}}""",
+        ) as AuthenticationMessage
+
+        assertTrue(signInCompletedEventData(message.payload).isEmpty())
+    }
 
     @Test
     fun `AuthenticationMessage deserializes sign in user types`() {
