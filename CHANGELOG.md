@@ -1,5 +1,12 @@
 
 
+## [0.1.15](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.14...v0.1.15) (2026-09-29)
+
+
+### Bug Fixes
+
+* clear legacy session when token refresh fails ([4e5fba0](https://github.com/supertokens/supertokens-rownd-android/commit/4e5fba090f23859a7d876d4efb5cf3ad03c95f38))
+
 ## [0.1.14](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.13...v0.1.14) (2026-09-22)
 
 
