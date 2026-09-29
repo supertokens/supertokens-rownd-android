@@ -72,30 +72,29 @@ class LegacyRefreshRecoveryInstrumentedTest {
     }
 
     @Test
-    fun transientRefreshFailuresPreserveCredentials() = runBlocking {
-        val original = rownd.state.value.auth
-        val originalUser = rownd.state.value.user
+    fun refreshFailuresClearCredentialsAndProfile() = runBlocking {
         for (status in listOf(HttpStatusCode.TooManyRequests, HttpStatusCode.ServiceUnavailable)) {
+            seedLegacySession()
             useRefreshEngine(MockEngine { respond("{}", status) })
             rownd.authRepo.migrateLegacySessionIfNeeded(context)
-            assertEquals(original, rownd.state.value.auth)
-            assertEquals(originalUser, rownd.state.value.user)
+            assertEquals(AuthState(), rownd.state.value.auth)
+            assertEquals(User(), rownd.state.value.user)
         }
+        seedLegacySession()
         useRefreshEngine(MockEngine { throw IOException("offline") })
         rownd.authRepo.migrateLegacySessionIfNeeded(context)
-        assertEquals(original, rownd.state.value.auth)
-        assertEquals(originalUser, rownd.state.value.user)
+        assertEquals(AuthState(), rownd.state.value.auth)
+        assertEquals(User(), rownd.state.value.user)
         assertEquals(0, migrationCalls)
     }
 
     @Test
-    fun incompleteRefreshResponsePreservesCredentials() = runBlocking {
-        val original = rownd.state.value.auth
+    fun incompleteRefreshResponseClearsCredentials() = runBlocking {
         useRefreshEngine(MockEngine {
             respond("{}", HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
         })
         rownd.authRepo.migrateLegacySessionIfNeeded(context)
-        assertEquals(original, rownd.state.value.auth)
+        assertEquals(AuthState(), rownd.state.value.auth)
         assertEquals(0, migrationCalls)
     }
 
@@ -136,5 +135,13 @@ class LegacyRefreshRecoveryInstrumentedTest {
 
     private fun useRefreshEngine(engine: MockEngine) {
         rownd.authRepo.legacyTokenApiClient = LegacyTokenApiClient(rownd.authRepo.rowndContext, engine)
+    }
+
+    private fun seedLegacySession() {
+        rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState(
+            accessToken = jwtGenerator.generateTestJwt(expires = Date(System.currentTimeMillis() - 3600000)),
+            refreshToken = "old-refresh",
+        )))
+        rownd.stateRepo.getStore().dispatch(StateAction.SetUser(User(data = mapOf("user_id" to "legacy-user"), isLoading = true)))
     }
 }

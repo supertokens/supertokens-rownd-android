@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import com.auth0.android.jwt.JWT
 import io.ktor.client.call.body
-import io.ktor.client.plugins.ClientRequestException
 import io.ktor.client.plugins.expectSuccess
 import io.ktor.client.plugins.retry
 import io.ktor.client.request.post
@@ -164,23 +163,23 @@ class AuthRepo @Inject constructor() {
                     finishMigration(context, attempt, clearLegacy = true)
                     return
                 }
-                val refreshed = try {
-                    legacyTokenApiClient.refreshLegacyToken(refreshToken)
-                } catch (ex: ClientRequestException) {
-                    // This is the legacy refresh endpoint's invalid-token contract, not migration's.
-                    if (ex.response.status == HttpStatusCode.BadRequest || ex.response.status == HttpStatusCode.Unauthorized) {
-                        finishMigration(context, attempt, clearLegacy = true)
-                        return
-                    }
+                val (accessToken, refreshedRefreshToken) = try {
+                    val refreshed = legacyTokenApiClient.refreshLegacyToken(refreshToken)
+                    val accessToken = refreshed.accessToken?.takeIf { it.isNotBlank() }
+                        ?: throw RowndException("Legacy refresh response missing access token")
+                    accessToken to refreshed.refreshToken
+                } catch (ex: CancellationException) {
                     throw ex
+                } catch (ex: Exception) {
+                    Log.e("Rownd.Auth", "Legacy session refresh failed", ex)
+                    finishMigration(context, attempt, clearLegacy = true)
+                    return
                 }
-                val accessToken = refreshed.accessToken?.takeIf { it.isNotBlank() }
-                    ?: throw RowndException("Legacy refresh response missing access token")
                 SuperTokensSessionBridge.sessionMutationMutex.withLock {
                     if (!isCurrent(attempt)) return
                     if (getUsableSuperTokensAccessToken(context) == null && isCurrent(attempt)) {
                         val rotated = attempt.auth.copy(accessToken = accessToken,
-                            refreshToken = refreshed.refreshToken ?: refreshToken)
+                            refreshToken = refreshedRefreshToken ?: refreshToken)
                         updateAttempt(attempt, rotated.copy(isLoading = true))
                         attempt = attempt.copy(auth = rotated)
                     }
