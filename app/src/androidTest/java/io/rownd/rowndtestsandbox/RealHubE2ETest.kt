@@ -24,7 +24,6 @@ import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
-import androidx.test.uiautomator.Until
 import com.supertokens.session.SuperTokensInterceptor
 import io.rownd.android.Rownd
 import io.rownd.android.util.SuperTokensSessionBridge
@@ -38,7 +37,6 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -120,8 +118,7 @@ class RealHubE2ETest {
             .withElement(findElement(Locator.XPATH, "//button[normalize-space()='Sign in or sign up']"))
             .perform(webClick())
 
-        // The replacement sheet needs the Compose test clock to advance.
-        composeRule.waitUntil(timeoutMillis = 15_000) { activeHubWebView()?.let { it !== source } == true }
+        waitUntil("replacement Hub WebView") { activeHubWebView()?.let { it !== source } == true }
         assertNotSame(source, activeHubWebView())
         val email = uniqueEmail("manage-recovery")
         enterEmailChallenge(email)
@@ -452,11 +449,11 @@ class RealHubE2ETest {
     }
 
     private fun waitForText(text: String, timeoutMs: Long = 15_000) {
-        assertNotNull("Timed out waiting for '$text'", device.wait(Until.findObject(By.text(text)), timeoutMs))
+        waitUntil("text '$text'", timeoutMs) { device.findObject(By.text(text)) != null }
     }
 
     private fun waitForTextContaining(text: String, timeoutMs: Long = 15_000) {
-        assertNotNull("Timed out waiting for text containing '$text'", device.wait(Until.findObject(By.textContains(text)), timeoutMs))
+        waitUntil("text containing '$text'", timeoutMs) { device.findObject(By.textContains(text)) != null }
     }
 
     private fun clickResource(resourceName: String, timeoutMs: Long = 15_000) {
@@ -496,12 +493,11 @@ class RealHubE2ETest {
     }
 
     private fun waitUntil(description: String, timeoutMs: Long = 15_000, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return
-            instrumentation.waitForIdleSync()
-            SystemClock.sleep(50)
-        }
-        assertTrue("Timed out waiting for $description", condition())
+        // UIAutomator and idle/sleep loops do not advance the Compose clock driving the Hub sheet.
+        composeRule.waitUntil(
+            conditionDescription = description,
+            timeoutMillis = timeoutMs,
+            condition = condition,
+        )
     }
 }
