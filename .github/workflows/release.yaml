@@ -44,7 +44,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: supertokens/supertokens-rownd-hub
-          ref: 2146e7ad6f67473d7d5aadab2f94cc5373c5ff0b
+          # Includes the native profile sign-in handoff exercised by RealHubE2ETest.
+          ref: 509f12d41400d7e95d011cc0d8c22b28c5dba447
           path: supertokens-rownd-hub
           token: ${{ secrets.ROWND_HUB_REPOSITORY_TOKEN }}
           persist-credentials: false

@@ -17,6 +17,7 @@ import androidx.test.espresso.web.sugar.Web.onWebView
 import androidx.test.espresso.web.webdriver.DriverAtoms.findElement
 import androidx.test.espresso.web.webdriver.DriverAtoms.webClick
 import androidx.test.espresso.web.webdriver.DriverAtoms.webKeys
+import androidx.test.espresso.web.webdriver.DriverAtoms.webScrollIntoView
 import androidx.test.espresso.web.webdriver.Locator
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -265,15 +266,18 @@ class RealHubE2ETest {
     }
 
     private fun submitOtp(code: String) {
-        waitForText("Use a code instead")
+        waitForWebElement("[data-testid='rownd-ui-passwordless-waiting-use-code']")
         onWebView()
             .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-passwordless-waiting-use-code']"))
+            .perform(webScrollIntoView())
             .perform(webClick())
-        waitForText("Enter your sign-in code")
+        waitForWebElement("#rph-passwordless-code-input")
         onWebView()
             .withElement(findElement(Locator.ID, "rph-passwordless-code-input"))
+            .perform(webScrollIntoView())
             .perform(webKeys(code))
             .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-passwordless-code-submit']"))
+            .perform(webScrollIntoView())
             .perform(webClick())
     }
 
@@ -450,6 +454,34 @@ class RealHubE2ETest {
 
     private fun waitForText(text: String, timeoutMs: Long = 15_000) {
         waitUntil("text '$text'", timeoutMs) { device.findObject(By.text(text)) != null }
+    }
+
+    private fun waitForWebElement(selector: String, timeoutMs: Long = 15_000) {
+        // Off-screen Hub controls need not appear in UIAutomator's accessibility tree.
+        val ready = AtomicBoolean(false)
+        val pending = AtomicBoolean(false)
+        val script = """
+            (() => {
+                const element = document.querySelector(${JSONObject.quote(selector)});
+                return !!element && !element.disabled && element.getClientRects().length > 0;
+            })()
+        """.trimIndent()
+        waitUntil("Hub element '$selector'", timeoutMs) {
+            if (!ready.get() && pending.compareAndSet(false, true)) {
+                val webView = activeHubWebView()
+                if (webView == null) {
+                    pending.set(false)
+                } else {
+                    instrumentation.runOnMainSync {
+                        webView.evaluateJavascript(script) { result ->
+                            ready.set(result == "true")
+                            pending.set(false)
+                        }
+                    }
+                }
+            }
+            ready.get()
+        }
     }
 
     private fun waitForTextContaining(text: String, timeoutMs: Long = 15_000) {
