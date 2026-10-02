@@ -63,7 +63,6 @@ class LegacySessionMigrationInstrumentedTest {
         Rownd.config.apiBasePath = "/auth"
         Rownd.config.appKey = harnessConfig.appKey
         Rownd.config.supertokens = testAppConfig().config.supertokens
-        Rownd.authRepo.legacyTokenApiClient.baseUrl = harnessConfig.androidUrl
         Rownd.stateRepo.getStore().dispatch(StateAction.SetAppConfig(testAppConfig()))
         Rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState()))
     }
@@ -96,7 +95,7 @@ class LegacySessionMigrationInstrumentedTest {
     }
 
     @Test
-    fun expiredLegacyTokenRefreshesThenMigrates() {
+    fun expiredLegacyTokenMigratesDirectly() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val legacySession = HarnessClient.createLegacySession(userId = "legacy-expired-user", expired = true)
         Rownd.stateRepo.getStore().dispatch(
@@ -111,7 +110,7 @@ class LegacySessionMigrationInstrumentedTest {
         runBlocking { Rownd.authRepo.migrateLegacySessionIfNeeded(context) }
 
         val counters = HarnessClient.getCounters()
-        assertEquals("expired legacy token should refresh once", 1, counters.legacyRefresh)
+        assertEquals("expired legacy token must not call legacy refresh", 0, counters.legacyRefresh)
         assertEquals("expired legacy token should migrate once", 1, counters.migrate)
         assertTrue("migration should create a SuperTokens session", runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
 
@@ -119,7 +118,7 @@ class LegacySessionMigrationInstrumentedTest {
     }
 
     @Test
-    fun invalidLegacyRefreshClearsAuthAndDoesNotMigrate() {
+    fun invalidLegacyRefreshClearsAuthAfterMigrationRejection() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val legacySession = HarnessClient.createLegacySession(userId = "legacy-invalid-refresh-user", expired = true)
         Rownd.stateRepo.getStore().dispatch(
@@ -134,10 +133,39 @@ class LegacySessionMigrationInstrumentedTest {
         runBlocking { Rownd.authRepo.migrateLegacySessionIfNeeded(context) }
 
         val counters = HarnessClient.getCounters()
-        assertEquals("expired legacy token should attempt one legacy refresh", 1, counters.legacyRefresh)
-        assertEquals("failed legacy refresh must not call migrate", 0, counters.migrate)
+        assertEquals("invalid legacy refresh must not call legacy refresh", 0, counters.legacyRefresh)
+        assertEquals("migration rejection should exhaust bounded retries", 2, counters.migrate)
         assertFalse("failed legacy refresh must not create a SuperTokens session", runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
         assertNull("failed legacy refresh should clear Rownd auth", Rownd.state.value.auth.accessToken)
+    }
+
+    @Test
+    fun refreshOnlyLegacySessionMigratesDirectly() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val legacySession = HarnessClient.createLegacySession(userId = "legacy-refresh-only-user", expired = true)
+        Rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState(refreshToken = legacySession.refresh_token)))
+
+        runBlocking { Rownd.authRepo.migrateLegacySessionIfNeeded(context) }
+
+        val counters = HarnessClient.getCounters()
+        assertEquals(0, counters.legacyRefresh)
+        assertEquals(1, counters.migrate)
+        assertNull(Rownd.state.value.auth.refreshToken)
+        assertProtectedEndpointUser("legacy-refresh-only-user")
+    }
+
+    @Test
+    fun accessOnlyLegacySessionStillMigrates() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val legacySession = HarnessClient.createLegacySession(userId = "legacy-access-only-user", expired = false)
+        Rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState(accessToken = legacySession.access_token)))
+
+        runBlocking { Rownd.authRepo.migrateLegacySessionIfNeeded(context) }
+
+        val counters = HarnessClient.getCounters()
+        assertEquals(0, counters.legacyRefresh)
+        assertEquals(1, counters.migrate)
+        assertProtectedEndpointUser("legacy-access-only-user")
     }
 
     @Test

@@ -1,6 +1,5 @@
 package io.rownd.android.models.network
 
-import io.rownd.android.RowndSignInIntent
 import io.rownd.android.RowndSignInUserType
 import io.rownd.android.models.domain.AuthState
 import kotlinx.serialization.SerialName
@@ -23,32 +22,6 @@ data class Auth(
         )
     }
 }
-
-@Serializable
-data class TokenRequestBody internal constructor(
-    @SerialName("refresh_token")
-    val refreshToken: String? = null,
-    @SerialName("id_token")
-    val idToken: String? = null,
-    @SerialName("app_id")
-    val appId: String? = null,
-    @SerialName("intent")
-    val intent: RowndSignInIntent? = null,
-    @SerialName("instant_user_id")
-    var instantUserId: String? = null,
-)
-
-@Serializable
-data class TokenResponse internal constructor(
-    @SerialName("access_token")
-    val accessToken: String? = null,
-    @SerialName("refresh_token")
-    val refreshToken: String? = null,
-    @SerialName("user_type")
-    val userType: RowndSignInUserType? = null,
-    @SerialName("app_variant_user_type")
-    val appVariantUserType: RowndSignInUserType? = null,
-)
 
 @Serializable
 data class SignInUpResponse(

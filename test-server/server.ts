@@ -476,6 +476,8 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
 
   setRowndClient({
     validateToken: async (token: string) => {
+      const legacySession = findLegacySessionByRefreshToken(token);
+      if (legacySession) return { user_id: legacySession.record.userId };
       const { payload } = await jwtVerify(token, ROWND_JWT_SECRET);
       const userId =
         (payload as any)["https://auth.rownd.io/app_user_id"] || payload.sub;
@@ -798,7 +800,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     res.json({ status: "OK" });
   });
 
-  // Legacy Rownd token refresh — only used during startup migration
+  // Kept to detect obsolete client-side refresh requests during migration.
   app.post("/hub/auth/token", async (req, res) => {
     const state = getState(req);
     state.counters.legacyRefresh += 1;

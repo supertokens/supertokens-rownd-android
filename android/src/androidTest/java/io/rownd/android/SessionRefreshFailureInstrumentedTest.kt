@@ -69,7 +69,6 @@ class SessionRefreshFailureInstrumentedTest {
             SuperTokensSessionBridge.clearLocalSession(context)
             rownd.authenticatedApiClient.client.close()
             rownd.authRepo.legacyMigrationApiClient.client.close()
-            rownd.authRepo.legacyTokenApiClient.client.close()
             rownd.appHandleWrapper?.unregister()
             http.connectionPool.evictAll()
             http.dispatcher.executorService.shutdown()

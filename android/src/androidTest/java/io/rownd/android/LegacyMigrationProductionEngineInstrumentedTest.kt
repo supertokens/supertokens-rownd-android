@@ -108,7 +108,6 @@ class LegacyMigrationProductionEngineInstrumentedTest {
         SuperTokensSessionBridge.writeSession = originalWriteSession
         rownd.authenticatedApiClient.client.close()
         rownd.authRepo.legacyMigrationApiClient.client.close()
-        rownd.authRepo.legacyTokenApiClient.client.close()
         rownd.appHandleWrapper?.unregister()
         clearSession()
     }
@@ -499,7 +498,7 @@ class LegacyMigrationProductionEngineInstrumentedTest {
 
     private fun assertMigrationRequest(request: CapturedRequest) {
         assertEquals("POST /auth/plugin/rownd/migrate HTTP/1.1", request.line)
-        assertTrue("Exactly one explicit legacy bearer is required", request.headers["authorization"] == listOf("Bearer ${legacy.accessToken}"))
+        assertTrue("Exactly one explicit legacy bearer is required", request.headers["authorization"] == listOf("Bearer ${legacy.refreshToken}"))
         assertEquals(listOf("session"), request.headers["rid"])
         assertEquals(listOf("1.18"), request.headers["fdi-version"])
         assertEquals(listOf("header"), request.headers["st-auth-mode"])

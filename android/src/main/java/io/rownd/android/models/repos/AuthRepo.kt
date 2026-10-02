@@ -22,7 +22,6 @@ import io.rownd.android.models.network.SignOutRequestBody
 import io.rownd.android.models.network.SignOutResponse
 import io.rownd.android.util.AuthenticatedApiClient
 import io.rownd.android.util.LegacyMigrationApiClient
-import io.rownd.android.util.LegacyTokenApiClient
 import io.rownd.android.util.RowndContext
 import io.rownd.android.util.RowndException
 import io.rownd.android.util.SuperTokensSessionBridge
@@ -63,9 +62,6 @@ class AuthRepo @Inject constructor() {
 
     @Inject
     lateinit var authenticatedApiClient: AuthenticatedApiClient
-
-    @Inject
-    lateinit var legacyTokenApiClient: LegacyTokenApiClient
 
     @Inject
     lateinit var legacyMigrationApiClient: LegacyMigrationApiClient
@@ -147,9 +143,12 @@ class AuthRepo @Inject constructor() {
 
     private suspend fun runLegacyMigration(context: Context) {
         val auth = stateRepo.state.value.auth
-        val token = auth.accessToken ?: return
-        if (isLikelySuperTokensToken(token)) return
-        var attempt = LegacyAttempt(migrationGeneration.incrementAndGet(), auth)
+        if (auth.accessToken?.let(::isLikelySuperTokensToken) == true) return
+        val credential = auth.refreshToken?.takeIf { it.isNotBlank() }
+            ?: auth.accessToken?.takeIf { it.isNotBlank() }
+            ?: return
+        if (isLikelySuperTokensToken(credential)) return
+        val attempt = LegacyAttempt(migrationGeneration.incrementAndGet(), auth)
         try {
             if (getUsableSuperTokensAccessToken(context) != null) {
                 finishMigration(context, attempt)
@@ -157,34 +156,6 @@ class AuthRepo @Inject constructor() {
             }
             if (!isCurrent(attempt)) return
             updateAttempt(attempt, attempt.auth.copy(isLoading = true))
-            if (isJwtExpiredWithMargin(JWT(token))) {
-                val refreshToken = attempt.auth.refreshToken
-                if (refreshToken.isNullOrEmpty()) {
-                    finishMigration(context, attempt, clearLegacy = true)
-                    return
-                }
-                val (accessToken, refreshedRefreshToken) = try {
-                    val refreshed = legacyTokenApiClient.refreshLegacyToken(refreshToken)
-                    val accessToken = refreshed.accessToken?.takeIf { it.isNotBlank() }
-                        ?: throw RowndException("Legacy refresh response missing access token")
-                    accessToken to refreshed.refreshToken
-                } catch (ex: CancellationException) {
-                    throw ex
-                } catch (ex: Exception) {
-                    Log.e("Rownd.Auth", "Legacy session refresh failed", ex)
-                    finishMigration(context, attempt, clearLegacy = true)
-                    return
-                }
-                SuperTokensSessionBridge.sessionMutationMutex.withLock {
-                    if (!isCurrent(attempt)) return
-                    if (getUsableSuperTokensAccessToken(context) == null && isCurrent(attempt)) {
-                        val rotated = attempt.auth.copy(accessToken = accessToken,
-                            refreshToken = refreshedRefreshToken ?: refreshToken)
-                        updateAttempt(attempt, rotated.copy(isLoading = true))
-                        attempt = attempt.copy(auth = rotated)
-                    }
-                }
-            }
         } catch (ex: CancellationException) {
             throw ex
         } catch (ex: Exception) {
@@ -192,13 +163,13 @@ class AuthRepo @Inject constructor() {
             finishMigration(context, attempt)
             return
         }
-        migrateLegacyAccessToken(context, attempt)
+        migrateLegacyCredential(context, attempt, credential)
     }
 
-    private suspend fun migrateLegacyAccessToken(context: Context, attempt: LegacyAttempt) {
+    private suspend fun migrateLegacyCredential(context: Context, attempt: LegacyAttempt, credential: String) {
         if (!isCurrent(attempt)) return
         val request = try {
-            prepareLegacyMigration(attempt.auth.accessToken!!)
+            prepareLegacyMigration(credential)
         } catch (ex: CancellationException) {
             throw ex
         } catch (ex: Exception) {
@@ -272,7 +243,7 @@ class AuthRepo @Inject constructor() {
         if (!valid) throw RowndException("Migration response contains malformed or expired session headers")
     }
 
-    private suspend fun prepareLegacyMigration(legacyAccessToken: String): HttpStatement {
+    private suspend fun prepareLegacyMigration(legacyCredential: String): HttpStatement {
         val st = stateRepo.state.value.appConfig.config.supertokens
         val apiDomain = st.appInfo.apiDomain.ifBlank { rowndContext.config.apiUrl }
         val apiBasePath = st.appInfo.apiBasePath ?: "/auth"
@@ -282,7 +253,7 @@ class AuthRepo @Inject constructor() {
             expectSuccess = false
             headers {
                 remove("x-rownd-app-key")
-                append(HttpHeaders.Authorization, "Bearer $legacyAccessToken")
+                append(HttpHeaders.Authorization, "Bearer $legacyCredential")
                 append("rid", "session")
                 append("fdi-version", "1.18")
                 append("st-auth-mode", "header")

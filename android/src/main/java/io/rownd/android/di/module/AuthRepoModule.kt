@@ -8,7 +8,6 @@ import io.rownd.android.models.repos.StateRepo
 import io.rownd.android.models.repos.UserRepo
 import io.rownd.android.util.AuthenticatedApiClient
 import io.rownd.android.util.LegacyMigrationApiClient
-import io.rownd.android.util.LegacyTokenApiClient
 import io.rownd.android.util.RowndContext
 
 @Module
@@ -18,7 +17,6 @@ class AuthRepoModule {
         stateRepo: StateRepo,
         userRepo: UserRepo,
         signInRepo: SignInRepo,
-        legacyTokenApiClient: LegacyTokenApiClient,
         legacyMigrationApiClient: LegacyMigrationApiClient,
         authenticatedApiClient: AuthenticatedApiClient
     ): AuthRepo {
@@ -27,7 +25,6 @@ class AuthRepoModule {
         authRepo.stateRepo = stateRepo
         authRepo.userRepo = userRepo
         authRepo.signInRepo = signInRepo
-        authRepo.legacyTokenApiClient = legacyTokenApiClient
         authRepo.legacyMigrationApiClient = legacyMigrationApiClient
         authRepo.authenticatedApiClient = authenticatedApiClient
         return authRepo
