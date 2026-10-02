@@ -115,9 +115,8 @@ class RealHubE2ETest {
         waitForText("Sign in or sign up")
         val source = requireNotNull(activeHubWebView())
 
-        onWebView()
-            .withElement(findElement(Locator.XPATH, "//button[normalize-space()='Sign in or sign up']"))
-            .perform(webClick())
+        // The handoff destroys this WebView before an Espresso webClick callback can return.
+        requireNotNull(device.findObject(By.text("Sign in or sign up"))).click()
 
         waitUntil("replacement Hub WebView") { activeHubWebView()?.let { it !== source } == true }
         assertNotSame(source, activeHubWebView())
