@@ -502,26 +502,20 @@ class RealHubE2ETest {
 
     private fun waitForResource(resourceName: String, timeoutMs: Long = 15_000) {
         val targetSelector = By.res(resourceName)
-        val deadline = SystemClock.uptimeMillis() + timeoutMs
-        fun remainingMs() = (deadline - SystemClock.uptimeMillis()).coerceAtLeast(0)
+        waitUntil("resource '$resourceName'", timeoutMs) {
+            if (device.findObject(targetSelector) != null) return@waitUntil true
 
-        while (remainingMs() > 0) {
-            if (device.findObject(targetSelector) != null) return
-
+            // The Hub-to-app transition can temporarily leave no Compose roots.
             val nodes = composeRule
                 .onAllNodesWithTag(resourceName, useUnmergedTree = true)
-                .fetchSemanticsNodes()
+                .fetchSemanticsNodes(atLeastOneRootRequired = false)
             if (nodes.isNotEmpty()) {
                 composeRule
                     .onNodeWithTag(resourceName, useUnmergedTree = true)
                     .performScrollTo()
-                return
             }
-
-            SystemClock.sleep(minOf(50, remainingMs()))
+            nodes.isNotEmpty()
         }
-
-        throw AssertionError("Timed out waiting for resource '$resourceName'")
     }
 
     private fun waitUntil(description: String, timeoutMs: Long = 15_000, condition: () -> Boolean) {
