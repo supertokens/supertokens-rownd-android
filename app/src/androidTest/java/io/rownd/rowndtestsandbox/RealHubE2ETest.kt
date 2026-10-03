@@ -182,7 +182,7 @@ class RealHubE2ETest {
         waitForSignedInApp()
         val accessTokenBeforeSignOut = requireNotNull(runBlocking { Rownd.getAccessToken() })
 
-        scenario!!.recreate()
+        recreateAppAfterHubCloses()
         waitUntil("session to restore after activity recreation") { Rownd.state.value.auth.isAuthenticated }
         assertProtectedRequestSucceeds()
 
@@ -197,7 +197,7 @@ class RealHubE2ETest {
                 !runBlocking { SuperTokensSessionBridge.doesSessionExist(context) }
         }
         assertAccessTokenRejected(accessTokenBeforeSignOut)
-        scenario!!.recreate()
+        recreateAppAfterHubCloses()
         waitForResource("e2e.action.open-auth")
         assertFalse(Rownd.state.value.auth.isAuthenticated)
         assertFalse(runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
@@ -245,6 +245,16 @@ class RealHubE2ETest {
         }
         assertEquals(nickname, getBackendUserData().getString("nickname"))
         assertEquals(nickname, Rownd.state.value.user.data["nickname"])
+    }
+
+    private fun recreateAppAfterHubCloses() {
+        // ActivityScenario restores the pre-recreation lifecycle state. Recreating while
+        // the Hub still covers the app can restore PAUSED behind EmptyFloatingActivity.
+        waitUntil("Hub to close and app to resume before recreation") {
+            !hasActiveBottomSheetActivity() && scenario!!.state == Lifecycle.State.RESUMED
+        }
+        scenario!!.recreate()
+        scenario!!.moveToState(Lifecycle.State.RESUMED)
     }
 
     private fun launchApp() {
