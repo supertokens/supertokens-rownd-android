@@ -1,5 +1,12 @@
 
 
+## [0.1.17](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.15...v0.1.17) (2026-10-03)
+
+
+### Bug Fixes
+
+* restore published release version and limit version bump targets ([b954785](https://github.com/supertokens/supertokens-rownd-android/commit/b9547852513b32c0be68ee0aae27328f480ff777))
+
 ## [0.1.16](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.15...v0.1.16) (2026-10-01)
 
 ## [0.1.15](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.14...v0.1.15) (2026-09-29)
