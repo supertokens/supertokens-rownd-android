@@ -115,8 +115,19 @@ class RealHubE2ETest {
         waitForText("Sign in or sign up")
         val source = requireNotNull(activeHubWebView())
 
-        // The handoff destroys this WebView before an Espresso webClick callback can return.
-        requireNotNull(device.findObject(By.text("Sign in or sign up"))).click()
+        // Target the DOM rather than moving sheet coordinates. The handoff destroys this
+        // WebView, so observe the replacement below instead of awaiting a JS callback.
+        instrumentation.runOnMainSync {
+            source.evaluateJavascript(
+                """
+                    document.evaluate(
+                        "//button[normalize-space()='Sign in or sign up']",
+                        document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+                    ).singleNodeValue.click();
+                """.trimIndent(),
+                null,
+            )
+        }
 
         waitUntil("replacement Hub WebView") { activeHubWebView()?.let { it !== source } == true }
         assertNotSame(source, activeHubWebView())
