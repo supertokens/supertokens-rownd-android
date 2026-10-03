@@ -1,5 +1,7 @@
 
 
+## [0.1.16](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.15...v0.1.16) (2026-10-01)
+
 ## [0.1.15](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.14...v0.1.15) (2026-09-29)
 
 

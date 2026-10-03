@@ -16,7 +16,6 @@
         "in": "VERSION",
         "out": [
             "android/versioning.gradle",
-            "README.md",
             "VERSION"
         ]
       }
