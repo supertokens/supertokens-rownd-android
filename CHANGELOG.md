@@ -1,5 +1,13 @@
 
 
+## [0.1.18](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.17...v0.1.18) (2026-10-16)
+
+
+### Bug Fixes
+
+* omit default Apple callback URL from Hub configuration ([3ffcb52](https://github.com/supertokens/supertokens-rownd-android/commit/3ffcb52b2381507740386e384ee657df1bc2dc23))
+* resume email changes and refresh verified native profiles ([430d05f](https://github.com/supertokens/supertokens-rownd-android/commit/430d05ff20b1c70932c691106e6e0b253429c7d6))
+
 ## [0.1.17](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.15...v0.1.17) (2026-10-03)
 
 
