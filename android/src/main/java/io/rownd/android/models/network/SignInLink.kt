@@ -176,7 +176,8 @@ class SignInLinkApi @Inject constructor() {
         val hubUrl = toHubUrl(uri) ?: return false
         Log.d("Rownd.SignInLink", "Opening deep link in hub: ${uri?.path}")
         config.pendingHubDeepLinkUrl = hubUrl
-        Rownd.displayHub(HubPageSelector.DeepLink)
+        val continuation = Rownd.emailChangeContinuation.claimCallback(hubUrl)
+        Rownd.displayHub(HubPageSelector.DeepLink, emailChangeRequestId = continuation?.requestId)
         return true
     }
 

@@ -52,8 +52,9 @@ object SuperTokensSessionBridge {
 
     // Invalidation, local cleanup, and compatibility state reset are synchronous with native
     // writes. Network revocation uses the captured session and must never clear current storage.
-    internal fun beginSignOut(context: Context?, resetAuthState: () -> Unit): SignedOutSession? =
+    internal fun beginSignOut(context: Context?, isCurrent: () -> Boolean = { true }, resetAuthState: () -> Unit): SignedOutSession? =
         synchronized(sessionCommitLock) {
+            if (!isCurrent()) return@synchronized null
             signOutGeneration.incrementAndGet()
             val session = context?.let {
                 sharedPrefs(it).getString(ACCESS_TOKEN_STORAGE_KEY, null)?.let { token ->
@@ -332,11 +333,15 @@ object SuperTokensSessionBridge {
 
     // MARK: - Rownd compatibility state sync
 
-    suspend fun syncRowndAuthStateFromSuperTokens(context: Context, store: io.rownd.android.models.Store<io.rownd.android.models.repos.GlobalState, StateAction>): Boolean {
+    suspend fun syncRowndAuthStateFromSuperTokens(
+        context: Context,
+        store: io.rownd.android.models.Store<io.rownd.android.models.repos.GlobalState, StateAction>,
+        isCurrent: () -> Boolean = { true },
+    ): Boolean {
         val generation = currentSignOutGeneration()
         val accessToken = getAccessToken(context) ?: return false
         return synchronized(sessionCommitLock) {
-            if (generation != currentSignOutGeneration() ||
+            if (!isCurrent() || generation != currentSignOutGeneration() ||
                 sharedPrefs(context).getString(ACCESS_TOKEN_STORAGE_KEY, null) != accessToken) return@synchronized false
             store.dispatch(StateAction.SetAuth(AuthState(accessToken = accessToken, refreshToken = null)))
             true

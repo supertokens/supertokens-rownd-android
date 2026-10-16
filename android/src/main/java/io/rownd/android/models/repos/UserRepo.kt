@@ -38,9 +38,9 @@ class UserRepo @Inject constructor() {
         stateRepo.getStore().dispatch(StateAction.SetUserIsLoading(value))
     }
 
-    internal fun loadUserAsync(): Deferred<User?> {
+    internal fun loadUserAsync(isCurrentAuthentication: () -> Boolean = { true }): Deferred<User?> {
         return CoroutineScope(Dispatchers.IO).async {
-            loadUserIfCurrent { true }
+            loadUserIfCurrent(isCurrentAuthentication)
         }
     }
 

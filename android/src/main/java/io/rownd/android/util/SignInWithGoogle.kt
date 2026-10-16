@@ -107,6 +107,7 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
         hint: String?,
         wasUserInitiated: Boolean? = true
     ) {
+        rowndContext.client?.emailChangeContinuation?.clear()
         rowndContext.client?.signInHandoffRevision?.incrementAndGet()
         val tracer = rowndContext.telemetry?.getTracer()
         val span = rowndContext.telemetry?.startSpan("signInWithGoogle")
@@ -210,6 +211,61 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
                 }
             }
         }
+    }
+
+    internal fun signInForEmailChange(isCurrent: () -> Boolean, completed: () -> Boolean, failed: (String?) -> Unit) {
+        val clientId = getGoogleConfig()?.takeIf { it.enabled }?.clientId?.takeIf { it.isNotBlank() } ?: return
+        val activity = rowndContext.client?.appHandleWrapper?.activity?.get() ?: return
+        val signOutGeneration = SuperTokensSessionBridge.currentSignOutGeneration()
+        fun ownsRequest() = isCurrent() && signOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration()
+        // Explicit chooser only: no auto-select, One Tap or incoming-session linking.
+        val request = GetCredentialRequest.Builder().addCredentialOption(
+            GetSignInWithGoogleOption.Builder(clientId).setNonce(UUID.randomUUID().toString()).build(),
+        ).build()
+        CoroutineScope(Dispatchers.Main).launch {
+            try {
+                if (!ownsRequest()) return@launch
+                val result = CredentialManager.create(activity).getCredential(activity, request)
+                if (!ownsRequest()) return@launch
+                val credential = result.credential as? CustomCredential ?: return@launch
+                if (credential.type != GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) return@launch
+                val token = GoogleIdTokenCredential.createFrom(credential.data).idToken
+                if (!completeEmailChangeGoogleSignIn(token, ::ownsRequest, completed) && ownsRequest()) {
+                    failed("Sign in to an existing account to continue this email change")
+                }
+            } catch (error: Exception) {
+                if (ownsRequest()) {
+                    emitSignInFailed(error.message)
+                    failed(if (error is GetCredentialCancellationException) null else "Unable to sign in. Please try again.")
+                }
+            }
+        }
+    }
+
+    internal suspend fun completeEmailChangeGoogleSignIn(idToken: String, isCurrent: () -> Boolean, completed: () -> Boolean): Boolean {
+        if (!isCurrent()) return false
+        val signOutGeneration = SuperTokensSessionBridge.currentSignOutGeneration()
+        val response = authRepo.exchangeGoogleIdToken(idToken, RowndSignInIntent.SignIn,
+            emailChangeSignIn = true, isCurrent = isCurrent)
+        if (!isCurrent() || signOutGeneration != SuperTokensSessionBridge.currentSignOutGeneration()) return false
+        if (response.rownd?.userType == RowndSignInUserType.NewUser) {
+            emitSignInFailed("Sign in to an existing account to continue this email change")
+            return false
+        }
+        val client = rowndContext.client ?: return false
+        val adoptedToken = client.state.value.auth.accessToken
+        // Successful adoption owns hydration even after the sign-in presentation is retired.
+        client.userRepo.loadUserAsync {
+            adoptedToken != null && signOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration() &&
+                client.state.value.auth.accessToken == adoptedToken
+        }
+        val accepted = completed()
+        if (accepted) rowndContext.eventEmitter?.emit(RowndEvent(
+            event = RowndEventType.SignInCompleted,
+            data = signInCompletedEventData(method = RowndSignInType.Google,
+                userType = response.rownd?.userType, appVariantUserType = response.rownd?.appVariantUserType),
+        ))
+        return accepted
     }
 
     private suspend fun handleSignInWithGoogle(result: GetCredentialResponse) {
@@ -365,6 +421,10 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
     }
 
     internal fun showGoogleOneTap() {
+        if (rowndContext.client?.emailChangeContinuation?.read() != null) {
+            isDisplayingOneTap = false
+            return
+        }
         isDisplayingOneTap = true
         val googleSignInMethodConfig = getGoogleConfig()
 
@@ -485,6 +545,7 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
                 if (
                     !isDisplayingOneTap &&
                     !hasDisplayedOneTap &&
+                    rowndContext.client?.emailChangeContinuation?.read() == null &&
                     !it.auth.isLoading &&
                     !it.auth.isAuthenticated &&
                     it.appConfig.config.hub.auth.signInMethods.google.clientId != "" &&
@@ -503,6 +564,7 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
     }
 
     internal fun isOneTapRequestedAndNotDisplayedYet(): Boolean {
+        if (rowndContext.client?.emailChangeContinuation?.read() != null) return false
         val google = getGoogleConfig() ?: return false
 
         return google.enabled && google.oneTap.mobileApp.autoPrompt && google.oneTap.mobileApp.delay == 0 && !hasDisplayedOneTap

@@ -111,7 +111,27 @@ data class SignInMessage(
 data class SignInPayload(
     @SerialName("was_user_initiated")
     var wasUserInitiated: Boolean? = null,
+    @SerialName("email_change")
+    var emailChange: EmailChangeDescriptor? = null,
 )
+
+@Serializable
+data class EmailChangeDescriptor(
+    val version: Int,
+    @SerialName("request_id") val requestId: String,
+    @SerialName("local_draft") val localDraft: LocalDraft,
+    @SerialName("expires_at") val expiresAt: Long,
+) {
+    @Serializable
+    data class LocalDraft(
+        @SerialName("owner_id") val ownerId: String,
+        @SerialName("tenant_id") val tenantId: String,
+        val configuration: String,
+        val changes: Changes,
+    )
+    @Serializable
+    data class Changes(val email: String)
+}
 
 @Serializable
 data class SignOutMessage(
@@ -236,6 +256,30 @@ object RowndHubInteropMessageSerializer : JsonContentPolymorphicSerializer<Rownd
             "authentication" -> AuthenticationMessage.serializer()
             "sign_out" -> SignOutMessage.serializer()
             "sign_in" -> {
+                val payload = element.jsonObject["payload"] as? JsonObject
+                if (payload != null && !setOf("was_user_initiated", "email_change").containsAll(payload.keys)) {
+                    throw SerializationException("Invalid sign_in fields")
+                }
+                val descriptor = (element.jsonObject["payload"] as? JsonObject)?.get("email_change")
+                if (descriptor != null && descriptor !is JsonObject) throw SerializationException("Invalid email_change")
+                if (descriptor is JsonObject && (descriptor.keys != setOf("version", "request_id", "local_draft", "expires_at") ||
+                    descriptor.toString().toByteArray(Charsets.UTF_8).size > 32 * 1024)) {
+                    throw SerializationException("Invalid email_change fields")
+                }
+                if (descriptor is JsonObject && (listOf("version", "expires_at").any {
+                    (descriptor[it] as? JsonPrimitive)?.isString != false
+                } || (descriptor["request_id"] as? JsonPrimitive)?.isString != true || descriptor["local_draft"] !is JsonObject)) {
+                    throw SerializationException("Invalid email_change field types")
+                }
+                if (descriptor is JsonObject) {
+                    val draft = descriptor["local_draft"] as JsonObject
+                    val changes = draft["changes"] as? JsonObject
+                    if (draft.keys != setOf("owner_id", "tenant_id", "configuration", "changes") ||
+                        listOf("owner_id", "tenant_id", "configuration").any { (draft[it] as? JsonPrimitive)?.isString != true } ||
+                        changes?.keys != setOf("email") || (changes["email"] as? JsonPrimitive)?.isString != true) {
+                        throw SerializationException("Invalid local email form")
+                    }
+                }
                 val userInitiated = (element.jsonObject["payload"] as? JsonObject)?.get("was_user_initiated")
                 if (userInitiated is JsonPrimitive && userInitiated.isString) {
                     throw SerializationException("was_user_initiated must be a boolean")

@@ -306,6 +306,7 @@ class RowndClient(
     }
 
     fun signOut(scope: RowndSignOutScope) {
+        emailChangeContinuation.clear()
         signInHandoffRevision.incrementAndGet()
         when (scope) {
             RowndSignOutScope.Local -> signOut()
@@ -314,6 +315,7 @@ class RowndClient(
     }
 
     fun signOut() {
+        emailChangeContinuation.clear()
         signInHandoffRevision.incrementAndGet()
         val revocationUrl = authRepo.sessionRevocationUrl()
         val context = config.applicationContext ?: appHandleWrapper?.app?.get()?.applicationContext
@@ -352,7 +354,25 @@ class RowndClient(
     }
 
     fun manageAccount() {
-        displayHub(HubPageSelector.ManageAccount)
+        displayHub(HubPageSelector.ManageAccount, emailChangeRequestId =
+            emailChangeContinuation.read()?.takeIf { it.phase == "resume" }?.descriptor?.requestId)
+    }
+
+    internal val emailChangeContinuation = io.rownd.android.util.EmailChangeContinuation { config }
+
+    internal fun beginSignOutForEmailChange(context: Context, isCurrent: () -> Boolean): Boolean {
+        val revocationUrl = authRepo.sessionRevocationUrl()
+        var accepted = false
+        val session = SuperTokensSessionBridge.beginSignOut(context, isCurrent) {
+            accepted = true
+            store.dispatch(StateAction.SetAuth(AuthState()))
+            store.dispatch(StateAction.SetUser(User()))
+        }
+        if (session != null) CoroutineScope(Dispatchers.IO).launch {
+            runCatching { authRepo.revokeSignedOutSession(session, revocationUrl) }
+                .onFailure { Log.w("Rownd", "Remote session revocation unconfirmed", it) }
+        }
+        return accepted
     }
 
     @Suppress("unused")
@@ -412,17 +432,19 @@ class RowndClient(
     // Internal stuff
     internal fun displayHub(
         targetPage: HubPageSelector,
-        jsFnOptions: RowndSignInOptionsBase? = null
+        jsFnOptions: RowndSignInOptionsBase? = null,
+        emailChangeRequestId: String? = null,
     ) {
-        signInHandoffRevision.incrementAndGet()
+        if (emailChangeRequestId == null) emailChangeContinuation.clear()
+        val presentationRevision = signInHandoffRevision.incrementAndGet()
         if (Looper.myLooper() != Looper.getMainLooper()) {
             Handler(Looper.getMainLooper()).post {
-                displayHub(targetPage, jsFnOptions)
+                if (presentationRevision == signInHandoffRevision.get()) displayHub(targetPage, jsFnOptions, emailChangeRequestId)
             }
             return
         }
 
-        pendingHubDisplayRequest = HubDisplayRequest(targetPage, jsFnOptions)
+        pendingHubDisplayRequest = HubDisplayRequest(targetPage, jsFnOptions, emailChangeRequestId)
         displayPendingHubRequest()
     }
 
@@ -476,7 +498,7 @@ class RowndClient(
 
             val jsFnOptionsStr = request.jsFnOptions?.toJsonString()
             val context = appHandleWrapper?.app?.get()?.applicationContext ?: return
-            RowndBottomSheetActivity.launch(context, request.targetPage, jsFnOptionsStr)
+            RowndBottomSheetActivity.launch(context, request.targetPage, jsFnOptionsStr, request.emailChangeRequestId)
             pendingHubDisplayRequest = null
         } catch (ex: Exception) {
             Log.w("Rownd", "Failed to trigger Rownd bottom sheet for target: ${request.targetPage}", ex)
@@ -504,6 +526,7 @@ class RowndClient(
     private data class HubDisplayRequest(
         val targetPage: HubPageSelector,
         val jsFnOptions: RowndSignInOptionsBase?,
+        val emailChangeRequestId: String?,
     )
 
     internal fun getDeviceSize(context: Context): DisplayMetrics {

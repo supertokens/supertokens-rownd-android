@@ -80,7 +80,7 @@ dependencies {
     if (useLocalRowndSdk) {
         implementation project(':android')
     } else {
-        implementation 'com.github.supertokens:supertokens-rownd-android:v0.0.1-beta.4'
+        implementation 'com.github.supertokens:supertokens-rownd-android:0.1.17'
     }
 
     // Google Play instant

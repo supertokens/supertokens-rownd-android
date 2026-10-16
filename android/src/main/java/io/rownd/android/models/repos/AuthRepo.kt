@@ -315,6 +315,8 @@ class AuthRepo @Inject constructor() {
         intent: RowndSignInIntent?,
         context: Context = rowndContext.client?.appHandleWrapper?.app?.get()?.applicationContext
             ?: throw RowndException("No application context available"),
+        emailChangeSignIn: Boolean = false,
+        isCurrent: () -> Boolean = { true },
     ): SignInUpResponse {
         val st = stateRepo.state.value.appConfig.config.supertokens
         val apiDomain = st.appInfo.apiDomain
@@ -333,10 +335,15 @@ class AuthRepo @Inject constructor() {
             setBody(GoogleSignInUpBody(
                 thirdPartyId = "google",
                 oAuthTokens = mapOf("id_token" to idToken),
+                intent = if (emailChangeSignIn) "sign_in" else null,
+                shouldTryLinkingWithSessionUser = if (emailChangeSignIn) false else null,
             ))
         }.body<SignInUpResponse>()
 
-        SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(context, stateRepo.getStore())
+        if (emailChangeSignIn) check(response.status == "OK") { "Provider sign-in did not succeed" }
+        if (!isCurrent()) throw kotlinx.coroutines.CancellationException("Sign-in presentation was superseded")
+        val adopted = SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(context, stateRepo.getStore(), isCurrent)
+        if (emailChangeSignIn) check(adopted) { "Native session was not adopted" }
         signInRepo.setLastSignInMethod("google")
 
         return response
@@ -400,5 +407,7 @@ class AuthRepo @Inject constructor() {
     private data class GoogleSignInUpBody(
         val thirdPartyId: String,
         val oAuthTokens: Map<String, String>,
+        val intent: String? = null,
+        val shouldTryLinkingWithSessionUser: Boolean? = null,
     )
 }

@@ -9,6 +9,8 @@ import { SignJWT, jwtVerify } from "jose";
 import SuperTokens from "supertokens-node";
 import { errorHandler, middleware } from "supertokens-node/framework/express";
 import Passwordless from "supertokens-node/recipe/passwordless";
+import EmailVerification from "supertokens-node/recipe/emailverification";
+import AccountLinking from "supertokens-node/recipe/accountlinking";
 import Session from "supertokens-node/recipe/session";
 import { verifySession } from "supertokens-node/recipe/session/framework/express";
 import ThirdParty from "supertokens-node/recipe/thirdparty";
@@ -26,6 +28,7 @@ type MagicLinkCapture = {
   phoneNumber?: string;
   urlWithLinkCode?: string;
   userInputCode?: string;
+  emailVerifyLink?: string;
 };
 
 type HarnessCounters = {
@@ -33,6 +36,8 @@ type HarnessCounters = {
   migrate: number;
   passwordlessConsume: number;
   stRefresh: number;
+  passwordlessEmail: number;
+  verificationEmail: number;
 };
 
 type RequestCapture = {
@@ -48,6 +53,7 @@ type HarnessState = {
   counters: HarnessCounters;
   passwordlessConsumeStatuses: number[];
   requestLog: RequestCapture[];
+  emailUpdates: Array<{ statusCode: number }>;
   refreshSimulationCompleted: boolean;
   refreshUnavailable: boolean;
   userData: Record<string, unknown>;
@@ -110,9 +116,10 @@ function createEmptyState(): HarnessState {
   return {
     captures: new Map<string, MagicLinkCapture>(),
     legacySessions: new Map<string, LegacySessionRecord>(),
-    counters: { legacyRefresh: 0, migrate: 0, passwordlessConsume: 0, stRefresh: 0 },
+    counters: { legacyRefresh: 0, migrate: 0, passwordlessConsume: 0, stRefresh: 0, passwordlessEmail: 0, verificationEmail: 0 },
     passwordlessConsumeStatuses: [],
     requestLog: [],
+    emailUpdates: [],
     refreshSimulationCompleted: false,
     refreshUnavailable: false,
     userData: { user_id: "harness-user", email: "harness-user@example.com" },
@@ -196,9 +203,11 @@ function getAllCounters() {
       acc.migrate += s.counters.migrate;
       acc.passwordlessConsume += s.counters.passwordlessConsume;
       acc.stRefresh += s.counters.stRefresh;
+      acc.passwordlessEmail += s.counters.passwordlessEmail;
+      acc.verificationEmail += s.counters.verificationEmail;
       return acc;
     },
-    { legacyRefresh: 0, migrate: 0, passwordlessConsume: 0, stRefresh: 0 },
+    { legacyRefresh: 0, migrate: 0, passwordlessConsume: 0, stRefresh: 0, passwordlessEmail: 0, verificationEmail: 0 },
   );
 }
 
@@ -293,6 +302,7 @@ async function ensureSTUser(
 }
 
 export async function startIntegrationHarness(): Promise<AndroidIntegrationHarness> {
+  const realEmailChanges = process.env.ANDROID_REAL_EMAIL_CHANGES === "1";
   resetState();
   const hubUrl =
     process.env.ANDROID_HUB_URL ||
@@ -334,6 +344,13 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     .start();
 
   const coreConnectionURI = `http://${coreContainer.getHost()}:${coreContainer.getMappedPort(3567)}`;
+  if (realEmailChanges) {
+    const license = await fetch(`${coreConnectionURI}/ee/license`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ licenseKey: "N2uEOdEzd1XZZ5VBSTGYaM7Ia4s8wAqRWFAxLqTYrB6GQ=vssOLo3c=PkFgcExkaXs=IA-d9UWccoNKsyUgNhOhcKtM1bjC5OLrYRpTAgN-2EbKYsQGGQRQHuUN4EO1V" }),
+    });
+    if (!license.ok) throw new Error(`Account linking license failed: ${license.status}`);
+  }
   const app = express();
 
   const started = await new Promise<{ server: Server; port: number }>(
@@ -378,6 +395,16 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       websiteDomain: hubUrl,
     },
     recipeList: [
+      ...(realEmailChanges ? [
+        AccountLinking.init({ shouldDoAutomaticAccountLinking: async () => ({ shouldAutomaticallyLink: false }) }),
+        EmailVerification.init({ mode: "OPTIONAL", emailDelivery: { override: (original) => ({
+          ...original,
+          sendEmail: async (input) => {
+            harnessStates.get("default")!.counters.verificationEmail++;
+            harnessStates.get("default")!.captures.set(input.user.email, { email: input.user.email, emailVerifyLink: input.emailVerifyLink });
+          },
+        }) } }),
+      ] : []),
       Session.init(),
       UserMetadata.init(),
       ThirdParty.init({
@@ -419,6 +446,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
           service: {
             sendEmail: async (input: any) => {
               const state = harnessStates.get("default") || createEmptyState();
+              state.counters.passwordlessEmail++;
               harnessStates.set("default", state);
               state.captures.set(input.email, {
                 email: input.email,
@@ -446,6 +474,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     experimental: {
       plugins: [
         RowndMigrationPlugin.init({
+          ...(realEmailChanges ? { emailChange: { maxSessionAgeSeconds: process.env.EMAIL_CHANGE_SESSION_AGE_POLICY === "null" ? null : 600 } } : {}),
           enableDebugLogs: true,
           rowndAppKey: APP_KEY,
           rowndAppSecret: "rownd-e2e-secret-rownd-e2e-secret",
@@ -453,6 +482,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
             mobile: `${hubUrl}/`,
           },
           schema: {
+            ...(realEmailChanges ? { email: { display_name: "Email", type: "string" as const, owned_by: "user" as const, user_visible: true } } : {}),
             nickname: {
               display_name: "Nickname",
               type: "string",
@@ -474,6 +504,8 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     },
   });
 
+  // Reset the plugin's separate validator before installing fixture authentication.
+  setRowndClient(undefined);
   setRowndClient({
     validateToken: async (token: string) => {
       const legacySession = findLegacySessionByRefreshToken(token);
@@ -555,6 +587,9 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       "rowndPendingVerificationId",
       "apiDomain",
       "apiBasePath",
+      "appKey",
+      "tenantId",
+      "displayContext",
     ];
     const params = new URLSearchParams();
     for (const name of names) {
@@ -592,6 +627,11 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     }
     if (req.path === "/auth/plugin/rownd/user") {
       recordRequest(req as express.Request);
+      if (req.method === "PUT" && typeof req.body?.data?.email === "string") {
+        const update = { statusCode: 0 };
+        state.emailUpdates.push(update);
+        res.on("finish", () => { update.statusCode = res.statusCode; });
+      }
     }
     next();
   });
@@ -603,8 +643,9 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       app: {
         id: APP_ID,
         icon: "",
-        user_verification_fields: [],
+        user_verification_fields: realEmailChanges ? ["email"] : [],
         schema: {
+          ...(realEmailChanges ? { email: { display_name: "Email", type: "string", owned_by: "user", user_visible: true } } : {}),
           nickname: {
             display_name: "Nickname",
             type: "string",
@@ -646,6 +687,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       hubUrl,
       appId: APP_ID,
       appKey: APP_KEY,
+      emailChangeSessionMaxAgeSeconds: process.env.EMAIL_CHANGE_SESSION_AGE_POLICY === "null" ? null : 600,
       supertokens: {
         appInfo: {
           apiDomain: publicUrl,
@@ -729,6 +771,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
 
   app.post(
     "/auth/user/email/verify",
+    (_req, _res, next) => realEmailChanges ? next("route") : next(),
     verifySession() as any,
     async (req: any, res) => {
       const pendingId = String(req.query.rowndPendingVerificationId || "");
@@ -759,6 +802,17 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   );
 
   app.use(middleware());
+
+  app.get("/test/email-change-session", async (req, res) => {
+    const session = await Session.getSessionInformation(String(req.query.handle));
+    if (!session) { res.status(404).json({ status: "NO_SESSION" }); return; }
+    const user = await SuperTokens.getUser(session.userId);
+    const metadata = (await UserMetadata.getUserMetadata(session.userId)).metadata;
+    res.json({ userId: user?.id, timeCreated: session.timeCreated, tenantId: session.tenantId,
+      loginMethods: user?.loginMethods.map((method) => ({ recipeId: method.recipeId, email: method.email, verified: method.verified })),
+      pending: (metadata.rownd_pending_verification as any[] | undefined)?.map(({ value, status }) => ({ value, status })) ?? [],
+    });
+  });
 
   app.get("/auth/plugin/rownd/user", verifySession() as any, (req, res) => {
     res.json({
@@ -862,6 +916,10 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
 
   app.get("/counters", (req, res) => {
     res.json(getState(req).counters);
+  });
+
+  app.get("/test/email-updates", (req, res) => {
+    res.json({ updates: getState(req).emailUpdates });
   });
 
   app.get("/counters/all", (_req, res) => {

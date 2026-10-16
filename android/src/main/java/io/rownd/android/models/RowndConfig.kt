@@ -64,7 +64,7 @@ data class RowndConfig(
     @Transient
     lateinit var signInRepo: SignInRepo
 
-    suspend fun hubLoaderUrl(): String {
+    suspend fun hubLoaderUrl(restoreSession: Boolean = true): String {
         consumePendingHubDeepLinkUrl()?.let { return it }
 
         val jsonConfig = json.encodeToString(serializer(), this)
@@ -81,7 +81,7 @@ data class RowndConfig(
         uriBuilder.appendQueryParameter("sign_in", signInInitStr)
 
         try {
-            val authState = authRepo.getLatestAuthState() ?: AuthState()
+            val authState = if (restoreSession) authRepo.getLatestAuthState() ?: AuthState() else AuthState()
             authState.toRphInitHash(userRepo, applicationContext)?.let { rphInitStr ->
                 uriBuilder.encodedFragment("rph_init=$rphInitStr")
             }

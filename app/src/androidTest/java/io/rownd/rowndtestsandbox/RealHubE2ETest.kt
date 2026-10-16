@@ -16,6 +16,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.web.sugar.Web.onWebView
 import androidx.test.espresso.web.webdriver.DriverAtoms.findElement
 import androidx.test.espresso.web.webdriver.DriverAtoms.webClick
+import androidx.test.espresso.web.webdriver.DriverAtoms.clearElement
 import androidx.test.espresso.web.webdriver.DriverAtoms.webKeys
 import androidx.test.espresso.web.webdriver.DriverAtoms.webScrollIntoView
 import androidx.test.espresso.web.webdriver.Locator
@@ -62,6 +63,7 @@ class RealHubE2ETest {
 
     @Before
     fun resetAppAndHarness() {
+        if (InstrumentationRegistry.getArguments().getString("preserveDraft") == "true") return
         postHarness("/reset", "{}")
         val cookiesRemoved = AtomicBoolean(false)
         instrumentation.runOnMainSync {
@@ -109,6 +111,145 @@ class RealHubE2ETest {
     }
 
     @Test
+    fun draftEmailVerificationReplacesSessionThroughReleasedSdk() {
+        qualifyDraftEmailChange(secureAged = false)
+    }
+
+    @Test
+    fun secureAgedEmailChangeUsesExistingAccountSignInThenVerifies() {
+        assertEquals("Secure qualification requires the newly frozen numeric-policy harness", 600,
+            getHarness("/config").getInt("emailChangeSessionMaxAgeSeconds"))
+        qualifyDraftEmailChange(secureAged = true)
+    }
+
+    private fun qualifyDraftEmailChange(secureAged: Boolean) {
+        launchApp()
+        val email = uniqueEmail("draft-old")
+        val destination = uniqueEmail("draft-new")
+        openEmailChallenge(email)
+        submitOtp(waitForCapture(email).getString("userInputCode"))
+        waitForSignedInApp()
+        val originalAccessToken = requireNotNull(runBlocking { Rownd.getAccessToken() })
+        val originalHandle = requireNotNull(sessionHandle(originalAccessToken))
+        val original = getHarness("/test/email-change-session?handle=$originalHandle")
+        val minimumAge = InstrumentationRegistry.getArguments().getString("minimumSessionAgeSeconds")?.toLong() ?: if (secureAged) 605L else 0L
+        if (secureAged) assertTrue("Actual aged qualification must exceed the numeric 600-second gate", minimumAge > 600)
+        val remaining = minimumAge * 1000 - (System.currentTimeMillis() - original.getLong("timeCreated"))
+        if (remaining > 0) SystemClock.sleep(remaining)
+        assertTrue(System.currentTimeMillis() - original.getLong("timeCreated") >= minimumAge * 1000)
+        println("DRAFT_EMAIL_INITIATION coreCreatedAt=${original.getLong("timeCreated")} ageMs=${System.currentTimeMillis() - original.getLong("timeCreated")}")
+        clickResource("e2e.action.manage-account")
+        waitForWebElement("[data-testid='rownd-ui-profile-field-email']")
+        onWebView().withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-profile-field-email']"))
+            .perform(clearElement()).perform(webKeys(destination))
+        onWebView().withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-profile-save']"))
+            .perform(webScrollIntoView()).perform(webClick())
+        waitForText("Confirm your email change")
+        waitForText("You are about to change your email address to $destination. Please confirm this action.")
+        assertEquals(email, getBackendUserData().getString("email"))
+        onWebView().withElement(findElement(Locator.XPATH, "//button[normalize-space()='Continue']")).perform(webClick())
+        var verificationSessionHandle = originalHandle
+        var verificationAccessToken = originalAccessToken
+        if (secureAged) {
+            waitForText("Please sign in again to confirm it’s you before changing your email address.")
+            assertEquals(0, harnessCounters().getInt("verificationEmail"))
+            val rejectedUpdates = getHarness("/test/email-updates").getJSONArray("updates")
+            assertEquals(1, rejectedUpdates.length())
+            assertEquals(403, rejectedUpdates.getJSONObject(0).getInt("statusCode"))
+            waitUntil("S0 cleared before normal sign-in") { !Rownd.state.value.auth.isAuthenticated }
+            assertEquals(0, harnessCounters().getInt("verificationEmail"))
+            enterEmailChallenge(email)
+            assertEquals(0, harnessCounters().getInt("verificationEmail"))
+            submitOtp(waitForCapture(email).getString("userInputCode"))
+            waitForText("Verify your new email")
+            verificationAccessToken = requireNotNull(runBlocking { Rownd.getAccessToken() })
+            verificationSessionHandle = requireNotNull(sessionHandle(verificationAccessToken))
+            assertFalse(originalHandle == verificationSessionHandle)
+            val resumed = getHarness("/test/email-change-session?handle=$verificationSessionHandle")
+            assertEquals(original.getString("userId"), resumed.getString("userId"))
+            assertEquals("public", resumed.getString("tenantId"))
+            println("SECURE_EMAIL_SR_ADOPTED sameOwner=true newHandle=true destinationMailAfterExistingAccountSignIn=true")
+        }
+        waitForText("Verify your new email")
+        waitForText("We have sent a confirmation email to the $destination address. Click on the email confirmation link to finalize the process.")
+        assertEquals(email, getBackendUserData().getString("email"))
+        assertEquals(verificationSessionHandle, sessionHandle(runBlocking { Rownd.getAccessToken() }))
+        assertEquals("public", original.getString("tenantId"))
+        assertEquals(if (secureAged) 2 else 1, harnessCounters().getInt("passwordlessConsume"))
+        val updates = getHarness("/test/email-updates").getJSONArray("updates")
+        assertEquals("Initial PUT plus only the required same-owner retry", if (secureAged) 2 else 1, updates.length())
+        if (secureAged) assertEquals(403, updates.getJSONObject(0).getInt("statusCode"))
+        assertEquals(200, updates.getJSONObject(updates.length() - 1).getInt("statusCode"))
+        val pending = getHarness("/test/email-change-session?handle=$verificationSessionHandle").getJSONArray("pending")
+        assertEquals(1, pending.length())
+        assertEquals(destination, pending.getJSONObject(0).getString("value"))
+        assertEquals("PENDING", pending.getJSONObject(0).getString("status"))
+        assertEquals(1, harnessCounters().getInt("verificationEmail"))
+        assertEquals(if (secureAged) 2 else 1, harnessCounters().getInt("passwordlessEmail"))
+        val link = Uri.parse(waitForCapture(destination).getString("emailVerifyLink"))
+        val callback = Uri.Builder().scheme(BuildConfig.DEEP_LINK_SCHEME).authority("account")
+            .appendPath("verify-email").encodedQuery(link.encodedQuery).build()
+        context.getSharedPreferences("draft-email-qualification", 0).edit()
+            .putString("callback", callback.toString()).putString("destination", destination)
+            .putString("originalHandle", verificationSessionHandle).putString("owner", original.getString("userId")).commit()
+        if (InstrumentationRegistry.getArguments().getString("prepareDraftOnly") == "true") return
+        dispatchVerificationThroughChrome(callback)
+        waitForText("Email verified")
+        val replacementHandle = requireNotNull(sessionHandle(runBlocking { Rownd.getAccessToken() }))
+        assertFalse(verificationSessionHandle == replacementHandle)
+        val replacement = getHarness("/test/email-change-session?handle=$replacementHandle")
+        assertEquals(original.getString("userId"), replacement.getString("userId"))
+        assertEquals("public", replacement.getString("tenantId"))
+        assertAccessTokenRejected(originalAccessToken)
+        if (secureAged) assertAccessTokenRejected(verificationAccessToken)
+        assertFalse(runBlocking { SuperTokensSessionBridge.getRefreshToken(context) }.isNullOrEmpty())
+        assertFalse(SuperTokensSessionBridge.getFrontToken(context).isNullOrEmpty())
+        assertEquals(0, replacement.getJSONArray("pending").length())
+        assertEquals(destination, getBackendUserData().getString("email"))
+        assertEquals(if (secureAged) 2 else 1, harnessCounters().getInt("passwordlessConsume"))
+        println("DRAFT_EMAIL_REPLACED sameOwner=true pendingCleared=true canonicalPromoted=true cachedEmailMatches=${Rownd.state.value.user.data["email"] == destination}")
+        if (InstrumentationRegistry.getArguments().getString("refreshProfileAfterVerification") == "true") {
+            assertEquals(destination, runBlocking { Rownd.user.refresh().await() }?.data?.get("email"))
+            println("DRAFT_EMAIL_EXPLICIT_PUBLIC_REFRESH profileMatches=true")
+        }
+        waitUntil("verified canonical email in native profile", 30_000) { Rownd.state.value.user.data["email"] == destination }
+        device.findObject(By.text("Close"))?.click()
+        scenario?.close()
+        scenario = ActivityScenario.launch(MainActivity::class.java)
+        waitForResource("e2e.action.manage-account")
+        assertEquals(replacementHandle, sessionHandle(runBlocking { Rownd.getAccessToken() }))
+        assertEquals(destination, getBackendUserData().getString("email"))
+    }
+
+    @Test
+    fun coldVerifiedEmailPersistsAndRefreshesAfterProcessRestart() {
+        val saved = context.getSharedPreferences("draft-email-qualification", 0)
+        val destination = requireNotNull(saved.getString("destination", null))
+        launchApp()
+        val handle = requireNotNull(sessionHandle(runBlocking { Rownd.getAccessToken() }))
+        assertFalse(saved.getString("originalHandle", null) == handle)
+        val state = getHarness("/test/email-change-session?handle=$handle")
+        assertEquals(saved.getString("owner", null), state.getString("userId"))
+        assertEquals("public", state.getString("tenantId"))
+        assertEquals(0, state.getJSONArray("pending").length())
+        val before = harnessCounters().getInt("stRefresh")
+        postHarness("/test/refresh/reset", "{}")
+        OkHttpClient.Builder().addInterceptor(SuperTokensInterceptor()).build()
+            .newCall(Request.Builder().url("${BuildConfig.API_URL}/test/refresh").build()).execute().use {
+                assertEquals(200, it.code)
+        }
+        assertTrue(harnessCounters().getInt("stRefresh") > before)
+        assertEquals(handle, sessionHandle(runBlocking { Rownd.getAccessToken() }))
+        assertEquals(destination, getBackendUserData().getString("email"))
+        println("DRAFT_EMAIL_COLD_RESTART sameOwner=true publicTenant=true replacementHandle=true refreshSucceeded=true cachedEmailMatches=${Rownd.state.value.user.data["email"] == destination}")
+        if (InstrumentationRegistry.getArguments().getString("refreshProfileAfterRestart") == "true") {
+            assertEquals(destination, runBlocking { Rownd.user.refresh().await() }?.data?.get("email"))
+            println("DRAFT_EMAIL_COLD_EXPLICIT_PUBLIC_REFRESH profileMatches=true")
+        }
+        waitUntil("persisted verified profile", 30_000) { Rownd.state.value.user.data["email"] == destination }
+    }
+
+    @Test
     fun signedOutManageAccountHandsOffToNewWebViewAndCompletesNativeSignIn() {
         launchApp()
         instrumentation.runOnMainSync { Rownd.manageAccount() }
@@ -139,6 +280,36 @@ class RealHubE2ETest {
         assertEquals(1, SandboxObservability.events.value.signInCompletedCount)
         assertProtectedRequestSucceeds()
         assertCompletedConsumesRemain(1)
+    }
+
+    @Test
+    fun nativeV2ResumeThroughRealHubWithoutAgeWait() {
+        launchApp()
+        val email = uniqueEmail("resume-diagnostic")
+        openEmailChallenge(email)
+        submitOtp(waitForCapture(email).getString("userInputCode"))
+        waitForSignedInApp()
+        val original = getHarness("/test/email-change-session?handle=${sessionHandle(requireNotNull(runBlocking { Rownd.getAccessToken() }))}")
+        clickResource("e2e.action.manage-account")
+        waitForWebElement("[data-testid='rownd-ui-profile-field-email']")
+        val envelope = JSONObject().put("version", 2).put("request_id", "diagnostic-request-123456")
+            .put("expires_at", System.currentTimeMillis() + 60_000)
+            .put("local_draft", JSONObject().put("owner_id", original.getString("userId")).put("tenant_id", "public")
+                .put("configuration", "").put("changes", JSONObject().put("email", uniqueEmail("resume-destination"))))
+        val message = JSONObject().put("type", "sign_in").put("payload", JSONObject().put("was_user_initiated", true).put("email_change", envelope))
+        val source = requireNotNull(activeHubWebView())
+        instrumentation.runOnMainSync {
+            source.evaluateJavascript("""
+                const message = $message;
+                message.payload.email_change.local_draft.configuration = JSON.stringify([${JSONObject.quote(BuildConfig.API_URL)}, '/auth', 'public', '', ${JSONObject.quote(BuildConfig.APP_KEY)}]);
+                window.rowndAndroidSDK.postMessage(JSON.stringify(message));
+            """.trimIndent(), null)
+        }
+        waitUntil("S0 cleared") { !Rownd.state.value.auth.isAuthenticated }
+        waitForText("Please sign in again to confirm it’s you before changing your email address.")
+        enterEmailChallenge(email)
+        submitOtp(waitForCapture(email).getString("userInputCode"))
+        waitForText("Verify your new email")
     }
 
     @Test
@@ -260,7 +431,8 @@ class RealHubE2ETest {
     private fun launchApp() {
         scenario = ActivityScenario.launch(MainActivity::class.java)
         scenario!!.moveToState(Lifecycle.State.RESUMED)
-        waitForResource("e2e.action.open-auth")
+        val preservingSession = InstrumentationRegistry.getArguments().getString("preserveDraft") == "true"
+        waitForResource(if (preservingSession) "e2e.action.manage-account" else "e2e.action.open-auth")
     }
 
     private fun openEmailChallenge(email: String) {
@@ -360,6 +532,32 @@ class RealHubE2ETest {
             setPackage(context.packageName)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         })
+    }
+
+    private fun dispatchVerificationThroughChrome(callback: Uri) {
+        val launcher = Uri.parse("$harnessUrl/test/email-verification-launcher")
+            .buildUpon().encodedQuery(callback.encodedQuery).build()
+        context.startActivity(Intent(Intent.ACTION_VIEW, launcher).apply {
+            setPackage("com.android.chrome")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
+        waitUntil("Chrome verification launcher", 30_000) {
+            val link = device.findObject(By.desc("Open email verification"))
+                ?: device.findObject(By.text("Open email verification"))
+            if (link != null) {
+                link.click()
+                true
+            } else {
+                listOf("Accept & continue", "Use without an account", "No thanks")
+                    .firstNotNullOfOrNull { device.findObject(By.text(it)) }?.click()
+                false
+            }
+        }
+        waitUntil("Chrome dispatch to app", 15_000) {
+            device.findObject(By.text("Open"))?.click()
+            device.findObject(By.text("Just once"))?.click()
+            device.hasObject(By.pkg(context.packageName))
+        }
     }
 
     private fun hasActiveBottomSheetActivity(): Boolean {

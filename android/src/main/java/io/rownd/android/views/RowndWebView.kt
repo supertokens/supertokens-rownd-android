@@ -26,12 +26,16 @@ import androidx.webkit.WebResourceErrorCompat
 import androidx.webkit.WebViewClientCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import androidx.webkit.ScriptHandler
 import com.composables.core.SheetDetent
 import io.rownd.android.Rownd
 import io.rownd.android.RowndClient
 import io.rownd.android.RowndSignInHint
 import io.rownd.android.RowndSignInOptions
 import io.rownd.android.RowndSignInOptionsBase
+import io.rownd.android.RowndSignInJsOptions
+import io.rownd.android.RowndSignInIntent
+import io.rownd.android.RowndSignInLoginStep
 import io.rownd.android.models.AuthChallengeInitiatedMessage
 import io.rownd.android.models.AuthenticationMessage
 import io.rownd.android.models.CanTouchBackgroundToDismissMessage
@@ -42,6 +46,7 @@ import io.rownd.android.models.VerifyEmailMessage
 import io.rownd.android.models.RowndHubInteropMessage
 import io.rownd.android.models.SignOutMessage
 import io.rownd.android.models.SignInMessage
+import io.rownd.android.models.EmailChangeDescriptor
 import io.rownd.android.models.TriggerSignInWithGoogleMessage
 import io.rownd.android.models.TriggerSignInWithGooglePayload
 import io.rownd.android.models.UserDataUpdateMessage
@@ -136,6 +141,17 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
     internal var animateBottomSheet: ((to: SheetDetent) -> Unit)? = null
     internal var setCanTouchBackgroundToDismiss: ((to: Boolean) -> Unit)? = null
     internal var nativeSignInHandoff: (() -> Unit)? = null
+    internal var nativeEmailChangeHandoff: ((EmailChangeDescriptor) -> Boolean)? = null
+    internal var nativeEmailChangeAuthenticated: (() -> Boolean)? = null
+    internal var nativeEmailChangeDelivered: (() -> Unit)? = null
+    internal var emailChangeIsCurrent: () -> Boolean = { false }
+    internal var emailChangeRequestId: String? = null
+        private set
+    internal val emailChangeDescriptor: EmailChangeDescriptor?
+        get() = Rownd.emailChangeContinuation.read()?.descriptor?.takeIf { it.requestId == emailChangeRequestId }
+    internal var isEmailChangePresentation = false
+        private set
+    private var emailChangeScript: ScriptHandler? = null
     internal var isDestroyed = false
         private set
 
@@ -198,7 +214,7 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
             }
             WebViewCompat.addDocumentStartJavaScript(
                 this,
-                "window.__rowndNativeEmailVerificationBridge = true; window.__rowndNativeSignInHandoff = true;",
+                "if (window === window.top) { window.__rowndNativeEmailVerificationBridge = true; window.__rowndNativeSignInHandoff = true; window.__rowndNativeEmailChangeContinuation = 2; }",
                 allowedOrigins,
             )
         } else {
@@ -218,12 +234,45 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
         if (isDestroyed) return
         isDestroyed = true
         nativeSignInHandoff = null
+        nativeEmailChangeHandoff = null
+        nativeEmailChangeAuthenticated = null
+        nativeEmailChangeDelivered = null
+        emailChangeScript?.remove()
+        emailChangeScript = null
+        emailChangeRequestId = null
         dismissOwner = null
         dismissHandler = null
         dismissPending = false
         rowndJavascriptInterface.dispose()
         lifecycleJob.cancel()
         super.destroy()
+    }
+
+    internal fun configureEmailChange(descriptor: EmailChangeDescriptor, resume: Boolean) {
+        if (!secureHubMessagingAvailable || emailChangeRequestId != null) return
+        emailChangeRequestId = descriptor.requestId
+        isEmailChangePresentation = true
+        if (resume) return
+        emailChangeScript = WebViewCompat.addDocumentStartJavaScript(this, "if (window === window.top) { window.__rowndEmailChangeSignIn = true; }",
+            setOfNotNull(trustedOriginRule(Rownd.config.baseUrl)))
+    }
+
+    internal fun takeEmailChangeResumeScript(): String {
+        val descriptor = emailChangeDescriptor ?: return ""
+        val expectedUrl = url ?: return ""
+        if (targetPage != HubPageSelector.ManageAccount || !emailChangeIsCurrent() ||
+            trustedOriginRule(expectedUrl) != trustedOriginRule(Rownd.config.baseUrl)) return ""
+        val payload = Rownd.emailChangeContinuation.takeResume(descriptor) ?: return ""
+        emailChangeRequestId = null
+        val value = json.encodeToString(EmailChangeDescriptor.serializer(), payload)
+        nativeEmailChangeDelivered?.invoke()
+        // Normal Hub bootstrap consumes its sole rph_init fragment before native URL observation catches up.
+        val clearedBootstrapUrl = expectedUrl.toUri().encodedFragment
+            ?.takeIf { it.startsWith("rph_init=") && !it.contains('&') }
+            ?.let { expectedUrl.substringBefore('#') }
+        val locationMismatch = listOfNotNull(expectedUrl, clearedBootstrapUrl)
+            .joinToString(" && ") { "window.location.href !== ${JSONObject.quote(it)}" }
+        return "if (window !== window.top || ($locationMismatch)) return false; window.__rowndEmailChangeResume = $value;"
     }
 
     override fun onDetachedFromWindow() {
@@ -471,10 +520,10 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
             }
         """
 
-        Log.d("Rownd.hub", "Evaluating script: $code")
+        Log.d("Rownd.hub", "Evaluating Hub script")
 
         webView.evaluateJavascript(wrappedJs) {
-            Log.d("Rownd.hub", "Hub js evaluation response: $it")
+            Log.d("Rownd.hub", "Hub script evaluation finished")
         }
     }
 
@@ -631,6 +680,7 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
                 hubLoadedPageLoadId == finishedPageLoadId &&
                 webView.pendingTargetPageRequest(finishedUrl)?.id == targetPageRequest.id
             ) {
+                if (webView.emailChangeDescriptor != null) return@launch
                 Log.w("Rownd.hub", "Hub authentication readiness timed out; displaying the requested page")
                 displayTargetPage(webView, targetPageRequest, finishedPageLoadId)
             }
@@ -688,7 +738,7 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
             HubPageSelector.SignIn, HubPageSelector.Unknown -> "rownd.requestSignIn(${request.jsFunctionArgsAsJson})"
             HubPageSelector.SignOut -> "rownd.signOut({\"show_success\":true})"
             HubPageSelector.QrCode -> "rownd.generateQrCode(${request.jsFunctionArgsAsJson})"
-            HubPageSelector.ManageAccount -> "rownd.user.manageAccount()"
+            HubPageSelector.ManageAccount -> webView.takeEmailChangeResumeScript() + "rownd.user.manageAccount()"
             HubPageSelector.ConnectAuthenticator -> "rownd.connectAuthenticator(${request.jsFunctionArgsAsJson})"
             HubPageSelector.DeepLink -> null
         }
@@ -739,9 +789,6 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
         }
     }
 
-    private fun handleScriptReturn(value: String) {
-        Log.d("Rownd.hub", value)
-    }
 }
 
 class RowndJavascriptInterface constructor(
@@ -765,10 +812,11 @@ class RowndJavascriptInterface constructor(
     private val authenticationMutex = SuperTokensSessionBridge.sessionMutationMutex
     private val authenticationGeneration = AtomicLong()
 
-    internal var syncAuthenticationState: suspend () -> Boolean = {
+    internal var syncAuthenticationState: suspend (() -> Boolean) -> Boolean = { isCurrent ->
         SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
             context = parentWebView.context.applicationContext,
             store = parentWebView.rowndClient.stateRepo.getStore(),
+            isCurrent = isCurrent,
         )
     }
 
@@ -881,6 +929,10 @@ class RowndJavascriptInterface constructor(
         emailVerificationJob?.cancel()
         emailVerificationRequestId = requestId
         val requestedNavigationGeneration = emailVerificationNavigationGeneration
+        val requestedAuthenticationGeneration = authenticationGeneration.get()
+        val requestedSignOutGeneration = SuperTokensSessionBridge.currentSignOutGeneration()
+        fun isCurrentSession() = requestedAuthenticationGeneration == authenticationGeneration.get() &&
+            requestedSignOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration()
         emailVerificationJob = bridgeScope.launch {
             val result = runCatching {
                 val appContext = parentWebView.context.applicationContext
@@ -898,6 +950,15 @@ class RowndJavascriptInterface constructor(
                     context = appContext,
                     store = parentWebView.rowndClient.stateRepo.getStore(),
                 )) { "Native session was not adopted" }
+                if (isCurrentSession() && !disposed && emailVerificationRequestId == requestId &&
+                    emailVerificationNavigationGeneration == requestedNavigationGeneration) {
+                    // ACK means verification consumed and S1 adopted. Profile I/O must neither delay
+                    // that ACK nor retry verification, and must survive the Hub closing on success.
+                    parentWebView.rowndClient.userRepo.loadUserAsync {
+                        isCurrentSession() &&
+                            parentWebView.rowndClient.stateRepo.state.value.auth.accessToken == replacementAccessToken
+                    }
+                }
                 status
             }
             if (
@@ -963,10 +1024,9 @@ class RowndJavascriptInterface constructor(
             return
         }
 
-        Log.d("Rownd.hub", "postMessage: " + redactSensitiveKeys(message))
         try {
             val interopMessage = json.decodeFromString(RowndHubInteropMessage.serializer(), message)
-            Log.d("Rownd.hub", redactSensitiveKeys(interopMessage.toString()))
+            Log.d("Rownd.hub", "Hub message type: ${interopMessage.type}")
 
             if (!allowSensitiveMessages && !interopMessage.type.isAllowedOverLegacyBridge()) {
                 Log.w("Rownd.hub", "Ignoring '${interopMessage.type}' over the legacy bridge")
@@ -982,7 +1042,13 @@ class RowndJavascriptInterface constructor(
                         trustedOriginRule(parentWebView.url ?: "") != trustedOriginRule(Rownd.config.baseUrl)
                     ) return
 
-                    parentWebView.nativeSignInHandoff?.invoke()
+                    val descriptor = request.payload?.emailChange
+                    if (descriptor != null) {
+                        if (parentWebView.nativeEmailChangeHandoff?.invoke(descriptor) != true) {
+                            val detail = JSONObject().put("request_id", descriptor.requestId).put("status", "REJECTED")
+                            parentWebView.evaluateJavascript("window.dispatchEvent(new CustomEvent('rownd:email-change-handoff', {detail:$detail}));", null)
+                        }
+                    } else parentWebView.nativeSignInHandoff?.invoke()
                 }
 
                 MessageType.authentication -> {
@@ -1007,8 +1073,10 @@ class RowndJavascriptInterface constructor(
 
                     val messageGeneration = authenticationGeneration.incrementAndGet()
                     val signOutGeneration = SuperTokensSessionBridge.currentSignOutGeneration()
+                    val continuationAttempt = parentWebView.emailChangeRequestId
                     fun isCurrentAuthentication() = !disposed && messageGeneration == authenticationGeneration.get() &&
-                        signOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration()
+                        signOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration() &&
+                        (continuationAttempt == null || (parentWebView.emailChangeRequestId == continuationAttempt && parentWebView.emailChangeIsCurrent()))
                     bridgeScope.launch {
                         if (!SuperTokensSessionBridge.awaitInitialized()) {
                             Log.e("Rownd.hub", "Skipping post-authentication user load because SuperTokens is not initialized")
@@ -1017,6 +1085,7 @@ class RowndJavascriptInterface constructor(
                         }
 
                         var authenticationCommitted = false
+                        var independentProfileLoad = false
                         authenticationMutex.withLock {
                             if (!isCurrentAuthentication()) {
                                 return@withLock
@@ -1045,16 +1114,38 @@ class RowndJavascriptInterface constructor(
                             }
 
                             try {
-                                check(syncAuthenticationState()) { "Native session was not adopted" }
+                                check(syncAuthenticationState(::isCurrentAuthentication)) { "Native session was not adopted" }
 
                                 if (!isCurrentAuthentication()) {
                                     return@withLock
                                 }
 
                                 parentWebView.rowndClient.signInRepo.reset()
+                                if (continuationAttempt != null) {
+                                    val adoptedToken = parentWebView.rowndClient.stateRepo.state.value.auth.accessToken
+                                    parentWebView.rowndClient.userRepo.loadUserAsync {
+                                        adoptedToken != null &&
+                                            signOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration() &&
+                                            parentWebView.rowndClient.stateRepo.state.value.auth.accessToken == adoptedToken
+                                    }
+                                    independentProfileLoad = true
+                                }
                                 scheduleSignInCompletedAuthenticationFallback(authenticationMessage, signOutGeneration)
                                 authenticationCommitted = true
-                                dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
+                                if (parentWebView.nativeEmailChangeAuthenticated?.invoke() == true) {
+                                    // The replacement disposes this bridge immediately; preserve the
+                                    // normal completion event instead of cancelling its delayed fallback.
+                                    signInCompletedFallbackJob?.cancel()
+                                    signInCompletedFallbackJob = null
+                                    if (signInCompletedDeduper.shouldEmitForAuthenticationFallback()) {
+                                        parentWebView.rowndClient.eventEmitter.emit(RowndEvent(
+                                            event = RowndEventType.SignInCompleted,
+                                            data = signInCompletedEventData(authenticationMessage.payload),
+                                        ))
+                                    }
+                                } else {
+                                    dismissHub(HUB_CLOSE_AFTER_MILLISECONDS)
+                                }
                             } catch (e: Exception) {
                                 if (e is CancellationException) throw e
                                 Log.e("Rownd.hub", "Hub post-authentication initialization failed", e)
@@ -1062,7 +1153,7 @@ class RowndJavascriptInterface constructor(
                             }
                         }
 
-                        if (!authenticationCommitted) return@launch
+                        if (!authenticationCommitted || independentProfileLoad) return@launch
                         parentWebView.rowndClient.userRepo.loadUserIfCurrent {
                             isCurrentAuthentication()
                         }
@@ -1087,6 +1178,21 @@ class RowndJavascriptInterface constructor(
 
                 MessageType.triggerSignInWithGoogle -> {
                     val signInWithGoogleMessage = (interopMessage as TriggerSignInWithGoogleMessage).payload
+                    if (parentWebView.emailChangeRequestId != null && parentWebView.targetPage == HubPageSelector.SignIn) {
+                        if (!parentWebView.emailChangeIsCurrent()) return
+                        parentWebView.rowndClient.signInWithGoogle.signInForEmailChange(
+                            isCurrent = { !disposed && parentWebView.emailChangeIsCurrent() },
+                            completed = { parentWebView.nativeEmailChangeAuthenticated?.invoke() == true },
+                            failed = { message ->
+                                if (!disposed && parentWebView.emailChangeIsCurrent()) parentWebView.loadNewPage(
+                                    HubPageSelector.SignIn, RowndSignInJsOptions(intent = RowndSignInIntent.SignIn,
+                                        loginStep = if (message == null) RowndSignInLoginStep.Init else RowndSignInLoginStep.Error,
+                                        errorMessage = message).toJsonString(),
+                                )
+                            },
+                        )
+                        return
+                    }
                     parentWebView.rowndClient.signInHandoffRevision.incrementAndGet()
                     if (parentWebView.targetPage == HubPageSelector.ManageAccount) {
                         // Transfer ownership to native Google before it can suspend. Retiring
@@ -1187,6 +1293,10 @@ class RowndJavascriptInterface constructor(
 
                 MessageType.AuthChallengeInitiated -> {
                     val authChallengeMessage = (interopMessage as AuthChallengeInitiatedMessage)
+                    parentWebView.emailChangeRequestId?.let { requestId ->
+                        if (parentWebView.targetPage != HubPageSelector.SignIn || !parentWebView.emailChangeIsCurrent()) return
+                        Rownd.emailChangeContinuation.challenge(requestId, authChallengeMessage.payload.challengeId)
+                    }
                     parentWebView.rowndClient.stateRepo.getStore().dispatch(
                         StateAction.SetAuthChallenge(
                             challengeId = authChallengeMessage.payload.challengeId,
@@ -1196,6 +1306,10 @@ class RowndJavascriptInterface constructor(
                 }
 
                 MessageType.AuthChallengeCleared -> {
+                    parentWebView.emailChangeRequestId?.let {
+                        if (!parentWebView.emailChangeIsCurrent()) return
+                        Rownd.emailChangeContinuation.clearChallenge(it)
+                    }
                     parentWebView.rowndClient.stateRepo.getStore().dispatch(
                         StateAction.SetAuthChallenge(
                             challengeId = null,
@@ -1209,9 +1323,23 @@ class RowndJavascriptInterface constructor(
                 }
             }
         } catch (e : Exception) {
-            Log.d("Rownd.hub", "Unparseable message", e)
+            Log.d("Rownd.hub", "Unparseable Hub message")
+            if (allowSensitiveMessages) rejectEmailChangeMessage(message)
         } catch (e : Error) {
-            Log.d("Rownd.hub", "Unparseable message", e)
+            Log.d("Rownd.hub", "Unparseable Hub message")
+        }
+    }
+
+    private fun rejectEmailChangeMessage(message: String) {
+        if (parentWebView.targetPage != HubPageSelector.ManageAccount ||
+            trustedOriginRule(parentWebView.url ?: "") != trustedOriginRule(Rownd.config.baseUrl)) return
+        runCatching {
+            val objectValue = JSONObject(message)
+            if (objectValue.optString("type") != "sign_in") return
+            val id = objectValue.optJSONObject("payload")?.optJSONObject("email_change")?.optString("request_id") ?: return
+            if (!id.matches(Regex("[A-Za-z0-9_-]{16,128}"))) return
+            val detail = JSONObject().put("request_id", id).put("status", "REJECTED")
+            parentWebView.evaluateJavascript("window.dispatchEvent(new CustomEvent('rownd:email-change-handoff', {detail:$detail}));", null)
         }
     }
 }

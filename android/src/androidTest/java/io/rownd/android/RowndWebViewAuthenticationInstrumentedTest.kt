@@ -202,7 +202,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
         }
         val bridge = createJavascriptInterface(HubPageSelector.SignIn) { dismissals.incrementAndGet() }
         val originalSync = bridge.syncAuthenticationState
-        bridge.syncAuthenticationState = sync
+        bridge.syncAuthenticationState = { sync() }
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
             webViews.last().setIsLoading = { loading -> if (!loading) failureShown.countDown() }
         }
@@ -296,14 +296,25 @@ class RowndWebViewAuthenticationInstrumentedTest {
         val interop = buildAuthenticationMessage(accessToken, refreshToken, frontToken, antiCSRF)
 
         val bridge = createJavascriptInterface(HubPageSelector.SignIn)
-        bridge.postSecureMessage(interop)
-
-        waitUntil {
-            sharedPrefs(context).getString("supertokens-android-fronttoken-key", null) == frontToken
+        val installed = CountDownLatch(1)
+        val installedFrontToken = AtomicReference<String?>()
+        val installedAntiCSRF = AtomicReference<String?>()
+        val originalWrite = SuperTokensSessionBridge.writeSession
+        SuperTokensSessionBridge.writeSession = { write ->
+            originalWrite(write)
+            // This deliberately mismatched fixture may be corrected by later authenticated I/O.
+            installedFrontToken.set(sharedPrefs(context).getString("supertokens-android-fronttoken-key", null))
+            installedAntiCSRF.set(SuperTokensSessionBridge.getAntiCSRF(context))
+            installed.countDown()
         }
-
-        assertEquals(frontToken, sharedPrefs(context).getString("supertokens-android-fronttoken-key", null))
-        assertEquals(antiCSRF, SuperTokensSessionBridge.getAntiCSRF(context))
+        try {
+            bridge.postSecureMessage(interop)
+            assertTrue("Authentication must install the supplied session", installed.await(5, TimeUnit.SECONDS))
+            assertEquals(frontToken, installedFrontToken.get())
+            assertEquals(antiCSRF, installedAntiCSRF.get())
+        } finally {
+            SuperTokensSessionBridge.writeSession = originalWrite
+        }
     }
 
     @Test

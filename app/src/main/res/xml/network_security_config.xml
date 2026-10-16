@@ -2,6 +2,7 @@
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">localhost</domain> <!-- Debug port -->
+        <domain>127.0.0.1</domain>
         <domain includeSubdomains="true">10.0.2.2</domain> <!-- Android emulator host loopback -->
     </domain-config>
 </network-security-config>
