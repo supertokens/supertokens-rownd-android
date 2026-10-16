@@ -10,6 +10,8 @@ import io.rownd.android.models.repos.AuthRepo
 import io.rownd.android.models.repos.SignInRepo
 import io.rownd.android.models.repos.StateRepo
 import io.rownd.android.models.repos.UserRepo
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import kotlinx.serialization.json.Json
@@ -17,6 +19,7 @@ import javax.inject.Inject
 
 val json = Json { encodeDefaults = true }
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class RowndConfig(
     var appKey: String? = null,
@@ -27,7 +30,8 @@ data class RowndConfig(
     var deepLinkScheme: String = "rowndsupertokens",
     var supertokens: SuperTokensConfig = SuperTokensConfig(),
     var postSignInRedirect: String? = "NATIVE_APP",
-    var appleIdCallbackUrl: String? = "https://api.rownd.io/hub/auth/apple/callback",
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    var appleIdCallbackUrl: String? = null,
     var customizations: RowndCustomizations = RowndCustomizations(),
     var defaultRequestTimeout: Long = 15000L,
     var defaultNumApiRetries: Int = 5,
