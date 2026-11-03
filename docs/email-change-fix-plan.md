@@ -192,6 +192,14 @@ The Android repro fixture checks the handed-off token against the server, front-
 
 Goal: a late SDK write for an old session can no longer replace or restore a newer one. Header mode is the default, and it can be fenced completely. Cookie mode can't, because the cookie jar saves `Set-Cookie` before our code sees the response. Document that.
 
+#### Approved lifecycle-event contract (Android and iOS)
+
+Generation fencing applies atomically to SDK session mutations. Rejected stale responses do not produce lifecycle events. However, an event admitted before replacement may begin executing after replacement: legacy synchronous callbacks retain this compatibility behavior, not a strict stale-callback-entry guarantee.
+
+Both SDKs add generation-bearing lifecycle notifications identifying the accepted transition's immutable session snapshot. Consumers must use that generation with conditional session operations to avoid changing a replacement session. Clear events identify the committed post-clear generation. Unconditional application state writes inside either legacy or new callbacks are not made race-safe by notification metadata alone.
+
+This explicitly replaces the stricter callback-entry requirement. Serializing arbitrary callbacks with session replacement would risk deadlocks when callbacks synchronously wait on cross-thread session operations. Application callbacks remain outside storage and refresh locks; reentrant session operations remain supported. Rownd adoption of the new APIs remains follow-up work, not part of the base SDK implementation.
+
 Target size: about 400–600 production lines. Keep the existing storage keys, the existing refresh lock design, and Java 7 bytecode.
 
 ### Base SDK changes (`app/src/main/java/com/supertokens/session/`)
