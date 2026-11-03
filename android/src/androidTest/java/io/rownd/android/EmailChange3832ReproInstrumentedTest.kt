@@ -148,7 +148,7 @@ class EmailChange3832ReproInstrumentedTest {
 
         val nativeToken = runBlocking { SuperTokensSessionBridge.getAccessToken(fixture.context) }
         assertTrue(
-            "Restored state replaced the newer sign-in: ${describe(second)}, native session ${nativeToken?.let(fixture::handle)}",
+            "Restored state replaced the newer sign-in: ${describe(second)}, native session ${nativeToken?.let(fixture::handle)} DIAG replacement=${fixture.handle(replacement.accessToken)} stateIat=${second.state.auth.accessToken?.let { com.auth0.android.jwt.JWT(it).issuedAt?.time }} replIat=${com.auth0.android.jwt.JWT(replacement.accessToken).issuedAt?.time} parent=${second.state.auth.accessToken?.let { com.auth0.android.jwt.JWT(it).getClaim("parentRefreshTokenHash1").asString() }} counters=${HarnessClient.getCounters()}",
             second.state.auth.accessToken == replacement.accessToken && second.state.user.data["email"] == newEmail &&
                 nativeToken == replacement.accessToken,
         )
