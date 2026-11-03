@@ -115,6 +115,8 @@ A second cause can only be closed upstream. Rownd writes the new session straigh
 - **Reload after a stale completion.** When a completion is discarded, schedule a fresh load (the branch's `scheduleFreshLoad`).
 - **Serialise PUTs per session.** Keep this optional. It is the branch's `pendingWrite` queue.
 
+Implementation boundary: a profile 404 rechecks request ownership and the SDK session under the session-commit lock before signing out. Profile requests themselves are not serialized by that lock. A same-session request starting after this commit-point check can still be overtaken by the sign-out; its completion is rejected once auth is cleared. This is not a guarantee that the latest request wins across sign-out. If a 404 is rejected because the SDK already holds a replacement session not yet adopted by Rownd, the store catches up through session reconciliation rather than that error response.
+
 ### 5. Fence Hub messages
 
 - **Record the session when a Hub document loads.** Store its session handle, from the same snapshot used for `rph_init`.
