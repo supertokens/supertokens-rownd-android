@@ -416,7 +416,7 @@ object SuperTokensSessionBridge {
         return synchronized(sessionCommitLock) {
             if (!isCurrent() || generation != currentSignOutGeneration() ||
                 sharedPrefs(context).getString(ACCESS_TOKEN_STORAGE_KEY, null) != accessToken) return@synchronized false
-            store.dispatch(StateAction.SetAuth(AuthState(accessToken = accessToken, refreshToken = null)))
+            store.dispatch(StateAction.AdoptNativeSession(accessToken))
             true
         }
     }

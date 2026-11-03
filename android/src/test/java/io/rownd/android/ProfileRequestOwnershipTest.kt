@@ -22,6 +22,26 @@ class ProfileRequestOwnershipTest {
     }
 
     @Test
+    fun adoptingAnotherSessionDropsTheProfileOfThePreviousOne() {
+        store.dispatch(StateAction.SetUser(User(data = mapOf("email" to "old@example.com"))))
+
+        store.dispatch(StateAction.AdoptNativeSession(token("handle-b", revision = 1)))
+
+        assertTrue(repo.state.value.user.data.isEmpty())
+        assertTrue(SuperTokensSessionBridge.sameSession(token("handle-b", revision = 1), repo.state.value.auth.accessToken))
+    }
+
+    @Test
+    fun adoptingARefreshOfTheSameSessionKeepsTheProfile() {
+        val profile = User(data = mapOf("email" to "current@example.com"))
+        store.dispatch(StateAction.SetUser(profile))
+
+        store.dispatch(StateAction.AdoptNativeSession(token("handle-a", revision = 2)))
+
+        assertEquals(profile, repo.state.value.user)
+    }
+
+    @Test
     fun olderRequestCannotOverwriteOrFinishNewerOne() {
         val load = begin()
         val save = begin { User(data = mapOf("nickname" to "saved")) }

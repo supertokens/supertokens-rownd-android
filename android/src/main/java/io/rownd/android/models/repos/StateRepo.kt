@@ -99,6 +99,8 @@ sealed class StateAction : Action {
     internal data class RestorePersistedState(val expected: GlobalState, val persisted: GlobalState?) : StateAction()
     internal object CompleteInitialization : StateAction()
     data class SetAuth(val value: AuthState) : StateAction()
+    // The profile belongs to the session it was loaded for, so another session starts without one.
+    internal data class AdoptNativeSession(val accessToken: String) : StateAction()
     internal data class ReconcileNativeSession(
         val expectedAccessToken: String?,
         val accessToken: String?,
@@ -164,6 +166,10 @@ class StateRepo @Inject constructor() {
                 state.auth.refreshToken == action.expected.refreshToken && action.isCurrent()
             ) state.copy(auth = action.value, user = if (action.clearUser) User() else state.user) else state
             is StateAction.SetAuth -> state.copy(auth = action.value)
+            is StateAction.AdoptNativeSession -> state.copy(
+                auth = AuthState(accessToken = action.accessToken, refreshToken = null),
+                user = if (SuperTokensSessionBridge.isSameSession(state.auth.accessToken, action.accessToken)) state.user else User(),
+            )
             is StateAction.ReconcileNativeSession -> if (
                 state.auth.accessToken == action.expectedAccessToken && action.isCurrent()
             ) state.copy(
