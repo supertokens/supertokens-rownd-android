@@ -126,8 +126,9 @@ sealed class StateAction : Action {
         val accessToken: String?,
         val user: User?,
         // Set by the reducer while it decides, so the caller learns the outcome of this very
-        // dispatch instead of re-checking ownership after a newer request may have started.
-        val applied: AtomicBoolean = AtomicBoolean(),
+        // dispatch instead of re-checking ownership after a newer request may have started. True
+        // when the request was the latest of its session and its owner still wanted the result.
+        val accepted: AtomicBoolean = AtomicBoolean(),
         val isCurrent: () -> Boolean = { true },
     ) : StateAction()
 }
@@ -183,10 +184,10 @@ class StateRepo @Inject constructor() {
                 state.copy(user = action.update(state.user).copy(isLoading = true))
             } else state
             is StateAction.CompleteProfileRequest -> if (ownsProfile(state, action.requestId, action.accessToken)) {
-                val user = action.user?.takeIf { action.isCurrent() }
-                action.applied.set(user != null)
-                state.copy(user = (user ?: state.user).copy(isLoading = false))
-            } else state.also { action.applied.set(false) }
+                val current = action.isCurrent()
+                action.accepted.set(current)
+                state.copy(user = (action.user?.takeIf { current } ?: state.user).copy(isLoading = false))
+            } else state.also { action.accepted.set(false) }
             is StateAction.SetGlobalState -> action.value
             is StateAction.CompleteInitialization -> state.copy(isInitialized = true)
             is StateAction.RestorePersistedState -> {

@@ -233,6 +233,11 @@ object SuperTokensSessionBridge {
             old.claim("tId", "tenantId") == current.claim("tId", "tenantId")
     }
 
+    // A sign-out clears whatever the SDK holds, so one decided for a session must not run once
+    // the SDK holds another.
+    internal fun storesAnotherSession(context: Context, accessToken: String?): Boolean =
+        storedAccessToken(context)?.let { !isSameSession(accessToken, it) } ?: false
+
     // Legacy credentials carry no session handle, so only the identical token belongs to their session.
     internal fun isSameSession(first: String?, second: String?): Boolean = first == second || sameSession(first, second)
 

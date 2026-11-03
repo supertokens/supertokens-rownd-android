@@ -77,33 +77,49 @@ class ProfileRequestOwnershipTest {
     }
 
     @Test
-    fun completionReportsWhetherItsOwnResponseWasApplied() {
-        val applied = AtomicBoolean()
+    fun completionReportsWhetherItsOwnResponseWasAccepted() {
+        val accepted = AtomicBoolean()
         val load = begin()
-        store.dispatch(StateAction.CompleteProfileRequest(load, session, User(data = mapOf("email" to "a@example.com")), applied))
-        assertTrue(applied.get())
+        store.dispatch(StateAction.CompleteProfileRequest(load, session, User(data = mapOf("email" to "a@example.com")), accepted))
+        assertTrue(accepted.get())
 
-        // A request that starts after the response was applied must not retroactively un-apply it.
+        // A request that starts after the response was accepted must not retroactively un-apply it.
         begin()
-        assertTrue(applied.get())
+        assertTrue(accepted.get())
         assertEquals("a@example.com", repo.state.value.user.data["email"])
     }
 
     @Test
-    fun completionOfASupersededRequestIsNotReportedAsApplied() {
-        val applied = AtomicBoolean(true)
-        val load = begin()
+    fun failedRequestIsAcceptedOnlyWhileItOwnsTheProfile() {
+        val first = AtomicBoolean()
+        val failed = begin()
+        store.dispatch(StateAction.CompleteProfileRequest(failed, session, null, first))
+        assertTrue(first.get())
+        assertFalse(repo.state.value.user.isLoading)
+
+        val second = AtomicBoolean(true)
+        val superseded = begin()
         begin()
-        store.dispatch(StateAction.CompleteProfileRequest(load, session, User(data = mapOf("email" to "late@example.com")), applied))
-        assertFalse(applied.get())
+        store.dispatch(StateAction.CompleteProfileRequest(superseded, session, null, second))
+        assertFalse(second.get())
+        assertTrue("A superseded failure must not end the newer request's loading", repo.state.value.user.isLoading)
     }
 
     @Test
-    fun completionRejectedByItsOwnerIsNotReportedAsApplied() {
-        val applied = AtomicBoolean(true)
+    fun completionOfASupersededRequestIsNotAccepted() {
+        val accepted = AtomicBoolean(true)
         val load = begin()
-        store.dispatch(StateAction.CompleteProfileRequest(load, session, User(data = mapOf("email" to "late@example.com")), applied) { false })
-        assertFalse(applied.get())
+        begin()
+        store.dispatch(StateAction.CompleteProfileRequest(load, session, User(data = mapOf("email" to "late@example.com")), accepted))
+        assertFalse(accepted.get())
+    }
+
+    @Test
+    fun completionRejectedByItsOwnerIsNotAccepted() {
+        val accepted = AtomicBoolean(true)
+        val load = begin()
+        store.dispatch(StateAction.CompleteProfileRequest(load, session, User(data = mapOf("email" to "late@example.com")), accepted) { false })
+        assertFalse(accepted.get())
     }
 
     @Test

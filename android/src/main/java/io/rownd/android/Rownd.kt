@@ -338,10 +338,37 @@ class RowndClient(
         signInHandoffRevision.incrementAndGet()
         val revocationUrl = authRepo.sessionRevocationUrl()
         val context = config.applicationContext ?: appHandleWrapper?.app?.get()?.applicationContext
-        val session = SuperTokensSessionBridge.beginSignOut(context) {
-            store.dispatch(StateAction.SetAuth(AuthState()))
-            store.dispatch(StateAction.SetUser(User()))
+        val session = SuperTokensSessionBridge.beginSignOut(context) { resetSessionState() }
+        finishSignOut(session, revocationUrl)
+    }
+
+    // Signs out only if [isCurrent] still holds where the sign-out commits, and the SDK still
+    // holds the session of [accessToken]. A rejected sign-out changes nothing, not even pending
+    // sign-ins: they may belong to the session that replaced the one this was decided for.
+    internal fun signOutIfCurrent(accessToken: String?, isCurrent: () -> Boolean): Boolean {
+        val revocationUrl = authRepo.sessionRevocationUrl()
+        val context = config.applicationContext ?: appHandleWrapper?.app?.get()?.applicationContext
+        var accepted = false
+        val session = SuperTokensSessionBridge.beginSignOut(
+            context,
+            isCurrent = { isCurrent() && (context == null || !SuperTokensSessionBridge.storesAnotherSession(context, accessToken)) },
+        ) {
+            accepted = true
+            resetSessionState()
         }
+        if (!accepted) return false
+        emailChangeContinuation.clear()
+        signInHandoffRevision.incrementAndGet()
+        finishSignOut(session, revocationUrl)
+        return true
+    }
+
+    private fun resetSessionState() {
+        store.dispatch(StateAction.SetAuth(AuthState()))
+        store.dispatch(StateAction.SetUser(User()))
+    }
+
+    private fun finishSignOut(session: SuperTokensSessionBridge.SignedOutSession?, revocationUrl: String?) {
         val existingHubWebView = rowndContext.hubViewModel?.webView()?.value
         HubSessionStorage.clear(config, existingHubWebView)
         rowndContext.hubViewModel?.webView()?.postValue(null)

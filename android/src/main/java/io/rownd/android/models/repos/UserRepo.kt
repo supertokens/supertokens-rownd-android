@@ -47,12 +47,13 @@ class UserRepo @Inject constructor() {
     private fun owns(request: ProfileRequest): Boolean =
         request.isCurrent() && stateRepo.ownsProfile(request.id, request.accessToken)
 
-    // Returns whether this response itself was applied to the profile.
+    // Returns whether the request was still the owner of the profile when it completed, which is
+    // when its response (if any) was applied.
     private fun complete(request: ProfileRequest, user: User? = null): Boolean {
-        val applied = AtomicBoolean()
+        val accepted = AtomicBoolean()
         stateRepo.getStore().dispatch(StateAction.CompleteProfileRequest(
-            request.id, request.accessToken, user, applied, request.isCurrent))
-        return applied.get()
+            request.id, request.accessToken, user, accepted, request.isCurrent))
+        return accepted.get()
     }
 
     // A response for a replaced session is dropped. Unless a newer request already covers the
@@ -93,12 +94,12 @@ class UserRepo @Inject constructor() {
             throw ex
         } catch (ex: ClientRequestException) {
             Log.e("RowndUsersApi", "Failed to fetch the user")
-            val owned = owns(request)
-            complete(request)
-            if (!owned) {
+            if (!complete(request)) {
                 if (allowFreshLoad) scheduleFreshLoad(request)
             } else if (ex.response.status == HttpStatusCode.NotFound) {
-                rowndContext.client?.signOut()
+                // The decision above predates the sign-out, so it is checked again where the
+                // sign-out commits: a newer request or another session may have arrived since.
+                rowndContext.client?.signOutIfCurrent(request.accessToken) { owns(request) }
             } else if (ex.response.status == HttpStatusCode.Unauthorized) {
                 // The SDK clears a session the server rejects during refresh; follow it.
                 try {
