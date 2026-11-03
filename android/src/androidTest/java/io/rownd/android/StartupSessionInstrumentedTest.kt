@@ -7,6 +7,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -40,6 +41,38 @@ class StartupSessionInstrumentedTest {
         fixture.waitUntil("Profile must load on the first resume", 10_000) {
             second.state.user.data["user_id"] == userId
         }
+    }
+
+    @Test
+    fun appIsNotInitializedUntilTheStartupRefreshSettlesTheSession() {
+        val session = HarnessClient.createSTSession(fixture.uniqueUserId("refresh-pending"))
+        val first = fixture.launch()
+        first.awaitStartup()
+        fixture.signInThroughHub(first, session)
+        fixture.advancePastAccessTokenExpiry()
+        HarnessClient.armResponseGate("POST", REFRESH_PATH)
+
+        val second = fixture.reopen(first)
+        fixture.waitUntil("Startup must refresh the expired session", 10_000) { HarnessClient.responseGateReached() }
+
+        assertFalse(
+            "An initialized state without a session reads as signed out, but the session is still being verified",
+            second.state.isInitialized,
+        )
+
+        HarnessClient.releaseResponseGate()
+        second.awaitStartup()
+        assertTrue(second.state.isInitialized)
+        assertEquals(fixture.handle(session.accessToken), second.state.auth.accessToken?.let(fixture::handle))
+    }
+
+    @Test
+    fun appWithoutSessionInitializesOnceStartupFindsNone() {
+        val process = fixture.launch()
+        process.awaitStartup()
+
+        assertTrue(process.state.isInitialized)
+        assertFalse(process.state.auth.isAuthenticated)
     }
 
     @Test
@@ -115,9 +148,14 @@ class StartupSessionInstrumentedTest {
             second.awaitStartup()
 
             assertEquals(fixture.handle(session.accessToken), second.state.auth.accessToken?.let(fixture::handle))
+            assertTrue("An unreachable server must not keep the app uninitialized", second.state.isInitialized)
             assertTrue(fixture.nativeSessionPresent())
         } finally {
             HarnessClient.setRefreshUnavailable(false)
         }
+    }
+
+    private companion object {
+        const val REFRESH_PATH = "/auth/session/refresh"
     }
 }

@@ -11,7 +11,6 @@ import io.rownd.android.models.repos.StateRepo
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -72,14 +71,13 @@ class SessionStatePersistenceTest {
         store.dispatch(StateAction.SetUser(User(data = mapOf("email" to "new@example.com"))))
         store.dispatch(StateAction.SetSignIn(SignInState(lastSignIn = "google")))
 
-        store.dispatch(StateAction.FinishInitialization(initial, GlobalState(
+        store.dispatch(StateAction.RestorePersistedState(initial, GlobalState(
             appConfig = AppConfigState(id = "persisted-app"),
             auth = AuthState(accessToken = legacyAccessToken, refreshToken = "legacy-refresh"),
             signIn = SignInState(lastSignIn = "email"),
         )))
 
         val state = store.currentState
-        assertTrue(state.isInitialized)
         assertEquals(nativeToken, state.auth.accessToken)
         assertEquals("new@example.com", state.user.data["email"])
         assertEquals("google", state.signIn.lastSignIn)
@@ -91,23 +89,32 @@ class SessionStatePersistenceTest {
         val store = StateRepo().getStore()
         val legacy = AuthState(accessToken = legacyAccessToken, refreshToken = "legacy-refresh")
 
-        store.dispatch(StateAction.FinishInitialization(store.currentState, GlobalState(
+        store.dispatch(StateAction.RestorePersistedState(store.currentState, GlobalState(
             auth = legacy,
             signIn = SignInState(lastSignIn = "email"),
         )))
 
-        assertTrue(store.currentState.isInitialized)
         assertEquals(legacy, store.currentState.auth)
         assertEquals("email", store.currentState.signIn.lastSignIn)
     }
 
     @Test
-    fun failedRestoreStillFinishesInitialization() {
+    fun restoreDoesNotMarkTheStateInitialized() {
         val store = StateRepo().getStore()
 
-        store.dispatch(StateAction.FinishInitialization(store.currentState, null))
+        store.dispatch(StateAction.RestorePersistedState(store.currentState, GlobalState(signIn = SignInState(lastSignIn = "email"))))
 
-        assertTrue(store.currentState.isInitialized)
+        assertFalse("Observers read an initialized state without a session as signed out", store.currentState.isInitialized)
+    }
+
+    @Test
+    fun failedRestoreLeavesDefaultState() {
+        val store = StateRepo().getStore()
+
+        store.dispatch(StateAction.RestorePersistedState(store.currentState, null))
+        assertEquals(GlobalState(), store.currentState)
+
+        store.dispatch(StateAction.CompleteInitialization)
         assertEquals(GlobalState(isInitialized = true), store.currentState)
     }
 

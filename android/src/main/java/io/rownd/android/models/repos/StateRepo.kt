@@ -95,7 +95,8 @@ internal fun GlobalState.forPersistence(): GlobalState {
 
 sealed class StateAction : Action {
     data class SetGlobalState(val value: GlobalState) : StateAction()
-    internal data class FinishInitialization(val expected: GlobalState, val persisted: GlobalState?) : StateAction()
+    internal data class RestorePersistedState(val expected: GlobalState, val persisted: GlobalState?) : StateAction()
+    internal object CompleteInitialization : StateAction()
     data class SetAuth(val value: AuthState) : StateAction()
     internal data class ReconcileNativeSession(
         val expectedAccessToken: String?,
@@ -182,7 +183,8 @@ class StateRepo @Inject constructor() {
                 state.copy(user = user.copy(isLoading = false))
             } else state
             is StateAction.SetGlobalState -> action.value
-            is StateAction.FinishInitialization -> {
+            is StateAction.CompleteInitialization -> state.copy(isInitialized = true)
+            is StateAction.RestorePersistedState -> {
                 val persisted = action.persisted
                 fun <T> restore(current: T, expected: T, restored: T?) =
                     if (restored != null && current == expected) restored else current
@@ -190,7 +192,6 @@ class StateRepo @Inject constructor() {
                     appConfig = restore(state.appConfig, action.expected.appConfig, persisted?.appConfig),
                     signIn = restore(state.signIn, action.expected.signIn, persisted?.signIn),
                     auth = restore(state.auth, action.expected.auth, persisted?.auth),
-                    isInitialized = true,
                 )
             }
         }
@@ -202,10 +203,10 @@ class StateRepo @Inject constructor() {
         CoroutineScope(Dispatchers.IO).launch {
             val initial = store.currentState
             try {
-                store.dispatch(StateAction.FinishInitialization(initial, dataStore.data.first()))
+                store.dispatch(StateAction.RestorePersistedState(initial, dataStore.data.first()))
             } catch (err: Exception) {
                 Log.d("Rownd.StateRepo", "Failed to load existing state from device", err)
-                store.dispatch(StateAction.FinishInitialization(initial, null))
+                store.dispatch(StateAction.RestorePersistedState(initial, null))
             }
 
             // Fetch latest app config
@@ -218,7 +219,14 @@ class StateRepo @Inject constructor() {
                 }
             }
 
-            hydrateProfileOnFirstResume(reconcileStartupSession())
+            // Observers treat an initialized state without a session as signed out, so the
+            // session must be settled first.
+            val startupAccessToken = try {
+                reconcileStartupSession()
+            } finally {
+                store.dispatch(StateAction.CompleteInitialization)
+            }
+            hydrateProfileOnFirstResume(startupAccessToken)
 
             tmpForceInstantUserConversionIfRequested(CoroutineScope(Dispatchers.IO))
 
