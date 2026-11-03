@@ -96,12 +96,14 @@ class NativeSignOutRefreshInstrumentedTest {
                 supertokens = SuperTokensConfig(SuperTokensAppInfo("http://127.0.0.1:1", "/different-auth")),
             ))))
             assertSdkRequestUses(newer.userId)
+            // The protected route reissues the access token, so B's token is read after that request.
+            val accessToken = SuperTokens.getAccessToken(context)
             val front = SuperTokensSessionBridge.getFrontToken(context)
             val antiCSRF = SuperTokensSessionBridge.getAntiCSRF(context)
             HarnessClient.releaseSignOutGate()
             signOut.get(10, TimeUnit.SECONDS)
             assertRevoked(old)
-            assertTrue("B access token must survive", SuperTokens.getAccessToken(context) == newer.accessToken)
+            assertTrue("B access token must survive", SuperTokens.getAccessToken(context) == accessToken)
             assertTrue("B refresh token must survive", SuperTokensSessionBridge.getRefreshToken(context) == newer.refreshToken)
             assertTrue("B front token must survive", SuperTokensSessionBridge.getFrontToken(context) == front)
             assertTrue("B anti-CSRF token must survive", SuperTokensSessionBridge.getAntiCSRF(context) == antiCSRF)
