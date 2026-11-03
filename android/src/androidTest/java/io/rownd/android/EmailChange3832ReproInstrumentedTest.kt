@@ -146,11 +146,14 @@ class EmailChange3832ReproInstrumentedTest {
         restoreGate.complete(Unit)
         second.awaitStartup()
 
+        // Every profile response reissues the session's access token, so the stored token is
+        // the sign-in's session, not necessarily its exact token string.
         val nativeToken = runBlocking { SuperTokensSessionBridge.getAccessToken(fixture.context) }
+        val stateToken = second.state.auth.accessToken
         assertTrue(
-            "Restored state replaced the newer sign-in: ${describe(second)}, native session ${nativeToken?.let(fixture::handle)} DIAG replacement=${fixture.handle(replacement.accessToken)} stateIat=${second.state.auth.accessToken?.let { com.auth0.android.jwt.JWT(it).issuedAt?.time }} replIat=${com.auth0.android.jwt.JWT(replacement.accessToken).issuedAt?.time} parent=${second.state.auth.accessToken?.let { com.auth0.android.jwt.JWT(it).getClaim("parentRefreshTokenHash1").asString() }} counters=${HarnessClient.getCounters()}",
-            second.state.auth.accessToken == replacement.accessToken && second.state.user.data["email"] == newEmail &&
-                nativeToken == replacement.accessToken,
+            "Restored state replaced the newer sign-in: ${describe(second)}, native session ${nativeToken?.let(fixture::handle)}",
+            SuperTokensSessionBridge.sameSession(stateToken, replacement.accessToken) && second.state.user.data["email"] == newEmail &&
+                SuperTokensSessionBridge.sameSession(nativeToken, replacement.accessToken),
         )
     }
 
