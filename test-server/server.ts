@@ -302,7 +302,39 @@ async function ensureSTUser(
   return SuperTokens.getUser(payload.user.id);
 }
 
+async function stopIntegrationHarness() {
+  if (server) {
+    const closingServer = server;
+    await new Promise<void>((resolve, reject) => {
+      closingServer.close((err) => (err ? reject(err) : resolve()));
+      closingServer.closeAllConnections();
+    });
+    server = undefined;
+  }
+  if (coreContainer) {
+    await coreContainer.stop();
+    coreContainer = undefined;
+  }
+  if (postgresContainer) {
+    await postgresContainer.stop();
+    postgresContainer = undefined;
+  }
+  if (network) {
+    await network.stop();
+    network = undefined;
+  }
+}
+
 export async function startIntegrationHarness(): Promise<AndroidIntegrationHarness> {
+  try {
+    return await initializeIntegrationHarness();
+  } catch (error) {
+    await stopIntegrationHarness();
+    throw error;
+  }
+}
+
+async function initializeIntegrationHarness(): Promise<AndroidIntegrationHarness> {
   const realEmailChanges = process.env.ANDROID_REAL_EMAIL_CHANGES === "1";
   resetState();
   const hubUrl =
@@ -318,7 +350,17 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     .toString();
 
   network = await new Network().start();
-  postgresContainer = await new GenericContainer("postgres:14")
+  const containerPrefix = process.env.ANDROID_CONTAINER_PREFIX;
+  if (containerPrefix && !/^[a-z0-9][a-z0-9_.-]*$/.test(containerPrefix)) {
+    throw new Error("ANDROID_CONTAINER_PREFIX must be a valid Docker name prefix");
+  }
+  const tokenValidity = process.env.ANDROID_ACCESS_TOKEN_VALIDITY_SECONDS;
+  if (tokenValidity && (!/^\d+$/.test(tokenValidity) || Number(tokenValidity) < 1)) {
+    throw new Error("ANDROID_ACCESS_TOKEN_VALIDITY_SECONDS must be a positive integer");
+  }
+  const postgres = new GenericContainer(process.env.ANDROID_POSTGRES_IMAGE || "postgres:14");
+  if (containerPrefix) postgres.withName(`${containerPrefix}-postgres`);
+  postgresContainer = await postgres
     .withNetwork(network)
     .withNetworkAliases("postgres")
     .withEnvironment({
@@ -332,13 +374,16 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     )
     .start();
 
-  coreContainer = await new GenericContainer(
-    "supertokens/supertokens-postgresql",
-  )
+  const core = new GenericContainer(process.env.ANDROID_CORE_IMAGE || "supertokens/supertokens-postgresql");
+  if (containerPrefix) core.withName(`${containerPrefix}-core`);
+  coreContainer = await core
     .withNetwork(network)
     .withEnvironment({
       POSTGRESQL_CONNECTION_URI:
         "postgresql://supertokens:somepassword@postgres:5432/supertokens",
+      ...(tokenValidity
+        ? { ACCESS_TOKEN_VALIDITY: tokenValidity }
+        : {}),
     })
     .withExposedPorts(3567)
     .withWaitStrategy(Wait.forHttp("/hello", 3567))
@@ -388,7 +433,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   const publicUrl = ANDROID_PUBLIC_API_URL || androidUrl;
 
   SuperTokens.init({
-    debug: true,
+    debug: process.env.ANDROID_HARNESS_DEBUG === "1",
     supertokens: { connectionURI: coreConnectionURI },
     appInfo: {
       appName,
@@ -476,7 +521,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       plugins: [
         RowndMigrationPlugin.init({
           ...(realEmailChanges ? { emailChange: { maxSessionAgeSeconds: process.env.EMAIL_CHANGE_SESSION_AGE_POLICY === "null" ? null : 600 } } : {}),
-          enableDebugLogs: true,
+          enableDebugLogs: process.env.ANDROID_HARNESS_DEBUG === "1",
           rowndAppKey: APP_KEY,
           rowndAppSecret: "rownd-e2e-secret-rownd-e2e-secret",
           clientDomains: {
@@ -1139,27 +1184,6 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     hubUrl,
     appKey: APP_KEY,
     appId: APP_ID,
-    stop: async () => {
-      if (server) {
-        const closingServer = server;
-        await new Promise<void>((resolve, reject) => {
-          closingServer.close((err) => (err ? reject(err) : resolve()));
-          closingServer.closeAllConnections();
-        });
-        server = undefined;
-      }
-      if (coreContainer) {
-        await coreContainer.stop();
-        coreContainer = undefined;
-      }
-      if (postgresContainer) {
-        await postgresContainer.stop();
-        postgresContainer = undefined;
-      }
-      if (network) {
-        await network.stop();
-        network = undefined;
-      }
-    },
+    stop: stopIntegrationHarness,
   };
 }

@@ -72,7 +72,7 @@ async function main() {
   }
 }
 
-main().catch(async (error) => {
+main().then(() => process.exit(process.exitCode || 0)).catch((error) => {
   console.error("Failed to run command with Android harness", error);
   process.exit(1);
 });
