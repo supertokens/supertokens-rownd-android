@@ -60,27 +60,39 @@ data class AuthState @OptIn(ExperimentalSerializationApi::class) constructor(
             jwt.getClaim("app_user_id").asString() != null
     }
 
-    internal fun toRphInitHash(userRepo: UserRepo, context: Context? = null): String? {
-        val resolvedRefreshToken = refreshToken ?: context?.let { SuperTokensSessionBridge.getRefreshToken(it) }
-        if (accessToken.isNullOrBlank() || resolvedRefreshToken.isNullOrBlank()) {
+    internal fun toRphInitHash(userRepo: UserRepo, context: Context? = null): String? =
+        toRphInit(userRepo, context)?.hash
+
+    // The Hub signs in with exactly these tokens, so all of them come from one SDK read; the
+    // access token cached in the store may already belong to another session.
+    internal fun toRphInit(userRepo: UserRepo, context: Context?): RphInit? {
+        if (accessToken.isNullOrBlank() || context == null) {
             return null
         }
+        val session = SuperTokensSessionBridge.readSessionTokens(context) ?: return null
 
-        val userId: String? = userRepo.get("user_id") as? String
+        // A profile cached for another session would sign the Hub in as the wrong user. Without
+        // app_user_id the Hub resolves the user from the access token itself.
+        val state = userRepo.stateRepo.state.value
+        val userId = (state.user.data["user_id"] as? String)?.takeIf {
+            SuperTokensSessionBridge.isSameSession(state.auth.accessToken, session.accessToken)
+        }
 
         val rphInit = RphInitObj(
-            accessToken = accessToken,
-            refreshToken = resolvedRefreshToken,
-            frontToken = context?.let { SuperTokensSessionBridge.getFrontToken(it) },
-            antiCSRF = context?.let { SuperTokensSessionBridge.getAntiCSRF(it) },
+            accessToken = session.accessToken,
+            refreshToken = session.refreshToken,
+            frontToken = session.frontToken,
+            antiCSRF = session.antiCSRF,
             appId = Rownd.store.currentState.appConfig.id,
             appUserId = userId,
         )
 
         val encoded = json.encodeToString(RphInitObj.serializer(), rphInit)
-        return encoded.toByteArray().toBase64()
+        return RphInit(encoded.toByteArray().toBase64(), session.accessToken)
     }
 }
+
+internal class RphInit(val hash: String, val accessToken: String)
 
 @Serializable
 data class RphInitObj(

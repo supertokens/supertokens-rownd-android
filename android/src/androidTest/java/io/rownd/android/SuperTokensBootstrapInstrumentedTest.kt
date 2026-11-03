@@ -184,6 +184,7 @@ class SuperTokensBootstrapInstrumentedTest {
 
         SuperTokensSessionBridge.bootstrapSession(context, accessToken, refreshToken, frontToken, antiCSRF)
         Rownd.store.dispatch(StateAction.SetAppConfig(AppConfigState(id = appId, isLoading = false)))
+        Rownd.store.dispatch(StateAction.SetAuth(AuthState(accessToken = accessToken)))
         Rownd.store.dispatch(StateAction.SetUser(User(data = mapOf("user_id" to appUserId))))
 
         val rphInit = AuthState(accessToken = accessToken, refreshToken = null)
@@ -197,6 +198,25 @@ class SuperTokensBootstrapInstrumentedTest {
         assertEquals(antiCSRF, decoded.getString("anti_csrf"))
         assertEquals(appId, decoded.getString("app_id"))
         assertEquals(appUserId, decoded.getString("app_user_id"))
+    }
+
+    @Test
+    fun rphInitUsesOnlyTheStoredSessionAndOmitsAProfileOfAnotherSession() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val accessToken = jwtGenerator.generateTestJwt(sessionHandle = "current")
+        val refreshToken = jwtGenerator.generateTestJwt()
+        val previousAccessToken = jwtGenerator.generateTestJwt(sessionHandle = "previous")
+
+        SuperTokensSessionBridge.bootstrapSession(context, accessToken, refreshToken)
+        Rownd.store.dispatch(StateAction.SetAuth(AuthState(accessToken = previousAccessToken)))
+        Rownd.store.dispatch(StateAction.SetUser(User(data = mapOf("user_id" to "previous-user"))))
+
+        val rphInit = Rownd.store.currentState.auth.toRphInitHash(Rownd.userRepo, context)
+        val decoded = JSONObject(String(Base64.getDecoder().decode(rphInit)))
+        assertEquals(accessToken, decoded.getString("access_token"))
+        assertEquals(refreshToken, decoded.getString("refresh_token"))
+        assertEquals(SuperTokensSessionBridge.buildFrontToken(accessToken), decoded.getString("front_token"))
+        assertTrue(decoded.isNull("app_user_id"))
     }
 
     @Test

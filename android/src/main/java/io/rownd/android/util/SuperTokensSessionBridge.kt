@@ -264,6 +264,30 @@ object SuperTokensSessionBridge {
             token.takeIf { store.currentState.auth.accessToken == it }
         }
 
+    internal data class SessionTokens(
+        val accessToken: String,
+        val refreshToken: String,
+        val frontToken: String?,
+        val antiCSRF: String?,
+    )
+
+    // The SDK writes each token separately, so a read racing a refresh or a session replacement can
+    // mix two sessions. Only a read that a second read confirms is returned.
+    internal fun readSessionTokens(context: Context): SessionTokens? {
+        fun read(): SessionTokens? {
+            val accessToken = storedAccessToken(context)?.takeIf { it.isNotBlank() } ?: return null
+            val refreshToken = getRefreshToken(context)?.takeIf { it.isNotBlank() } ?: return null
+            return SessionTokens(accessToken, refreshToken, getFrontToken(context), getAntiCSRF(context))
+        }
+        var previous = read() ?: return null
+        repeat(2) {
+            val current = read() ?: return null
+            if (current == previous) return current
+            previous = current
+        }
+        return null
+    }
+
     fun getRefreshToken(context: Context): String? =
         sharedPrefs(context).getString(REFRESH_TOKEN_STORAGE_KEY, null)
 

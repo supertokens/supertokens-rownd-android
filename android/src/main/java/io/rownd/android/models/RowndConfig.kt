@@ -68,8 +68,12 @@ data class RowndConfig(
     @Transient
     lateinit var signInRepo: SignInRepo
 
-    suspend fun hubLoaderUrl(restoreSession: Boolean = true): String {
-        consumePendingHubDeepLinkUrl()?.let { return it }
+    suspend fun hubLoaderUrl(restoreSession: Boolean = true): String = hubLoaderRequest(restoreSession).url
+
+    internal data class HubLoaderRequest(val url: String, val accessToken: String?)
+
+    internal suspend fun hubLoaderRequest(restoreSession: Boolean = true): HubLoaderRequest {
+        consumePendingHubDeepLinkUrl()?.let { return HubLoaderRequest(it, null) }
 
         val jsonConfig = json.encodeToString(serializer(), this)
         val base64Config = Base64.encodeToString(jsonConfig.encodeToByteArray(), Base64.NO_WRAP)
@@ -84,16 +88,16 @@ data class RowndConfig(
         val signInInitStr = signInState.toSignInInitHash()
         uriBuilder.appendQueryParameter("sign_in", signInInitStr)
 
-        try {
+        val rphInit = try {
             val authState = if (restoreSession) authRepo.getLatestAuthState() ?: AuthState() else AuthState()
-            authState.toRphInitHash(userRepo, applicationContext)?.let { rphInitStr ->
-                uriBuilder.encodedFragment("rph_init=$rphInitStr")
-            }
+            authState.toRphInit(userRepo, applicationContext)
         } catch (error: Exception) {
             Log.d("Rownd.config", "Couldn't compute requested init hash: ${error.message}")
+            null
         }
+        rphInit?.let { uriBuilder.encodedFragment("rph_init=${it.hash}") }
 
-        return uriBuilder.build().toString()
+        return HubLoaderRequest(uriBuilder.build().toString(), rphInit?.accessToken)
     }
 
     internal fun consumePendingHubDeepLinkUrl(): String? {
