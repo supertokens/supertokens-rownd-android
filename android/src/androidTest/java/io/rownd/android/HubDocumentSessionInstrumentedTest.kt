@@ -54,7 +54,7 @@ class HubDocumentSessionInstrumentedTest {
         val process = signedInProcess(userId)
         val before = process.state.user
         val view = hubView(process, HubPageSelector.DeepLink).also(::attach)
-        assertEquals("A view starts out stamped with the session the app has", process.state.auth.accessToken, view.documentAccessToken)
+        assertTrue("A view starts out stamped with the session the app has", process.state.auth.accessToken == view.documentAccessToken)
 
         process.client.config.pendingHubDeepLinkUrl = "$REPRO_HUB_URL/mobile_app"
         instrumentation.runOnMainSync { view.loadNewPage(HubPageSelector.DeepLink, null) }
@@ -128,11 +128,11 @@ class HubDocumentSessionInstrumentedTest {
 
         val rphInit = requireNotNull(fixture.rphInit(process)) { "The SDK has a session, so the Hub must receive it" }
 
-        assertEquals(session.accessToken, rphInit.getString("access_token"))
-        assertEquals(session.refreshToken, rphInit.getString("refresh_token"))
+        assertTrue("Hub receives the SDK access token", session.accessToken == rphInit.getString("access_token"))
+        assertTrue("Hub receives the SDK refresh token", session.refreshToken == rphInit.getString("refresh_token"))
         assertTrue("Without a cached profile the Hub resolves the user from the token", rphInit.isNull("app_user_id"))
         assertEquals(200, fixture.profileStatus(rphInit.getString("access_token")))
-        assertEquals(session.accessToken, process.state.auth.accessToken)
+        assertTrue("Rownd adopts the SDK access token", session.accessToken == process.state.auth.accessToken)
     }
 
     @Test

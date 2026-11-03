@@ -1,6 +1,7 @@
 package io.rownd.android
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.auth0.android.jwt.JWT
 import io.rownd.android.models.domain.User
 import io.rownd.android.util.SuperTokensSessionBridge
 import kotlinx.coroutines.CompletableDeferred
@@ -30,16 +31,26 @@ class StartupSessionInstrumentedTest {
         val first = fixture.launch()
         first.awaitStartup()
         fixture.signInThroughHub(first, session)
+        val refreshBefore = HarnessClient.getCounters().stRefresh
 
         val second = fixture.reopen(first)
         second.awaitStartup()
-        assertEquals(session.accessToken, second.state.auth.accessToken)
+        val restored = requireNotNull(second.state.auth.accessToken)
+        val sdkToken = runBlocking { SuperTokensSessionBridge.getAccessToken(fixture.context) }
+        val initialClaims = JWT(session.accessToken)
+        val restoredClaims = JWT(restored)
+        assertTrue("Restored session handle must match the signed-in session", fixture.handle(session.accessToken) == fixture.handle(restored))
+        assertTrue("Restored token must retain the expected subject", initialClaims.subject == restoredClaims.subject && restoredClaims.subject == userId)
+        assertTrue("Restored token must retain the public tenant", initialClaims.getClaim("tId").asString() == "public" && restoredClaims.getClaim("tId").asString() == "public")
+        assertTrue("SDK and Rownd must agree on the restored access token", sdkToken == restored)
+        assertEquals("Restoring an unexpired session must not refresh", refreshBefore, HarnessClient.getCounters().stRefresh)
+        assertEquals("Server must accept the restored access token", 200, fixture.profileStatus(restored))
         Thread.sleep(500)
         assertEquals("The profile must not load while backgrounded", User(), second.state.user)
 
         second.resume()
         fixture.waitUntil("Profile must load on the first resume", 10_000) {
-            second.state.user.data["user_id"] == userId
+            second.state.user.data["user_id"] == userId && second.state.user.data["email"] == "$userId@example.com"
         }
     }
 
@@ -126,7 +137,7 @@ class StartupSessionInstrumentedTest {
         )
         process.awaitStartup()
 
-        assertEquals(current.accessToken, process.state.auth.accessToken)
+        assertTrue("The current access token must remain installed", current.accessToken == process.state.auth.accessToken)
         assertEquals(User(), process.state.user)
         process.resume()
         fixture.waitUntil("Profile must come from the server", 10_000) {

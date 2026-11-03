@@ -459,13 +459,20 @@ class RowndWebViewAuthenticationInstrumentedTest {
         bridge.postSecureMessage(buildAuthenticationMessage(oldSession.accessToken, oldSession.refreshToken))
         bridge.postSecureMessage(buildAuthenticationMessage(latestSession.accessToken, latestSession.refreshToken))
 
-        waitUntil {
-            runBlocking { SuperTokensSessionBridge.getAccessToken(context) } == latestSession.accessToken &&
-                Rownd.stateRepo.state.value.auth.accessToken == latestSession.accessToken
+        try {
+            waitUntil {
+                runBlocking { SuperTokensSessionBridge.getAccessToken(context) } == latestSession.accessToken &&
+                    Rownd.stateRepo.state.value.auth.accessToken == latestSession.accessToken
+            }
+        } catch (failure: AssertionError) {
+            val sdkLatest = runBlocking { SuperTokensSessionBridge.getAccessToken(context) } == latestSession.accessToken
+            val storeLatest = Rownd.stateRepo.state.value.auth.accessToken == latestSession.accessToken
+            val counters = runCatching { HarnessClient.getCounters().stRefresh }.getOrNull()
+            throw AssertionError("Latest authentication timeout: sdkLatest=$sdkLatest storeLatest=$storeLatest refreshCount=$counters", failure)
         }
 
-        assertEquals(latestSession.refreshToken, SuperTokensSessionBridge.getRefreshToken(context))
-        assertEquals(latestSession.accessToken, Rownd.stateRepo.state.value.auth.accessToken)
+        assertTrue("Latest refresh credential must remain installed", latestSession.refreshToken == SuperTokensSessionBridge.getRefreshToken(context))
+        assertTrue("Latest access credential must remain installed", latestSession.accessToken == Rownd.stateRepo.state.value.auth.accessToken)
     }
 
     @Test

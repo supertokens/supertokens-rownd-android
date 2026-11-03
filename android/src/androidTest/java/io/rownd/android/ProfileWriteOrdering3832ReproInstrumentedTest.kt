@@ -6,6 +6,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -78,7 +79,7 @@ class ProfileWriteOrdering3832ReproInstrumentedTest {
 
         HarnessClient.releaseResponseGate()
         runCatching { withTimeout(10_000) { save.await() } }
-        assertEquals(replacement.accessToken, process.state.auth.accessToken)
+        assertTrue("Replacement session must remain current", replacement.accessToken == process.state.auth.accessToken)
         assertEquals("Old session's save response overwrote the newer profile", newEmail, process.state.user.data["email"])
     }
 
