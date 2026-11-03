@@ -10,8 +10,13 @@ export type LocalHub = {
 function run(command: string, args: string[], cwd: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, stdio: "inherit" });
-    child.once("error", reject);
+    const deadline = setTimeout(() => {
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+    }, 180_000);
+    child.once("error", (error) => { clearTimeout(deadline); reject(error); });
     child.once("close", (code, signal) => {
+      clearTimeout(deadline);
       if (code === 0) {
         resolve();
         return;
@@ -73,7 +78,10 @@ export async function startLocalHub(): Promise<LocalHub> {
     stop: async () => {
       if (child.exitCode !== null) return;
       child.kill("SIGTERM");
-      await new Promise<void>((resolve) => child.once("close", () => resolve()));
+      await new Promise<void>((resolve) => {
+        const deadline = setTimeout(() => child.kill("SIGKILL"), 5_000);
+        child.once("close", () => { clearTimeout(deadline); resolve(); });
+      });
     },
   };
 }

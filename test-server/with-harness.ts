@@ -51,11 +51,24 @@ async function main() {
         ANDROID_APP_KEY: process.env.ANDROID_APP_KEY || harness.appKey,
       },
     });
+    let interrupted = false;
+    const terminateChild = () => {
+      interrupted = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+    };
+    process.once("SIGINT", terminateChild);
+    process.once("SIGTERM", terminateChild);
 
     const exitCode = await new Promise<number>((resolve, reject) => {
-      child.on("error", reject);
+      const deadline = setTimeout(() => {
+        console.error("Harness command exceeded 15-minute deadline");
+        terminateChild();
+      }, 900_000);
+      child.on("error", (error) => { clearTimeout(deadline); reject(error); });
       child.on("close", (code, signal) => {
-        if (signal) {
+        clearTimeout(deadline);
+        if (signal || interrupted) {
           console.error(`Command terminated by signal ${signal}`);
           resolve(1);
           return;
@@ -63,12 +76,18 @@ async function main() {
 
         resolve(code ?? 1);
       });
+    }).finally(() => {
+      process.removeListener("SIGINT", terminateChild);
+      process.removeListener("SIGTERM", terminateChild);
     });
 
     process.exitCode = exitCode;
   } finally {
-    await harness?.stop();
-    await localHub?.stop();
+    try {
+      await harness?.stop();
+    } finally {
+      await localHub?.stop();
+    }
   }
 }
 

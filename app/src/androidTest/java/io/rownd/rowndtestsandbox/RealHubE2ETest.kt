@@ -36,11 +36,13 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import org.json.JSONTokener
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -123,6 +125,11 @@ class RealHubE2ETest {
     }
 
     private fun qualifyDraftEmailChange(secureAged: Boolean) {
+        if (InstrumentationRegistry.getArguments().getString("expectedHubUrl") != null) {
+            assertEquals(harnessUrl, BuildConfig.API_URL)
+            assertEquals(InstrumentationRegistry.getArguments().getString("expectedHubUrl"), BuildConfig.HUB_URL)
+            assertEquals("test_app_key", BuildConfig.APP_KEY)
+        }
         launchApp()
         val email = uniqueEmail("draft-old")
         val destination = uniqueEmail("draft-new")
@@ -191,10 +198,20 @@ class RealHubE2ETest {
             .appendPath("verify-email").encodedQuery(link.encodedQuery).build()
         context.getSharedPreferences("draft-email-qualification", 0).edit()
             .putString("callback", callback.toString()).putString("destination", destination)
-            .putString("originalHandle", verificationSessionHandle).putString("owner", original.getString("userId")).commit()
+            .putString("oldEmail", email)
+            .putString("originalHandle", verificationSessionHandle).putString("owner", original.getString("userId"))
+            .putInt("checkpointPid", android.os.Process.myPid()).commit()
         if (InstrumentationRegistry.getArguments().getString("prepareDraftOnly") == "true") return
         dispatchVerificationThroughChrome(callback)
-        waitForText("Email verified")
+        try {
+            waitForText("Email verified")
+        } catch (failure: AssertionError) {
+            val labels = listOf("Email verified", "Invalid link", "Something went wrong", "Open", "Just once", "Verify your new email")
+            val marker = "EMAIL_E2E_CALLBACK_UI " + labels.joinToString(" ") { label ->
+                "${labels.indexOf(label)}=${device.hasObject(By.text(label))}"
+            }
+            throw AssertionError(marker, failure)
+        }
         val replacementHandle = requireNotNull(sessionHandle(runBlocking { Rownd.getAccessToken() }))
         assertFalse(verificationSessionHandle == replacementHandle)
         val replacement = getHarness("/test/email-change-session?handle=$replacementHandle")
@@ -247,6 +264,113 @@ class RealHubE2ETest {
             println("DRAFT_EMAIL_COLD_EXPLICIT_PUBLIC_REFRESH profileMatches=true")
         }
         waitUntil("persisted verified profile", 30_000) { Rownd.state.value.user.data["email"] == destination }
+    }
+
+    @Test
+    fun verifiedEmailIsVisibleInHostAndRenderedHubAfterProcessRestart() {
+        assumeTrue("Controller checkpoint requires preserved scenario data", InstrumentationRegistry.getArguments().getString("preserveDraft") == "true")
+        val saved = context.getSharedPreferences("draft-email-qualification", 0)
+        val destination = requireNotNull(saved.getString("destination", null)?.takeIf { it.isNotBlank() })
+        val oldEmail = requireNotNull(saved.getString("oldEmail", null)?.takeIf { it.isNotBlank() })
+        val previousPid = saved.getInt("checkpointPid", 0)
+        val currentPid = android.os.Process.myPid()
+        assertTrue("Process must change before the UI checkpoint", previousPid > 0 && previousPid != currentPid)
+        assertTrue(saved.edit().putInt("checkpointPid", currentPid).commit())
+        reportCheckpoint(JSONObject().put("phase", "entry").put("previousPid", previousPid).put("currentPid", currentPid))
+        assertEquals(harnessUrl, BuildConfig.API_URL)
+        assertEquals(InstrumentationRegistry.getArguments().getString("expectedHubUrl"), BuildConfig.HUB_URL)
+        assertEquals("test_app_key", BuildConfig.APP_KEY)
+        launchApp()
+        waitUntil("replacement session and canonical profile after restart", 30_000) {
+            Rownd.state.value.auth.isAuthenticated && Rownd.state.value.user.data["email"] == destination
+        }
+        val handle = requireNotNull(sessionHandle(runBlocking { Rownd.getAccessToken() }))
+        val server = getHarness("/test/email-change-session?handle=$handle")
+        assertEquals(saved.getString("owner", null), server.getString("userId"))
+        assertEquals("public", server.getString("tenantId"))
+        assertEquals(0, server.getJSONArray("pending").length())
+        val methods = server.getJSONArray("loginMethods")
+        assertEquals(1, methods.length())
+        assertEquals("passwordless", methods.getJSONObject(0).getString("recipeId"))
+        assertEquals(destination, methods.getJSONObject(0).getString("email"))
+        assertTrue(methods.getJSONObject(0).getBoolean("verified"))
+        assertEquals(destination, getBackendUserData().getString("email"))
+        reportCheckpoint(JSONObject().put("phase", "native").put("currentPid", currentPid)
+            .put("apiOrigin", BuildConfig.API_URL)
+            .put("authenticated", Rownd.state.value.auth.isAuthenticated)
+            .put("nativeEmailMatchesCanonical", Rownd.state.value.user.data["email"] == destination)
+            .put("serverSessionStatus", 200).put("serverProfileStatus", 200))
+        waitForResource("e2e.status.email")
+        waitForText(destination)
+        clickResource("e2e.action.manage-account")
+        val observation = java.util.concurrent.atomic.AtomicReference<JSONObject>()
+        val history = java.util.concurrent.CopyOnWriteArrayList<JSONObject>()
+        val pending = AtomicBoolean(false)
+        val script = """
+                (() => {
+                    const elements = [...document.querySelectorAll('[data-testid="rownd-ui-profile-field-email"]')];
+                    const isVisible = e => {
+                        const style = getComputedStyle(e);
+                        return e.getClientRects().length > 0 && style.display !== 'none' && style.visibility === 'visible';
+                    };
+                    const visible = elements.filter(isVisible);
+                    const element = visible.length === 1 ? visible[0] : null;
+                    const value = element?.value;
+                    const url = new URL(location.href);
+                    return JSON.stringify({
+                        readyState: document.readyState,
+                        origin: url.origin === ${JSONObject.quote(BuildConfig.HUB_URL)} ? url.origin : 'other',
+                        path: ['/mobile_app', '/account/verify-email'].includes(url.pathname) ? url.pathname : 'other',
+                        count: elements.length, visibleCount: visible.length,
+                        tag: element?.tagName ?? 'missing',
+                        type: element?.type ?? 'missing',
+                        visible: !!element && isVisible(element),
+                        disabled: !!element?.disabled,
+                        value: value === ${JSONObject.quote(destination)} ? 'canonical' :
+                            value === ${JSONObject.quote(oldEmail)} ? 'old' :
+                            value == null ? 'missing' : value === '' ? 'empty' : 'other'
+                    });
+                })()
+                """.trimIndent()
+        try {
+            waitUntil("canonical rendered Hub email", 30_000) {
+                val current = observation.get()
+                if (current?.optString("value") == "canonical" && current.optString("tag") == "INPUT" && current.optInt("visibleCount") == 1 && current.optString("origin") == BuildConfig.HUB_URL) return@waitUntil true
+                val webView = activeHubWebView()
+                if (webView != null && pending.compareAndSet(false, true)) {
+                    instrumentation.runOnMainSync {
+                        webView.evaluateJavascript(script) { result ->
+                            val sample = runCatching { JSONObject(JSONTokener(result).nextValue() as String).put("callback", "parsed") }
+                                .getOrElse { JSONObject().put("callback", "unparseable") }
+                            observation.set(sample)
+                            if (history.lastOrNull()?.toString() != sample.toString()) {
+                                if (history.size >= 8) history.removeAt(0)
+                                history.add(sample)
+                            }
+                            pending.set(false)
+                        }
+                    }
+                }
+                false
+            }
+        } catch (_: AssertionError) {
+            // The bounded wait reports its last redacted DOM observation below.
+        }
+        val dom = observation.get() ?: JSONObject().put("result", "unparseable")
+        val diagnostic = JSONObject().put("phase", "rendered").put("dom", dom).put("history", org.json.JSONArray(history)).put("previousPid", previousPid).put("currentPid", currentPid)
+            .put("authenticated", Rownd.state.value.auth.isAuthenticated)
+            .put("nativeEmailMatchesCanonical", Rownd.state.value.user.data["email"] == destination)
+            .put("serverSessionStatus", 200).put("serverOwnerMatches", server.getString("userId") == saved.getString("owner", null))
+            .put("serverProfileStatus", 200).put("serverEmailMatchesCanonical", true)
+            .put("accessTokenValidLocally", Rownd.state.value.auth.isAccessTokenValid)
+        reportCheckpoint(diagnostic)
+        assertTrue("EMAIL_E2E_DIAGNOSTIC $diagnostic", dom.optString("value") == "canonical" && dom.optString("tag") == "INPUT" && dom.optInt("visibleCount") == 1 && dom.optString("origin") == BuildConfig.HUB_URL)
+        assertTrue(saved.edit().putInt("completedPid", currentPid).commit())
+        reportCheckpoint(JSONObject().put("phase", "complete").put("currentPid", currentPid))
+    }
+
+    private fun reportCheckpoint(details: JSONObject) {
+        instrumentation.sendStatus(0, android.os.Bundle().apply { putString("rownd_e2e", "EMAIL_E2E_DIAGNOSTIC $details") })
     }
 
     @Test

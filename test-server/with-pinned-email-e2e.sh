@@ -14,7 +14,7 @@ trap 'rm -rf "$work"' EXIT
 git -C "$hub_repo" archive "$hub_revision" -o "$work/hub.tar"
 mkdir "$work/hub"
 tar -xf "$work/hub.tar" -C "$work/hub"
-npm ci --prefix "$work/hub" --ignore-scripts
+python3 -c 'import subprocess,sys; subprocess.run(["npm", "ci", "--prefix", sys.argv[1], "--ignore-scripts"], check=True, timeout=180)' "$work/hub"
 
 export ANDROID_HUB_DIR="$work/hub"
 export ANDROID_HOST=${ANDROID_HOST:-127.0.0.1}

@@ -53,6 +53,7 @@ type HarnessState = {
   counters: HarnessCounters;
   passwordlessConsumeStatuses: number[];
   requestLog: RequestCapture[];
+  httpStatuses: Array<{ method: string; path: string; status: number; originPresent: boolean }>;
   emailUpdates: Array<{ statusCode: number }>;
   refreshSimulationCompleted: boolean;
   refreshUnavailable: boolean;
@@ -120,6 +121,7 @@ function createEmptyState(): HarnessState {
     counters: { legacyRefresh: 0, migrate: 0, passwordlessConsume: 0, stRefresh: 0, passwordlessEmail: 0, verificationEmail: 0 },
     passwordlessConsumeStatuses: [],
     requestLog: [],
+    httpStatuses: [],
     emailUpdates: [],
     refreshSimulationCompleted: false,
     refreshUnavailable: false,
@@ -303,33 +305,47 @@ async function ensureSTUser(
 }
 
 async function stopIntegrationHarness() {
+  const errors: unknown[] = [];
+  const attempt = async (action: () => Promise<unknown>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        action(),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Cleanup timed out")), 20_000); }),
+      ]);
+    } catch (error) { errors.push(error); } finally { clearTimeout(timer); }
+  };
   if (server) {
     const closingServer = server;
-    await new Promise<void>((resolve, reject) => {
+    server = undefined;
+    await attempt(() => new Promise<void>((resolve, reject) => {
       closingServer.close((err) => (err ? reject(err) : resolve()));
       closingServer.closeAllConnections();
-    });
-    server = undefined;
+    }));
   }
   if (coreContainer) {
-    await coreContainer.stop();
+    const container = coreContainer;
     coreContainer = undefined;
+    await attempt(() => container.stop());
   }
   if (postgresContainer) {
-    await postgresContainer.stop();
+    const container = postgresContainer;
     postgresContainer = undefined;
+    await attempt(() => container.stop());
   }
   if (network) {
-    await network.stop();
+    const ownedNetwork = network;
     network = undefined;
+    await attempt(() => ownedNetwork.stop());
   }
+  if (errors.length) throw new AggregateError(errors, "Failed to clean up one or more harness resources");
 }
 
 export async function startIntegrationHarness(): Promise<AndroidIntegrationHarness> {
   try {
     return await initializeIntegrationHarness();
   } catch (error) {
-    await stopIntegrationHarness();
+    try { await stopIntegrationHarness(); } catch { console.error("Harness startup cleanup failed"); }
     throw error;
   }
 }
@@ -687,6 +703,12 @@ async function initializeIntegrationHarness(): Promise<AndroidIntegrationHarness
   // Counter tracking
   app.use((req, res, next) => {
     const state = getState(req as express.Request);
+    if (["/auth/plugin/rownd/user", "/auth/session/refresh", "/auth/user/email/verify"].includes(req.path)) {
+      res.on("finish", () => {
+        state.httpStatuses.push({ method: req.method, path: req.path, status: res.statusCode, originPresent: !!req.headers.origin });
+        if (state.httpStatuses.length > 100) state.httpStatuses.shift();
+      });
+    }
     if (req.method === "POST" && req.path === "/auth/session/refresh") {
       state.counters.stRefresh += 1;
       if (state.refreshUnavailable) {
@@ -923,6 +945,10 @@ async function initializeIntegrationHarness(): Promise<AndroidIntegrationHarness
 
   app.get("/health", (_req, res) => {
     res.json({ status: "OK" });
+  });
+
+  app.get("/test/http-statuses", (req, res) => {
+    res.json({ requests: getState(req).httpStatuses });
   });
 
   app.post("/reset", (req, res) => {
