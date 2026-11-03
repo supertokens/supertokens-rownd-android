@@ -97,7 +97,8 @@ class VerificationProfileInstrumentedTest {
         withTimeout(5_000) { requested.await() }
         val newer = User(data = mapOf("email" to "new-login@example.com"))
         rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState(accessToken = "S2")))
-        rownd.stateRepo.getStore().dispatch(StateAction.SetUser(newer))
+        // The new session's profile arrives through its own profile write, which supersedes the load.
+        rownd.userRepo.applyHubUpdate(newer, "S2")
         release.complete(Unit)
         assertNull(withTimeout(5_000) { load.await() })
         assertEquals(newer, rownd.state.value.user)
@@ -124,6 +125,31 @@ class VerificationProfileInstrumentedTest {
         release.complete(Unit)
         assertNull(withTimeout(5_000) { load.await() })
         assertEquals("old@example.com", rownd.state.value.user.data["email"])
+    }
+
+    @Test
+    fun staleNotFoundCannotSignOutReplacementSession() = runBlocking {
+        status = HttpStatusCode.NotFound
+        val load = rownd.userRepo.loadUserAsync()
+        withTimeout(5_000) { requested.await() }
+        rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState(accessToken = "S2")))
+        rownd.userRepo.applyHubUpdate(User(data = mapOf("email" to "new@example.com")), "S2")
+        release.complete(Unit)
+        assertNull(withTimeout(5_000) { load.await() })
+        assertEquals("S2", rownd.state.value.auth.accessToken)
+        assertEquals("new@example.com", rownd.state.value.user.data["email"])
+    }
+
+    @Test
+    fun droppedResponseForReplacedSessionLoadsTheCurrentProfile() = runBlocking {
+        val load = rownd.userRepo.loadUserAsync()
+        withTimeout(5_000) { requested.await() }
+        rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState(accessToken = "S2")))
+        release.complete(Unit)
+        assertNull(withTimeout(5_000) { load.await() })
+        withTimeout(5_000) {
+            while (rownd.state.value.user.data["email"] != "verified@example.com" || rownd.state.value.user.isLoading) delay(10)
+        }
     }
 
     @Test

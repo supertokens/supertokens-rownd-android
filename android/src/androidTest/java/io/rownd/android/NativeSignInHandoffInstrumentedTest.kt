@@ -410,10 +410,11 @@ class NativeSignInHandoffInstrumentedTest {
         val release = CompletableDeferred<Unit>()
         val requests = AtomicInteger()
         val client = HttpClient(MockEngine {
-            requests.incrementAndGet()
+            // Later requests stand for the profile of whichever session replaced the first.
+            val email = if (requests.incrementAndGet() == 1) "original-account@example.com" else "newer-session@example.com"
             requested.countDown()
             release.await()
-            respond("""{"data":{"email":"original-account@example.com"}}""",
+            respond("""{"data":{"email":"$email"}}""",
                 headers = headersOf("Content-Type", "application/json"))
         }) { install(ContentNegotiation) { json() } }
         Rownd.authenticatedApiClient.client = client
@@ -439,12 +440,13 @@ class NativeSignInHandoffInstrumentedTest {
                 runBlocking { SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(app, Rownd.store) }
             }
             release.complete(Unit)
+            // The replacement session's profile is loaded afresh once the stale response is dropped.
+            val expectedEmail = if (supersede) "newer-session@example.com" else "original-account@example.com"
             runBlocking { withTimeout(5_000) {
-                while (if (supersede) Rownd.state.value.user.isLoading
-                    else Rownd.state.value.user.data["email"] != "original-account@example.com") delay(20)
+                while (Rownd.state.value.user.isLoading || Rownd.state.value.user.data["email"] != expectedEmail) delay(20)
             } }
-            assertEquals(1, requests.get())
-            assertEquals(if (supersede) null else "original-account@example.com", Rownd.state.value.user.data["email"])
+            assertEquals(if (supersede) 2 else 1, requests.get())
+            assertEquals(expectedEmail, Rownd.state.value.user.data["email"])
             assertEquals(if (supersede) newerToken else token, Rownd.state.value.auth.accessToken)
         } finally {
             release.complete(Unit)

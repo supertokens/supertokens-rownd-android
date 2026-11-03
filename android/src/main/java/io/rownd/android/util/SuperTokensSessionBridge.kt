@@ -27,6 +27,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import java.util.concurrent.CopyOnWriteArrayList
@@ -222,26 +223,29 @@ object SuperTokensSessionBridge {
         token?.let { runCatching { JWT(it).getClaim("sessionHandle").asString() }.getOrNull() }
 
     internal fun sameSession(first: String?, second: String?): Boolean {
-        if (first == null || second == null) return false
-        return runCatching {
-            val old = JWT(first)
-            val current = JWT(second)
-            val handle = old.getClaim("sessionHandle").asString()
-            !handle.isNullOrBlank() && handle == current.getClaim("sessionHandle").asString() &&
-                (old.subject ?: old.getClaim("userId").asString()) == (current.subject ?: current.getClaim("userId").asString()) &&
-                (old.getClaim("tId").asString() ?: old.getClaim("tenantId").asString()) ==
-                    (current.getClaim("tId").asString() ?: current.getClaim("tenantId").asString())
-        }.getOrDefault(false)
+        val old = first?.let(::claims) ?: return false
+        val current = second?.let(::claims) ?: return false
+        fun JsonObject.claim(vararg names: String) =
+            names.firstNotNullOfOrNull { (this[it] as? JsonPrimitive)?.takeIf { value -> value.isString }?.content }
+        val handle = old.claim("sessionHandle")
+        return !handle.isNullOrBlank() && handle == current.claim("sessionHandle") &&
+            old.claim("sub", "userId") == current.claim("sub", "userId") &&
+            old.claim("tId", "tenantId") == current.claim("tId", "tenantId")
     }
 
-    internal fun isLikelySuperTokensToken(token: String): Boolean = runCatching {
-        val payload = lenientJson.parseToJsonElement(
-            String(Base64.getUrlDecoder().decode(padBase64(token.split(".")[1])))
-        ).jsonObject
-        listOf("sessionHandle", "tId", "refreshTokenHash1", "parentRefreshTokenHash1").any {
+    // Legacy credentials carry no session handle, so only the identical token belongs to their session.
+    internal fun isSameSession(first: String?, second: String?): Boolean = first == second || sameSession(first, second)
+
+    private fun claims(token: String): JsonObject? = runCatching {
+        lenientJson.parseToJsonElement(String(Base64.getUrlDecoder().decode(padBase64(token.split(".")[1])))).jsonObject
+    }.getOrNull()
+
+    internal fun isLikelySuperTokensToken(token: String): Boolean {
+        val payload = claims(token) ?: return false
+        return listOf("sessionHandle", "tId", "refreshTokenHash1", "parentRefreshTokenHash1").any {
             (payload[it] as? JsonPrimitive)?.isString == true
         }
-    }.getOrDefault(false)
+    }
 
     // When the SDK cannot reach the server to verify a stored session, keep the user signed in
     // on its stored tokens rather than signing them out while offline.

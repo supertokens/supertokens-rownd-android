@@ -39,6 +39,7 @@ import kotlinx.serialization.Transient
 import kotlinx.serialization.json.Json
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -113,6 +114,17 @@ sealed class StateAction : Action {
     data class SetAppConfig(val value: AppConfigState) : StateAction()
     data class SetUser(val value: User) : StateAction()
     data class SetUserIsLoading(val value: Boolean) : StateAction()
+    internal data class BeginProfileRequest(
+        val requestId: Long,
+        val accessToken: String?,
+        val update: (User) -> User = { it },
+    ) : StateAction()
+    internal data class CompleteProfileRequest(
+        val requestId: Long,
+        val accessToken: String?,
+        val user: User?,
+        val isCurrent: () -> Boolean = { true },
+    ) : StateAction()
 }
 
 @Singleton
@@ -126,6 +138,18 @@ class StateRepo @Inject constructor() {
     lateinit var authRepo: AuthRepo
 
     private lateinit var dataStore: DataStore<GlobalState>
+
+    // Shared by profile loads, saves and Hub updates: only the latest one may write the profile.
+    private val profileRequestId = AtomicLong()
+
+    internal fun nextProfileRequestId(): Long = profileRequestId.incrementAndGet()
+
+    internal fun isLatestProfileRequest(requestId: Long): Boolean = requestId == profileRequestId.get()
+
+    internal fun ownsProfile(requestId: Long, accessToken: String?): Boolean = ownsProfile(store.currentState, requestId, accessToken)
+
+    private fun ownsProfile(state: GlobalState, requestId: Long, accessToken: String?): Boolean =
+        isLatestProfileRequest(requestId) && SuperTokensSessionBridge.isSameSession(accessToken, state.auth.accessToken)
 
     private val store = Store<GlobalState, StateAction>(GlobalState()) { state, action ->
         when (action) {
@@ -150,6 +174,13 @@ class StateRepo @Inject constructor() {
             is StateAction.SetAppConfig -> state.copy(appConfig = action.value)
             is StateAction.SetUser -> state.copy(user = action.value)
             is StateAction.SetUserIsLoading -> state.copy(user = state.user.copy(isLoading = action.value))
+            is StateAction.BeginProfileRequest -> if (ownsProfile(state, action.requestId, action.accessToken)) {
+                state.copy(user = action.update(state.user).copy(isLoading = true))
+            } else state
+            is StateAction.CompleteProfileRequest -> if (ownsProfile(state, action.requestId, action.accessToken)) {
+                val user = action.user?.takeIf { action.isCurrent() } ?: state.user
+                state.copy(user = user.copy(isLoading = false))
+            } else state
             is StateAction.SetGlobalState -> action.value
             is StateAction.FinishInitialization -> {
                 val persisted = action.persisted
