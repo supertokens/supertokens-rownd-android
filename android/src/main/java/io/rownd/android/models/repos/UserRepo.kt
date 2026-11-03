@@ -18,6 +18,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import io.rownd.android.models.network.User as NetworkUser
@@ -46,9 +47,12 @@ class UserRepo @Inject constructor() {
     private fun owns(request: ProfileRequest): Boolean =
         request.isCurrent() && stateRepo.ownsProfile(request.id, request.accessToken)
 
+    // Returns whether this response itself was applied to the profile.
     private fun complete(request: ProfileRequest, user: User? = null): Boolean {
-        stateRepo.getStore().dispatch(StateAction.CompleteProfileRequest(request.id, request.accessToken, user, request.isCurrent))
-        return owns(request)
+        val applied = AtomicBoolean()
+        stateRepo.getStore().dispatch(StateAction.CompleteProfileRequest(
+            request.id, request.accessToken, user, applied, request.isCurrent))
+        return applied.get()
     }
 
     // A response for a replaced session is dropped. Unless a newer request already covers the
@@ -128,7 +132,10 @@ class UserRepo @Inject constructor() {
                         )
                     }.body()
                 val result = savedUser.asDomainModel(stateRepo, this@UserRepo)
-                if (complete(request, result)) result else null
+                // Whether a newer request kept this response from the state does not change that
+                // the server saved it.
+                complete(request, result)
+                result
             } catch (ex: CancellationException) {
                 complete(request)
                 throw ex

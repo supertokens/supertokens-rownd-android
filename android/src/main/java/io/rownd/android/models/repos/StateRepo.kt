@@ -39,6 +39,7 @@ import kotlinx.serialization.Transient
 import kotlinx.serialization.json.Json
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -124,6 +125,9 @@ sealed class StateAction : Action {
         val requestId: Long,
         val accessToken: String?,
         val user: User?,
+        // Set by the reducer while it decides, so the caller learns the outcome of this very
+        // dispatch instead of re-checking ownership after a newer request may have started.
+        val applied: AtomicBoolean = AtomicBoolean(),
         val isCurrent: () -> Boolean = { true },
     ) : StateAction()
 }
@@ -179,9 +183,10 @@ class StateRepo @Inject constructor() {
                 state.copy(user = action.update(state.user).copy(isLoading = true))
             } else state
             is StateAction.CompleteProfileRequest -> if (ownsProfile(state, action.requestId, action.accessToken)) {
-                val user = action.user?.takeIf { action.isCurrent() } ?: state.user
-                state.copy(user = user.copy(isLoading = false))
-            } else state
+                val user = action.user?.takeIf { action.isCurrent() }
+                action.applied.set(user != null)
+                state.copy(user = (user ?: state.user).copy(isLoading = false))
+            } else state.also { action.applied.set(false) }
             is StateAction.SetGlobalState -> action.value
             is StateAction.CompleteInitialization -> state.copy(isInitialized = true)
             is StateAction.RestorePersistedState -> {

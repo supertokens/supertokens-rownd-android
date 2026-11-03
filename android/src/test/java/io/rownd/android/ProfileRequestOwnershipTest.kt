@@ -10,6 +10,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicBoolean
 
 class ProfileRequestOwnershipTest {
     private val repo = StateRepo()
@@ -73,6 +74,36 @@ class ProfileRequestOwnershipTest {
         store.dispatch(StateAction.CompleteProfileRequest(load, session, User(data = mapOf("email" to "late@example.com"))) { false })
         assertEquals("old@example.com", repo.state.value.user.data["email"])
         assertFalse(repo.state.value.user.isLoading)
+    }
+
+    @Test
+    fun completionReportsWhetherItsOwnResponseWasApplied() {
+        val applied = AtomicBoolean()
+        val load = begin()
+        store.dispatch(StateAction.CompleteProfileRequest(load, session, User(data = mapOf("email" to "a@example.com")), applied))
+        assertTrue(applied.get())
+
+        // A request that starts after the response was applied must not retroactively un-apply it.
+        begin()
+        assertTrue(applied.get())
+        assertEquals("a@example.com", repo.state.value.user.data["email"])
+    }
+
+    @Test
+    fun completionOfASupersededRequestIsNotReportedAsApplied() {
+        val applied = AtomicBoolean(true)
+        val load = begin()
+        begin()
+        store.dispatch(StateAction.CompleteProfileRequest(load, session, User(data = mapOf("email" to "late@example.com")), applied))
+        assertFalse(applied.get())
+    }
+
+    @Test
+    fun completionRejectedByItsOwnerIsNotReportedAsApplied() {
+        val applied = AtomicBoolean(true)
+        val load = begin()
+        store.dispatch(StateAction.CompleteProfileRequest(load, session, User(data = mapOf("email" to "late@example.com")), applied) { false })
+        assertFalse(applied.get())
     }
 
     @Test

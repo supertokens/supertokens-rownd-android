@@ -141,6 +141,17 @@ class VerificationProfileInstrumentedTest {
     }
 
     @Test
+    fun supersededSaveStillReturnsTheSavedProfileWithoutWritingIt() = runBlocking {
+        val save = rownd.userRepo.set("nickname", "saved")
+        withTimeout(5_000) { requested.await() }
+        val newer = User(data = mapOf("email" to "hub@example.com"))
+        rownd.userRepo.applyHubUpdate(newer, "S1")
+        release.complete(Unit)
+        assertEquals("verified@example.com", withTimeout(5_000) { save.await() }?.data?.get("email"))
+        assertEquals(newer, rownd.state.value.user)
+    }
+
+    @Test
     fun droppedResponseForReplacedSessionLoadsTheCurrentProfile() = runBlocking {
         val load = rownd.userRepo.loadUserAsync()
         withTimeout(5_000) { requested.await() }
