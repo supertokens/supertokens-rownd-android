@@ -164,6 +164,18 @@ Add a regression test for each symptom, plus the step 0 end-to-end flow.
   - Fold this into step 0.
   - Fix it in the Hub only if the reproduction shows the Android fixes are not enough. Base the fix on `origin/feat/draft-email-verification`, which already has the email-change continuation work that Android `main` uses.
 
+#### Step 8 investigation findings
+
+Code reading of Hub `origin/feat/draft-email-verification` (not a rendered-WebView test):
+
+- `Profile.tsx` reads the email from `state.user.data`. Its `needsEmailSignIn` flag only controls the pending email-draft continuation UI, not the normal email field.
+- Mobile Hub startup clears cached auth and user. `DefaultContext.tsx` handles `rph_init`, then `hooks/use-user-api.ts` fetches `/user` after authentication and app configuration are available.
+- Missing access tokens prevent login. An expired token can leave the profile blank when `/user` fails; the native payload must contain a server-accepted token, not merely a coherent set of tokens.
+- Missing `app_user_id` is supported for SuperTokens sessions: `handleRphHash` calls `recoverNativeSupertokensIdentity` to recover it from `/user` using the supplied access token. This also requires a usable token.
+- These paths exist on the pushed Hub branch; no local-only native-attempt handshake changes are required. Phase 1 makes no Hub changes.
+
+The Android repro fixture checks the handed-off token against the server, front-token coherence, and user identity. Those checks do not establish what the real Hub renders. A customer retest of Manage Account remains a release gate.
+
 ### Phase 1 does not change
 
 - The required version of the SuperTokens SDK.
