@@ -59,6 +59,7 @@ type HarnessState = {
   userData: Record<string, unknown>;
   pendingEmailVerifications: Map<string, PendingEmailVerification>;
   signOutGate?: { path: string; skip: number; reached: boolean; release: () => void; wait: Promise<void> };
+  responseGate?: { method: string; path: string; matched: boolean; reached: boolean; release: () => void; wait: Promise<void> };
 };
 
 type PendingEmailVerification = {
@@ -581,6 +582,36 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     next();
   });
 
+  // Holds the first matching response after the handler computed it, so a stale body can be delivered late.
+  app.post("/test/response-gate", (req, res) => {
+    const state = getState(req);
+    state.responseGate?.release();
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    state.responseGate = { method: String(req.body.method).toUpperCase(), path: String(req.body.path), matched: false, reached: false, release, wait };
+    res.json({ status: "OK" });
+  });
+  app.get("/test/response-gate", (req, res) => {
+    res.json({ reached: getState(req).responseGate?.reached === true });
+  });
+  app.post("/test/response-gate/release", (req, res) => {
+    getState(req).responseGate?.release();
+    res.json({ status: "OK" });
+  });
+  app.use((req, res, next) => {
+    const gate = getState(req).responseGate;
+    if (gate && !gate.matched && gate.method === req.method && gate.path === req.path) {
+      gate.matched = true;
+      const end = res.end.bind(res) as (...args: unknown[]) => express.Response;
+      res.end = ((...args: unknown[]) => {
+        gate.reached = true;
+        void gate.wait.then(() => end(...args));
+        return res;
+      }) as typeof res.end;
+    }
+    next();
+  });
+
   app.get("/test/email-verification-launcher", (req, res) => {
     const names = [
       "token",
@@ -1011,6 +1042,32 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   app.post("/test/st-session-exists", async (req, res) => {
     const session = await Session.getSessionInformation(String(req.body.sessionHandle));
     res.json({ exists: session !== undefined });
+  });
+
+  // Simulates the server side of an email change completed outside the app.
+  app.post("/test/revoke-session", async (req, res) => {
+    res.json({ revoked: await Session.revokeSession(String(req.body.sessionHandle)) });
+  });
+
+  app.post("/test/user-email", async (req, res) => {
+    const userId = String(req.body.userId);
+    const email = String(req.body.email);
+    const loginMethod = (await SuperTokens.getUser(userId))?.loginMethods.find((method) => method.recipeId === "passwordless");
+    if (!loginMethod) {
+      res.status(404).json({ status: "UNKNOWN_USER" });
+      return;
+    }
+    const updated = await Passwordless.updateUser({ recipeUserId: loginMethod.recipeUserId, email });
+    if (updated.status !== "OK") {
+      res.status(409).json(updated);
+      return;
+    }
+    const { metadata } = await UserMetadata.getUserMetadata(userId);
+    await UserMetadata.updateUserMetadata(userId, {
+      data: { ...(metadata.data ?? {}), email },
+      verified_data: { ...(metadata.verified_data ?? {}), email },
+    });
+    res.json({ status: "OK" });
   });
 
   app.post("/test/refresh-availability", (req, res) => {

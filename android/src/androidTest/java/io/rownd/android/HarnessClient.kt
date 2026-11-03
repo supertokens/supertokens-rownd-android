@@ -114,6 +114,25 @@ object HarnessClient {
         return json.decodeFromString(response)
     }
 
+    fun revokeSession(sessionHandle: String) {
+        post("/test/revoke-session", mapOf("sessionHandle" to sessionHandle), "default")
+    }
+
+    fun changeUserEmail(userId: String, email: String) {
+        post("/test/user-email", mapOf("userId" to userId, "email" to email), "default")
+    }
+
+    fun armResponseGate(method: String, path: String) {
+        post("/test/response-gate", mapOf("method" to method, "path" to path), "default")
+    }
+
+    fun responseGateReached(): Boolean =
+        org.json.JSONObject(get("/test/response-gate", "default")).getBoolean("reached")
+
+    fun releaseResponseGate() {
+        post("/test/response-gate/release", emptyMap(), "default")
+    }
+
     fun sessionExists(sessionHandle: String): Boolean =
         org.json.JSONObject(post("/test/st-session-exists", mapOf("sessionHandle" to sessionHandle), "default")).getBoolean("exists")
 
