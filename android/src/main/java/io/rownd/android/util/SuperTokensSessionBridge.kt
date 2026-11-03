@@ -29,6 +29,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.io.IOException
@@ -69,22 +70,33 @@ object SuperTokensSessionBridge {
         }
 
     val isInitialized = AtomicBoolean(false)
+    private val sessionEventListeners = CopyOnWriteArrayList<(EventHandler.EventType) -> Unit>()
+
+    // The SDK fires events synchronously on the request thread, some while it holds the refresh
+    // lock, so listeners must hand off work instead of calling back into the SDK.
+    internal fun addSessionEventListener(listener: (EventHandler.EventType) -> Unit) {
+        sessionEventListeners.addIfAbsent(listener)
+    }
+
+    internal fun removeSessionEventListener(listener: (EventHandler.EventType) -> Unit) {
+        sessionEventListeners.remove(listener)
+    }
+
+    internal val sessionEventHandler = object : EventHandler {
+        override fun handleEvent(eventType: EventHandler.EventType) {
+            debugLog("SuperTokens event: $eventType")
+            sessionEventListeners.forEach { it(eventType) }
+        }
+    }
+
     private var enableDebugMode = false
 
-    internal var buildSuperTokens: (Context, String, String, Boolean) -> Unit = { context, apiDomain, apiBasePath, enableDebugMode ->
-        val builder = SuperTokens.Builder(context, apiDomain)
+    internal var buildSuperTokens: (Context, String, String, Boolean) -> Unit = { context, apiDomain, apiBasePath, _ ->
+        SuperTokens.Builder(context, apiDomain)
             .apiBasePath(apiBasePath)
             .tokenTransferMethod("header")
-
-        if (enableDebugMode) {
-            builder.eventHandler(object : EventHandler {
-                override fun handleEvent(eventType: EventHandler.EventType) {
-                    Log.d(TAG, "SuperTokens event: $eventType")
-                }
-            })
-        }
-
-        builder.build()
+            .eventHandler(sessionEventHandler)
+            .build()
     }
 
     fun initializeIfNeeded(context: Context, apiDomain: String, apiBasePath: String = "/auth", enableDebugMode: Boolean = false) {

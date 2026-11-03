@@ -19,6 +19,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStoreOwner
 import com.lyft.kronos.AndroidClockFactory
+import com.supertokens.session.EventHandler
 import io.rownd.android.di.component.DaggerRowndGraph
 import io.rownd.android.di.component.RowndGraph
 import io.rownd.android.models.Store
@@ -144,6 +145,7 @@ class RowndClient(
 
         store = stateRepo.setup(StateRepo.defaultDataStore(appContext))
 
+        SuperTokensSessionBridge.addSessionEventListener(nativeSessionEventListener)
         SuperTokensSessionBridge.initializeIfNeeded(appContext, apiDomain, apiBasePath, config.enableDebugMode)
         SuperTokensSessionBridge.observeAndInitialize(appContext, stateRepo, config.enableDebugMode)
 
@@ -198,6 +200,23 @@ class RowndClient(
 
         // Show the Google One Tap UI if applicable
         signInWithGoogle.showOneTapIfApplicable()
+    }
+
+    // Requests the SDK makes for the host app can refresh or lose the session without Rownd seeing
+    // the response, so the store follows the SDK whenever it reports a change.
+    internal val nativeSessionEventListener: (EventHandler.EventType) -> Unit = { event ->
+        when (event) {
+            EventHandler.EventType.UNAUTHORISED,
+            EventHandler.EventType.SIGN_OUT,
+            EventHandler.EventType.REFRESH_SESSION -> CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    authRepo.getLatestAuthState()
+                } catch (ex: Exception) {
+                    Log.d("Rownd", "Failed to follow SuperTokens session event $event", ex)
+                }
+            }
+            else -> Unit
+        }
     }
 
     fun configure(app: Application, options: RowndConfigureOptions) {
