@@ -27,6 +27,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.io.IOException
@@ -207,7 +209,7 @@ object SuperTokensSessionBridge {
     private fun sessionHandle(token: String?): String? =
         token?.let { runCatching { JWT(it).getClaim("sessionHandle").asString() }.getOrNull() }
 
-    private fun sameSession(first: String?, second: String?): Boolean {
+    internal fun sameSession(first: String?, second: String?): Boolean {
         if (first == null || second == null) return false
         return runCatching {
             val old = JWT(first)
@@ -219,6 +221,32 @@ object SuperTokensSessionBridge {
                     (current.getClaim("tId").asString() ?: current.getClaim("tenantId").asString())
         }.getOrDefault(false)
     }
+
+    internal fun isLikelySuperTokensToken(token: String): Boolean = runCatching {
+        val payload = lenientJson.parseToJsonElement(
+            String(Base64.getUrlDecoder().decode(padBase64(token.split(".")[1])))
+        ).jsonObject
+        listOf("sessionHandle", "tId", "refreshTokenHash1", "parentRefreshTokenHash1").any {
+            (payload[it] as? JsonPrimitive)?.isString == true
+        }
+    }.getOrDefault(false)
+
+    // When the SDK cannot reach the server to verify a stored session, keep the user signed in
+    // on its stored tokens rather than signing them out while offline.
+    internal fun adoptUnverifiedSession(context: Context, store: Store<GlobalState, StateAction>): String? =
+        synchronized(sessionCommitLock) {
+            val token = storedAccessToken(context)
+            if (token == null || getRefreshToken(context).isNullOrBlank() || store.currentState.auth.accessToken != null) {
+                return@synchronized null
+            }
+            store.dispatch(StateAction.ReconcileNativeSession(
+                expectedAccessToken = null,
+                accessToken = token,
+                preserveProfile = false,
+                isCurrent = { storedAccessToken(context) == token },
+            ))
+            token.takeIf { store.currentState.auth.accessToken == it }
+        }
 
     fun getRefreshToken(context: Context): String? =
         sharedPrefs(context).getString(REFRESH_TOKEN_STORAGE_KEY, null)

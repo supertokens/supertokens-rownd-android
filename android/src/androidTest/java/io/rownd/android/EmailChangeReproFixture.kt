@@ -20,6 +20,7 @@ import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.repos.GlobalState
 import io.rownd.android.models.repos.GlobalStateSerializer
 import io.rownd.android.models.repos.StateAction
+import io.rownd.android.models.repos.forPersistence
 import io.rownd.android.util.AppLifecycleListener
 import io.rownd.android.util.NewIntentTestActivity
 import io.rownd.android.util.SuperTokensSessionBridge
@@ -105,6 +106,10 @@ internal class EmailChangeReproFixture {
     fun uniqueUserId(label: String) = "email-change-3832-$label-${UUID.randomUUID().toString().take(8)}"
 
     fun launch(restoreGate: Deferred<Unit>? = null) = AppProcess(newStateFile(), restoreGate)
+
+    /** Starts a process whose state file holds [persistedJson], as written by an older SDK version. */
+    fun launchWithPersistedState(persistedJson: String) =
+        AppProcess(newStateFile().also { it.writeText(persistedJson) }, null)
 
     fun reopen(previous: AppProcess, restoreGate: Deferred<Unit>? = null): AppProcess {
         val file = newStateFile()
@@ -253,8 +258,11 @@ internal class EmailChangeReproFixture {
 
         internal fun stop(): File {
             waitUntil("state must reach disk before the process dies") {
-                val disk = runBlocking { persisted.data.first() }
-                disk.auth == state.auth && disk.user.data == state.user.data
+                // DataStore serves the last written value from memory, so read what a new process would.
+                val disk = runCatching { runBlocking { stateFile.inputStream().use { GlobalStateSerializer.readFrom(it) } } }
+                    .getOrNull()
+                fun encode(value: GlobalState) = GlobalStateSerializer.json.encodeToString(GlobalState.serializer(), value)
+                disk != null && encode(disk) == encode(state.forPersistence())
             }
             close()
             return stateFile

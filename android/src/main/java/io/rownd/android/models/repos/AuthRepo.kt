@@ -83,6 +83,12 @@ class AuthRepo @Inject constructor() {
 
     internal suspend fun getAccessToken(): String? = getLatestAuthState()?.accessToken
 
+    internal fun adoptUnverifiedSession(): String? {
+        val context = rowndContext.client?.appHandleWrapper?.app?.get()?.applicationContext
+            ?: return null
+        return SuperTokensSessionBridge.adoptUnverifiedSession(context, stateRepo.getStore())
+    }
+
     internal suspend fun refreshAccessToken(): String? = getLatestAuthState(forceRefresh = true)?.accessToken
 
     internal suspend fun migrateLegacySessionIfNeeded(context: Context) {
@@ -143,11 +149,11 @@ class AuthRepo @Inject constructor() {
 
     private suspend fun runLegacyMigration(context: Context) {
         val auth = stateRepo.state.value.auth
-        if (auth.accessToken?.let(::isLikelySuperTokensToken) == true) return
+        if (auth.accessToken?.let(SuperTokensSessionBridge::isLikelySuperTokensToken) == true) return
         val credential = auth.refreshToken?.takeIf { it.isNotBlank() }
             ?: auth.accessToken?.takeIf { it.isNotBlank() }
             ?: return
-        if (isLikelySuperTokensToken(credential)) return
+        if (SuperTokensSessionBridge.isLikelySuperTokensToken(credential)) return
         val attempt = LegacyAttempt(migrationGeneration.incrementAndGet(), auth)
         try {
             if (getUsableSuperTokensAccessToken(context) != null) {
@@ -236,7 +242,7 @@ class AuthRepo @Inject constructor() {
             val front = Json.parseToJsonElement(String(Base64.getDecoder().decode(frontToken), Charsets.UTF_8)).jsonObject
             val uid = front["uid"]?.jsonPrimitive
             val expiry = front["ate"]?.jsonPrimitive
-            isLikelySuperTokensToken(accessToken) && (JWT(accessToken).expiresAt?.time ?: 0) > now &&
+            SuperTokensSessionBridge.isLikelySuperTokensToken(accessToken) && (JWT(accessToken).expiresAt?.time ?: 0) > now &&
                 uid?.isString == true && uid.content.isNotBlank() && front["up"] is JsonObject &&
                 expiry?.isString == false && (expiry.longOrNull ?: 0) > now
         }.getOrDefault(false)
@@ -380,16 +386,6 @@ class AuthRepo @Inject constructor() {
         val currentDateWithMargin = Date(currentTime + (60 * 1000)) // Add 60 sec margin to current Date
 
         return currentDateWithMargin.after(jwt.expiresAt)
-    }
-
-    private fun isLikelySuperTokensToken(token: String): Boolean {
-        return runCatching {
-            val jwt = JWT(token)
-            jwt.getClaim("sessionHandle").asString() != null ||
-                jwt.getClaim("tId").asString() != null ||
-                jwt.getClaim("refreshTokenHash1").asString() != null ||
-                jwt.getClaim("parentRefreshTokenHash1").asString() != null
-        }.getOrDefault(false)
     }
 
     suspend fun signOutUser(requestBody: SignOutRequestBody) : SignOutResponse {

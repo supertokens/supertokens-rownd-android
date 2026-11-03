@@ -9,6 +9,7 @@ import androidx.datastore.core.FileStorage
 import androidx.datastore.core.Serializer
 import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.dataStoreFile
+import androidx.lifecycle.Lifecycle
 import io.opentelemetry.api.trace.StatusCode
 import io.rownd.android.Rownd
 import io.rownd.android.RowndSignInIntent
@@ -22,6 +23,9 @@ import io.rownd.android.models.domain.SignInState
 import io.rownd.android.models.domain.User
 import io.rownd.android.util.AppLifecycleListener
 import io.rownd.android.util.AuthLevel
+import io.rownd.android.util.SuperTokensSessionBridge
+import kotlinx.collections.immutable.persistentListOf
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -60,7 +64,7 @@ object GlobalStateSerializer : Serializer<GlobalState> {
         try {
             return json.decodeFromString(
                 GlobalState.serializer(), input.readBytes().decodeToString()
-            )
+            ).forPersistence()
         } catch (ex: SerializationException) {
             throw CorruptionException("Unable to read GlobalState", ex)
         }
@@ -69,15 +73,28 @@ object GlobalStateSerializer : Serializer<GlobalState> {
     override suspend fun writeTo(t: GlobalState, output: OutputStream) {
         withContext(Dispatchers.IO) {
             output.write(
-                json.encodeToString(GlobalState.serializer(), t)
+                json.encodeToString(GlobalState.serializer(), t.forPersistence())
                     .encodeToByteArray()
             )
         }
     }
 }
 
+// The SuperTokens SDK owns native sessions, so only a legacy Rownd credential that still awaits
+// migration outlives the process. Profiles are always reloaded from the server.
+internal fun GlobalState.forPersistence(): GlobalState {
+    val credential = auth.refreshToken?.takeIf { it.isNotBlank() } ?: auth.accessToken?.takeIf { it.isNotBlank() }
+    val isLegacy = credential != null && !SuperTokensSessionBridge.isLikelySuperTokensToken(credential) &&
+        auth.accessToken?.let(SuperTokensSessionBridge::isLikelySuperTokensToken) != true
+    return copy(
+        auth = if (isLegacy) AuthState(accessToken = auth.accessToken, refreshToken = auth.refreshToken) else AuthState(),
+        user = User(),
+    )
+}
+
 sealed class StateAction : Action {
     data class SetGlobalState(val value: GlobalState) : StateAction()
+    internal data class FinishInitialization(val expected: GlobalState, val persisted: GlobalState?) : StateAction()
     data class SetAuth(val value: AuthState) : StateAction()
     internal data class ReconcileNativeSession(
         val expectedAccessToken: String?,
@@ -134,6 +151,17 @@ class StateRepo @Inject constructor() {
             is StateAction.SetUser -> state.copy(user = action.value)
             is StateAction.SetUserIsLoading -> state.copy(user = state.user.copy(isLoading = action.value))
             is StateAction.SetGlobalState -> action.value
+            is StateAction.FinishInitialization -> {
+                val persisted = action.persisted
+                fun <T> restore(current: T, expected: T, restored: T?) =
+                    if (restored != null && current == expected) restored else current
+                state.copy(
+                    appConfig = restore(state.appConfig, action.expected.appConfig, persisted?.appConfig),
+                    signIn = restore(state.signIn, action.expected.signIn, persisted?.signIn),
+                    auth = restore(state.auth, action.expected.auth, persisted?.auth),
+                    isInitialized = true,
+                )
+            }
         }
     }
 
@@ -141,13 +169,12 @@ class StateRepo @Inject constructor() {
         dataStore = ds
         // Re-inflate store from persistence
         CoroutineScope(Dispatchers.IO).launch {
+            val initial = store.currentState
             try {
-                var persistedState = dataStore.data.first()
-                persistedState = persistedState.copy(isInitialized = true)
-                store.dispatch(StateAction.SetGlobalState(persistedState))
+                store.dispatch(StateAction.FinishInitialization(initial, dataStore.data.first()))
             } catch (err: Exception) {
                 Log.d("Rownd.StateRepo", "Failed to load existing state from device", err)
-                store.dispatch(StateAction.SetGlobalState(GlobalState(isInitialized = true)))
+                store.dispatch(StateAction.FinishInitialization(initial, null))
             }
 
             // Fetch latest app config
@@ -156,30 +183,11 @@ class StateRepo @Inject constructor() {
             // Auth challenges are UI state. Do not reopen the sign-in sheet on SDK startup.
             store.currentState.auth.let { auth ->
                 if (auth.challengeId != null || auth.userIdentifier != null) {
-                    store.dispatch(
-                        StateAction.SetAuth(
-                            auth.copy(
-                                challengeId = null,
-                                userIdentifier = null,
-                            )
-                        )
-                    )
+                    store.dispatch(StateAction.SetAuthChallenge(null, null))
                 }
             }
 
-            // Refresh token if needed
-            if (store.currentState.auth.isAuthenticated && !store.currentState.auth.isAccessTokenValid) {
-                try {
-                    authRepo.getAccessToken()
-                } catch (err: Exception) {
-                    Log.d("Rownd.StateRepo", "Failed to fetch access token during startup", err)
-                }
-            }
-
-            // Fetch latest user data if we're authenticated and app is in foreground
-            if (AppLifecycleListener.isAppInForeground && store.currentState.auth.isAccessTokenValid) {
-                userRepo.loadUserAsync().await()
-            }
+            hydrateProfileOnFirstResume(reconcileStartupSession())
 
             tmpForceInstantUserConversionIfRequested(CoroutineScope(Dispatchers.IO))
 
@@ -193,6 +201,49 @@ class StateRepo @Inject constructor() {
         }
 
         return store
+    }
+
+    // A cached token proves nothing about the session: the server may have revoked it while the
+    // app was closed. Only the SDK's view of the session is adopted.
+    private suspend fun reconcileStartupSession(): String? {
+        if (!SuperTokensSessionBridge.awaitInitialized()) return null
+        return try {
+            authRepo.getLatestAuthState()?.accessToken
+        } catch (err: CancellationException) {
+            throw err
+        } catch (err: Exception) {
+            Log.d("Rownd.StateRepo", "Failed to verify the session during startup", err)
+            authRepo.adoptUnverifiedSession()
+        }
+    }
+
+    // Initialization usually finishes before the first activity resumes, and a profile request
+    // made while backgrounded is not needed yet.
+    private suspend fun hydrateProfileOnFirstResume(startupAccessToken: String?) {
+        if (startupAccessToken == null) return
+        val loadIfStillSignedIn = {
+            CoroutineScope(Dispatchers.IO).launch {
+                val auth = try {
+                    authRepo.getLatestAuthState()
+                } catch (err: Exception) {
+                    Log.d("Rownd.StateRepo", "Failed to verify the session before loading the profile", err)
+                    null
+                }
+                if (SuperTokensSessionBridge.sameSession(startupAccessToken, auth?.accessToken)) {
+                    userRepo.loadUserAsync().await()
+                }
+            }
+        }
+        withContext(Dispatchers.Main) {
+            val lifecycle = authRepo.rowndContext.client?.appHandleWrapper
+            if (AppLifecycleListener.isAppInForeground || lifecycle == null) {
+                loadIfStillSignedIn()
+            } else {
+                lifecycle.registerActivityListener(persistentListOf(Lifecycle.State.RESUMED), once = true) {
+                    loadIfStillSignedIn()
+                }
+            }
+        }
     }
 
     private fun tmpForceInstantUserConversionIfRequested(scope: CoroutineScope) {

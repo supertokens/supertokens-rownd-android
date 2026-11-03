@@ -122,6 +122,10 @@ object HarnessClient {
         post("/test/user-email", mapOf("userId" to userId, "email" to email), "default")
     }
 
+    fun setRefreshUnavailable(unavailable: Boolean) {
+        post("/test/refresh-availability", mapOf("unavailable" to unavailable), "default")
+    }
+
     fun armResponseGate(method: String, path: String) {
         post("/test/response-gate", mapOf("method" to method, "path" to path), "default")
     }

@@ -78,6 +78,15 @@ class UserRepo @Inject constructor() {
 
                 if (ex.response.status == HttpStatusCode.NotFound && isCurrentUser()) {
                     rowndContext.client?.signOut()
+                } else if (ex.response.status == HttpStatusCode.Unauthorized && isCurrentUser()) {
+                    // The SDK clears a session the server rejects during refresh; follow it.
+                    try {
+                        stateRepo.authRepo.getLatestAuthState()
+                    } catch (err: CancellationException) {
+                        throw err
+                    } catch (err: Exception) {
+                        Log.d("RowndUsersApi", "Failed to reconcile the session after an unauthorized response", err)
+                    }
                 }
             }
             null
