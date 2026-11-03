@@ -116,15 +116,16 @@ class EmailChange3832ReproInstrumentedTest {
         first.awaitStartup()
         fixture.signInThroughHub(first, session)
         HarnessClient.changeUserEmail(userId, newEmail)
-        HarnessClient.revokeSession(fixture.handle(session.accessToken))
 
         val second = fixture.reopen(first)
         second.awaitStartup()
         second.resume()
-        fixture.eventually(10_000) { isConsistent(second, newEmail) }
+        fixture.waitUntil("Valid session must restore and hydrate the changed email", 10_000) {
+            second.state.auth.isAuthenticated && second.state.user.data["email"] == newEmail
+        }
 
-        val rphInit = fixture.rphInit(second)
-        val problems = rphInit?.let { fixture.rphInitProblems(it, userId) }.orEmpty()
+        val rphInit = requireNotNull(fixture.rphInit(second)) { "Authenticated Manage Account must receive rph_init" }
+        val problems = fixture.rphInitProblems(rphInit, userId)
         assertTrue("Manage Account rph_init is unusable: $problems", problems.isEmpty())
     }
 
