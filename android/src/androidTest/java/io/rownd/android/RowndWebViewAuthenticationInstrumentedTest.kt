@@ -3,6 +3,7 @@ package io.rownd.android
 import android.app.Application
 import android.content.Context
 import android.os.Looper
+import com.auth0.android.jwt.JWT
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.supertokens.session.SuperTokens
@@ -22,6 +23,7 @@ import io.rownd.android.views.RowndWebView
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -459,20 +461,8 @@ class RowndWebViewAuthenticationInstrumentedTest {
         bridge.postSecureMessage(buildAuthenticationMessage(oldSession.accessToken, oldSession.refreshToken))
         bridge.postSecureMessage(buildAuthenticationMessage(latestSession.accessToken, latestSession.refreshToken))
 
-        try {
-            waitUntil {
-                runBlocking { SuperTokensSessionBridge.getAccessToken(context) } == latestSession.accessToken &&
-                    Rownd.stateRepo.state.value.auth.accessToken == latestSession.accessToken
-            }
-        } catch (failure: AssertionError) {
-            val sdkLatest = runBlocking { SuperTokensSessionBridge.getAccessToken(context) } == latestSession.accessToken
-            val storeLatest = Rownd.stateRepo.state.value.auth.accessToken == latestSession.accessToken
-            val counters = runCatching { HarnessClient.getCounters().stRefresh }.getOrNull()
-            throw AssertionError("Latest authentication timeout: sdkLatest=$sdkLatest storeLatest=$storeLatest refreshCount=$counters", failure)
-        }
-
+        assertCurrentSession(context, latestSession.accessToken, oldSession.accessToken)
         assertTrue("Latest refresh credential must remain installed", latestSession.refreshToken == SuperTokensSessionBridge.getRefreshToken(context))
-        assertTrue("Latest access credential must remain installed", latestSession.accessToken == Rownd.stateRepo.state.value.auth.accessToken)
     }
 
     @Test
@@ -678,7 +668,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
             assertEquals("otp-challenge", Rownd.stateRepo.state.value.auth.challengeId)
             assertEquals("otp@example.com", Rownd.stateRepo.state.value.auth.userIdentifier)
             if (previousSession != null) {
-                assertEquals(previousSession.accessToken, runBlocking { SuperTokensSessionBridge.getAccessToken(context) })
+                assertTrue("The previous credential must initially be installed", previousSession.accessToken == runBlocking { SuperTokensSessionBridge.getAccessToken(context) })
             } else {
                 assertFalse(runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
             }
@@ -691,13 +681,9 @@ class RowndWebViewAuthenticationInstrumentedTest {
             bridge.postSecureMessage("""{"type":"auth_challenge_cleared"}""")
             bridge.postSecureMessage(buildSignInCompletedMessage())
 
-            waitUntil {
-                runBlocking { SuperTokensSessionBridge.getAccessToken(context) } == authenticatedSession.accessToken &&
-                    Rownd.stateRepo.state.value.auth.accessToken == authenticatedSession.accessToken
-            }
-
-            assertEquals(authenticatedSession.refreshToken, SuperTokensSessionBridge.getRefreshToken(context))
-            assertEquals(authenticatedSession.accessToken, Rownd.stateRepo.state.value.auth.accessToken)
+            waitUntil { dismissalCount.get() == 1 && completionCount.get() == 1 }
+            assertCurrentSession(context, authenticatedSession.accessToken, previousSession?.accessToken)
+            assertTrue("The authenticated refresh credential must remain installed", authenticatedSession.refreshToken == SuperTokensSessionBridge.getRefreshToken(context))
             assertEquals(null, Rownd.stateRepo.state.value.auth.challengeId)
             assertEquals(null, Rownd.stateRepo.state.value.auth.userIdentifier)
 
@@ -707,6 +693,47 @@ class RowndWebViewAuthenticationInstrumentedTest {
             assertEquals("OTP completion must dismiss once", 1, dismissalCount.get())
         } finally {
             Rownd.removeEventListener(listener)
+        }
+    }
+
+    private data class SessionIdentity(val handle: String, val subject: String, val tenant: String)
+
+    private fun sessionIdentity(token: String?): SessionIdentity? = runCatching {
+        val jwt = JWT(token?.takeIf { it.isNotBlank() } ?: return null)
+        val handle = jwt.getClaim("sessionHandle").asString()?.takeIf { it.isNotBlank() } ?: return null
+        val subject = (jwt.subject ?: jwt.getClaim("userId").asString())?.takeIf { it.isNotBlank() } ?: return null
+        val tenant = (jwt.getClaim("tId").asString() ?: jwt.getClaim("tenantId").asString())?.takeIf { it.isNotBlank() } ?: return null
+        SessionIdentity(handle, subject, tenant)
+    }.getOrNull()
+
+    private fun assertCurrentSession(context: Context, expectedToken: String, previousToken: String?) {
+        val expected = sessionIdentity(expectedToken)
+        assertTrue("Expected session must have a handle, subject and public tenant", expected != null && expected.tenant == "public")
+        val previous = previousToken?.let(::sessionIdentity)
+        assertTrue("Previous session must have a distinct handle", previousToken == null || (previous != null && previous.handle != expected?.handle))
+
+        var sdkToken: String? = null
+        var storeToken: String? = null
+        waitUntil {
+            storeToken = Rownd.stateRepo.state.value.auth.accessToken
+            sdkToken = runBlocking { SuperTokensSessionBridge.getAccessToken(context) }
+            sessionIdentity(storeToken) == expected && sessionIdentity(sdkToken) == expected
+        }
+        val sdkIdentity = sessionIdentity(sdkToken)
+        val storeIdentity = sessionIdentity(storeToken)
+        assertTrue("SDK session must match the expected handle, subject and tenant", sdkIdentity != null && sdkIdentity == expected)
+        assertTrue("Cached session must match the expected handle, subject and tenant", storeIdentity != null && storeIdentity == expected)
+        assertTrue("Neither session may have the previous handle", previous == null || (sdkIdentity?.handle != previous.handle && storeIdentity?.handle != previous.handle))
+
+        val request = Request.Builder()
+            .url("${harnessConfig.androidUrl}/test/protected")
+            .header("Authorization", "Bearer $sdkToken")
+            .header("st-auth-mode", "header")
+            .build()
+        OkHttpClient().newCall(request).execute().use { response ->
+            assertTrue("SDK credential must authorize a protected request", response.code == 200)
+            val actualUser = runCatching { JSONObject(response.body?.string().orEmpty()).optString("userId") }.getOrNull()
+            assertTrue("Protected request must resolve to the expected user", !actualUser.isNullOrBlank() && actualUser == expected?.subject)
         }
     }
 
