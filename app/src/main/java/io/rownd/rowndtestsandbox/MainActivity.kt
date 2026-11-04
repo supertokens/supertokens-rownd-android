@@ -118,6 +118,7 @@ class MainActivity : AppCompatActivity() {
                             latestEvent = observedEvents.latestEvent,
                             authLevel = state.user.authLevel?.name ?: "unknown",
                             userId = state.user.data["user_id"]?.toString() ?: "not loaded",
+                            email = state.user.data["email"]?.toString() ?: "not loaded",
                         )
 
                         if (state.auth.isAuthenticated) {
@@ -329,6 +330,7 @@ private fun StatusCard(
     latestEvent: String,
     authLevel: String,
     userId: String,
+    email: String,
 ) {
     SandboxCard {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -343,6 +345,7 @@ private fun StatusCard(
             StatusRow("Sign-out events", signOutCount.toString(), "e2e.status.sign-out-events")
             StatusRow("Latest event", latestEvent, "e2e.status.latest-event")
             StatusRow("User", userId)
+            StatusRow("Email", email, "e2e.status.email")
             StatusRow("Access token", if (accessTokenValid) "valid" else "invalid")
             StatusRow("SuperTokens session", sessionExists)
         }

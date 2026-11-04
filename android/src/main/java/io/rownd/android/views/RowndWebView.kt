@@ -155,7 +155,18 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
     internal var isDestroyed = false
         private set
 
-    internal lateinit var rowndClient: RowndClient
+    private var client: RowndClient? = null
+    internal var rowndClient: RowndClient
+        get() = client ?: throw UninitializedPropertyAccessException("rowndClient has not been initialized")
+        set(value) {
+            if (client == null) documentAccessToken = value.stateRepo.state.value.auth.accessToken
+            client = value
+        }
+
+    // The session the current Hub document was given. Messages from a document of an earlier
+    // session must not write into the current one.
+    @Volatile
+    internal var documentAccessToken: String? = null
     internal val rowndJavascriptInterface: RowndJavascriptInterface
     internal val rowndWebViewClient: RowndWebViewClient
 
@@ -332,11 +343,12 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
             val targetPageRequestId = beginTargetPageRequest(targetPage, jsFnOptionsAsJson)
             targetPageLoadJob = coroutineContext[Job]
             try {
-                val targetUrl = rowndClient.config.hubLoaderUrl().toUri().buildUpon()
+                val hubLoaderRequest = rowndClient.config.hubLoaderRequest()
+                val targetUrl = hubLoaderRequest.url.toUri().buildUpon()
                     .appendQueryParameter(TARGET_PAGE_REQUEST_ID_PARAM, targetPageRequestId.toString())
                     .build()
                     .toString()
-                if (!setTargetPageRequestUrl(targetPageRequestId, targetUrl)) {
+                if (!setTargetPageRequestUrl(targetPageRequestId, targetUrl, hubLoaderRequest.accessToken)) {
                     return@launch
                 }
                 loadUrl(targetUrl)
@@ -382,9 +394,9 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
     }
 
     @Synchronized
-    private fun setTargetPageRequestUrl(requestId: Long, targetUrl: String): Boolean {
+    private fun setTargetPageRequestUrl(requestId: Long, targetUrl: String, accessToken: String? = null): Boolean {
         val request = pendingTargetPageRequest?.takeIf { it.id == requestId } ?: return false
-        pendingTargetPageRequest = request.copy(targetUrl = targetUrl)
+        pendingTargetPageRequest = request.copy(targetUrl = targetUrl, accessToken = accessToken)
         return true
     }
 
@@ -420,6 +432,7 @@ class RowndWebView(context: Context, attrs: AttributeSet?) : WebView(context, at
         val targetPage: HubPageSelector,
         val jsFunctionArgsAsJson: String,
         val targetUrl: String? = null,
+        val accessToken: String? = null,
     )
 }
 
@@ -591,6 +604,7 @@ class RowndWebViewClient(private val webView: RowndWebView, private val context:
         finishedHubPage = null
         hubLoadedPageLoadId = null
         hubAuthenticationPageLoadId = null
+        url?.let(webView::pendingTargetPageRequest)?.let { webView.documentAccessToken = it.accessToken }
         super.onPageStarted(webView, url, favicon)
         Log.d("Rownd.hub", "Started loading ${urlForLogging(url)}")
         setIsLoading(true)
@@ -956,7 +970,7 @@ class RowndJavascriptInterface constructor(
                     // that ACK nor retry verification, and must survive the Hub closing on success.
                     parentWebView.rowndClient.userRepo.loadUserAsync {
                         isCurrentSession() &&
-                            parentWebView.rowndClient.stateRepo.state.value.auth.accessToken == replacementAccessToken
+                            SuperTokensSessionBridge.isSameSession(replacementAccessToken, parentWebView.rowndClient.stateRepo.state.value.auth.accessToken)
                     }
                 }
                 status
@@ -1003,6 +1017,12 @@ class RowndJavascriptInterface constructor(
             }
         }
     }
+
+    // A signed-out sign-in document stays current while the app is signed out.
+    private fun isDocumentSessionCurrent(): Boolean = SuperTokensSessionBridge.isSameSession(
+        parentWebView.documentAccessToken,
+        parentWebView.rowndClient.stateRepo.state.value.auth.accessToken,
+    )
 
     private fun resetSignInCompletedDeduper() {
         signInCompletedFallbackJob?.cancel()
@@ -1120,13 +1140,14 @@ class RowndJavascriptInterface constructor(
                                     return@withLock
                                 }
 
+                                parentWebView.documentAccessToken = parentWebView.rowndClient.stateRepo.state.value.auth.accessToken
                                 parentWebView.rowndClient.signInRepo.reset()
                                 if (continuationAttempt != null) {
                                     val adoptedToken = parentWebView.rowndClient.stateRepo.state.value.auth.accessToken
                                     parentWebView.rowndClient.userRepo.loadUserAsync {
                                         adoptedToken != null &&
                                             signOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration() &&
-                                            parentWebView.rowndClient.stateRepo.state.value.auth.accessToken == adoptedToken
+                                            SuperTokensSessionBridge.isSameSession(adoptedToken, parentWebView.rowndClient.stateRepo.state.value.auth.accessToken)
                                     }
                                     independentProfileLoad = true
                                 }
@@ -1211,13 +1232,17 @@ class RowndJavascriptInterface constructor(
                 }
 
                 MessageType.UserDataUpdate -> {
-                    Rownd.store.dispatch(
-                        StateAction.SetUser(
-                            (interopMessage as UserDataUpdateMessage).payload.asDomainModel(
-                                parentWebView.rowndClient.stateRepo,
-                                parentWebView.rowndClient.userRepo
-                            )
-                        )
+                    val documentAccessToken = parentWebView.documentAccessToken
+                    if (documentAccessToken == null || !isDocumentSessionCurrent()) {
+                        Log.w("Rownd.hub", "Ignoring user data from a Hub document of another session")
+                        return
+                    }
+                    parentWebView.rowndClient.userRepo.applyHubUpdate(
+                        (interopMessage as UserDataUpdateMessage).payload.asDomainModel(
+                            parentWebView.rowndClient.stateRepo,
+                            parentWebView.rowndClient.userRepo
+                        ),
+                        documentAccessToken,
                     )
                 }
 
@@ -1292,6 +1317,10 @@ class RowndJavascriptInterface constructor(
                 }
 
                 MessageType.AuthChallengeInitiated -> {
+                    if (!isDocumentSessionCurrent()) {
+                        Log.w("Rownd.hub", "Ignoring an auth challenge from a Hub document of another session")
+                        return
+                    }
                     val authChallengeMessage = (interopMessage as AuthChallengeInitiatedMessage)
                     parentWebView.emailChangeRequestId?.let { requestId ->
                         if (parentWebView.targetPage != HubPageSelector.SignIn || !parentWebView.emailChangeIsCurrent()) return
@@ -1306,6 +1335,10 @@ class RowndJavascriptInterface constructor(
                 }
 
                 MessageType.AuthChallengeCleared -> {
+                    if (!isDocumentSessionCurrent()) {
+                        Log.w("Rownd.hub", "Ignoring an auth challenge from a Hub document of another session")
+                        return
+                    }
                     parentWebView.emailChangeRequestId?.let {
                         if (!parentWebView.emailChangeIsCurrent()) return
                         Rownd.emailChangeContinuation.clearChallenge(it)

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { commandTimeout, runCommand } from "./command-deadline";
 import { startLocalHub, type LocalHub } from "./local-hub";
 import { startIntegrationHarness, type AndroidIntegrationHarness } from "./server";
 
@@ -23,6 +23,7 @@ function parseCommand() {
 
 async function main() {
   const [command, ...args] = parseCommand();
+  commandTimeout();
   let localHub: LocalHub | undefined;
   let harness: AndroidIntegrationHarness | undefined;
 
@@ -40,39 +41,26 @@ async function main() {
     console.log(`  public:  ${harness.publicUrl}`);
     console.log(`  hub:     ${harness.hubUrl}`);
 
-    const child = spawn(command, args, {
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        HARNESS_URL: process.env.HARNESS_URL || harness.serverUrl,
-        ANDROID_HARNESS_URL: process.env.ANDROID_HARNESS_URL || harness.androidUrl,
-        ANDROID_API_URL: process.env.ANDROID_API_URL || harness.androidUrl,
-        ANDROID_HUB_URL: process.env.ANDROID_HUB_URL || harness.hubUrl,
-        ANDROID_APP_KEY: process.env.ANDROID_APP_KEY || harness.appKey,
-      },
-    });
-
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      child.on("error", reject);
-      child.on("close", (code, signal) => {
-        if (signal) {
-          console.error(`Command terminated by signal ${signal}`);
-          resolve(1);
-          return;
-        }
-
-        resolve(code ?? 1);
-      });
+    const exitCode = await runCommand(command, args, {
+      ...process.env,
+      HARNESS_URL: process.env.HARNESS_URL || harness.serverUrl,
+      ANDROID_HARNESS_URL: process.env.ANDROID_HARNESS_URL || harness.androidUrl,
+      ANDROID_API_URL: process.env.ANDROID_API_URL || harness.androidUrl,
+      ANDROID_HUB_URL: process.env.ANDROID_HUB_URL || harness.hubUrl,
+      ANDROID_APP_KEY: process.env.ANDROID_APP_KEY || harness.appKey,
     });
 
     process.exitCode = exitCode;
   } finally {
-    await harness?.stop();
-    await localHub?.stop();
+    try {
+      await harness?.stop();
+    } finally {
+      await localHub?.stop();
+    }
   }
 }
 
-main().catch(async (error) => {
+main().then(() => process.exit(process.exitCode || 0)).catch((error) => {
   console.error("Failed to run command with Android harness", error);
   process.exit(1);
 });

@@ -53,12 +53,14 @@ type HarnessState = {
   counters: HarnessCounters;
   passwordlessConsumeStatuses: number[];
   requestLog: RequestCapture[];
+  httpStatuses: Array<{ method: string; path: string; status: number; originPresent: boolean }>;
   emailUpdates: Array<{ statusCode: number }>;
   refreshSimulationCompleted: boolean;
   refreshUnavailable: boolean;
   userData: Record<string, unknown>;
   pendingEmailVerifications: Map<string, PendingEmailVerification>;
   signOutGate?: { path: string; skip: number; reached: boolean; release: () => void; wait: Promise<void> };
+  responseGate?: { method: string; path: string; matched: boolean; reached: boolean; release: () => void; wait: Promise<void> };
 };
 
 type PendingEmailVerification = {
@@ -119,6 +121,7 @@ function createEmptyState(): HarnessState {
     counters: { legacyRefresh: 0, migrate: 0, passwordlessConsume: 0, stRefresh: 0, passwordlessEmail: 0, verificationEmail: 0 },
     passwordlessConsumeStatuses: [],
     requestLog: [],
+    httpStatuses: [],
     emailUpdates: [],
     refreshSimulationCompleted: false,
     refreshUnavailable: false,
@@ -301,7 +304,53 @@ async function ensureSTUser(
   return SuperTokens.getUser(payload.user.id);
 }
 
+async function stopIntegrationHarness() {
+  const errors: unknown[] = [];
+  const attempt = async (action: () => Promise<unknown>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        action(),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Cleanup timed out")), 20_000); }),
+      ]);
+    } catch (error) { errors.push(error); } finally { clearTimeout(timer); }
+  };
+  if (server) {
+    const closingServer = server;
+    server = undefined;
+    await attempt(() => new Promise<void>((resolve, reject) => {
+      closingServer.close((err) => (err ? reject(err) : resolve()));
+      closingServer.closeAllConnections();
+    }));
+  }
+  if (coreContainer) {
+    const container = coreContainer;
+    coreContainer = undefined;
+    await attempt(() => container.stop());
+  }
+  if (postgresContainer) {
+    const container = postgresContainer;
+    postgresContainer = undefined;
+    await attempt(() => container.stop());
+  }
+  if (network) {
+    const ownedNetwork = network;
+    network = undefined;
+    await attempt(() => ownedNetwork.stop());
+  }
+  if (errors.length) throw new AggregateError(errors, "Failed to clean up one or more harness resources");
+}
+
 export async function startIntegrationHarness(): Promise<AndroidIntegrationHarness> {
+  try {
+    return await initializeIntegrationHarness();
+  } catch (error) {
+    try { await stopIntegrationHarness(); } catch { console.error("Harness startup cleanup failed"); }
+    throw error;
+  }
+}
+
+async function initializeIntegrationHarness(): Promise<AndroidIntegrationHarness> {
   const realEmailChanges = process.env.ANDROID_REAL_EMAIL_CHANGES === "1";
   resetState();
   const hubUrl =
@@ -317,7 +366,17 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     .toString();
 
   network = await new Network().start();
-  postgresContainer = await new GenericContainer("postgres:14")
+  const containerPrefix = process.env.ANDROID_CONTAINER_PREFIX;
+  if (containerPrefix && !/^[a-z0-9][a-z0-9_.-]*$/.test(containerPrefix)) {
+    throw new Error("ANDROID_CONTAINER_PREFIX must be a valid Docker name prefix");
+  }
+  const tokenValidity = process.env.ANDROID_ACCESS_TOKEN_VALIDITY_SECONDS;
+  if (tokenValidity && (!/^\d+$/.test(tokenValidity) || Number(tokenValidity) < 1)) {
+    throw new Error("ANDROID_ACCESS_TOKEN_VALIDITY_SECONDS must be a positive integer");
+  }
+  const postgres = new GenericContainer(process.env.ANDROID_POSTGRES_IMAGE || "postgres:14");
+  if (containerPrefix) postgres.withName(`${containerPrefix}-postgres`);
+  postgresContainer = await postgres
     .withNetwork(network)
     .withNetworkAliases("postgres")
     .withEnvironment({
@@ -331,13 +390,16 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     )
     .start();
 
-  coreContainer = await new GenericContainer(
-    "supertokens/supertokens-postgresql",
-  )
+  const core = new GenericContainer(process.env.ANDROID_CORE_IMAGE || "supertokens/supertokens-postgresql");
+  if (containerPrefix) core.withName(`${containerPrefix}-core`);
+  coreContainer = await core
     .withNetwork(network)
     .withEnvironment({
       POSTGRESQL_CONNECTION_URI:
         "postgresql://supertokens:somepassword@postgres:5432/supertokens",
+      ...(tokenValidity
+        ? { ACCESS_TOKEN_VALIDITY: tokenValidity }
+        : {}),
     })
     .withExposedPorts(3567)
     .withWaitStrategy(Wait.forHttp("/hello", 3567))
@@ -387,7 +449,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   const publicUrl = ANDROID_PUBLIC_API_URL || androidUrl;
 
   SuperTokens.init({
-    debug: true,
+    debug: process.env.ANDROID_HARNESS_DEBUG === "1",
     supertokens: { connectionURI: coreConnectionURI },
     appInfo: {
       appName,
@@ -475,7 +537,7 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
       plugins: [
         RowndMigrationPlugin.init({
           ...(realEmailChanges ? { emailChange: { maxSessionAgeSeconds: process.env.EMAIL_CHANGE_SESSION_AGE_POLICY === "null" ? null : 600 } } : {}),
-          enableDebugLogs: true,
+          enableDebugLogs: process.env.ANDROID_HARNESS_DEBUG === "1",
           rowndAppKey: APP_KEY,
           rowndAppSecret: "rownd-e2e-secret-rownd-e2e-secret",
           clientDomains: {
@@ -581,6 +643,36 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     next();
   });
 
+  // Holds the first matching response after the handler computed it, so a stale body can be delivered late.
+  app.post("/test/response-gate", (req, res) => {
+    const state = getState(req);
+    state.responseGate?.release();
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    state.responseGate = { method: String(req.body.method).toUpperCase(), path: String(req.body.path), matched: false, reached: false, release, wait };
+    res.json({ status: "OK" });
+  });
+  app.get("/test/response-gate", (req, res) => {
+    res.json({ reached: getState(req).responseGate?.reached === true });
+  });
+  app.post("/test/response-gate/release", (req, res) => {
+    getState(req).responseGate?.release();
+    res.json({ status: "OK" });
+  });
+  app.use((req, res, next) => {
+    const gate = getState(req).responseGate;
+    if (gate && !gate.matched && gate.method === req.method && gate.path === req.path) {
+      gate.matched = true;
+      const end = res.end.bind(res) as (...args: unknown[]) => express.Response;
+      res.end = ((...args: unknown[]) => {
+        gate.reached = true;
+        void gate.wait.then(() => end(...args));
+        return res;
+      }) as typeof res.end;
+    }
+    next();
+  });
+
   app.get("/test/email-verification-launcher", (req, res) => {
     const names = [
       "token",
@@ -611,6 +703,12 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
   // Counter tracking
   app.use((req, res, next) => {
     const state = getState(req as express.Request);
+    if (["/auth/plugin/rownd/user", "/auth/session/refresh", "/auth/user/email/verify"].includes(req.path)) {
+      res.on("finish", () => {
+        state.httpStatuses.push({ method: req.method, path: req.path, status: res.statusCode, originPresent: !!req.headers.origin });
+        if (state.httpStatuses.length > 100) state.httpStatuses.shift();
+      });
+    }
     if (req.method === "POST" && req.path === "/auth/session/refresh") {
       state.counters.stRefresh += 1;
       if (state.refreshUnavailable) {
@@ -849,6 +947,10 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     res.json({ status: "OK" });
   });
 
+  app.get("/test/http-statuses", (req, res) => {
+    res.json({ requests: getState(req).httpStatuses });
+  });
+
   app.post("/reset", (req, res) => {
     resetState(getNamespace(req));
     res.json({ status: "OK" });
@@ -1013,6 +1115,32 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     res.json({ exists: session !== undefined });
   });
 
+  // Simulates the server side of an email change completed outside the app.
+  app.post("/test/revoke-session", async (req, res) => {
+    res.json({ revoked: await Session.revokeSession(String(req.body.sessionHandle)) });
+  });
+
+  app.post("/test/user-email", async (req, res) => {
+    const userId = String(req.body.userId);
+    const email = String(req.body.email);
+    const loginMethod = (await SuperTokens.getUser(userId))?.loginMethods.find((method) => method.recipeId === "passwordless");
+    if (!loginMethod) {
+      res.status(404).json({ status: "UNKNOWN_USER" });
+      return;
+    }
+    const updated = await Passwordless.updateUser({ recipeUserId: loginMethod.recipeUserId, email });
+    if (updated.status !== "OK") {
+      res.status(409).json(updated);
+      return;
+    }
+    const { metadata } = await UserMetadata.getUserMetadata(userId);
+    await UserMetadata.updateUserMetadata(userId, {
+      data: { ...(metadata.data ?? {}), email },
+      verified_data: { ...(metadata.verified_data ?? {}), email },
+    });
+    res.json({ status: "OK" });
+  });
+
   app.post("/test/refresh-availability", (req, res) => {
     if (typeof req.body?.unavailable !== "boolean") {
       res.status(400).json({ status: "ERROR", message: "unavailable must be a boolean" });
@@ -1082,27 +1210,6 @@ export async function startIntegrationHarness(): Promise<AndroidIntegrationHarne
     hubUrl,
     appKey: APP_KEY,
     appId: APP_ID,
-    stop: async () => {
-      if (server) {
-        const closingServer = server;
-        await new Promise<void>((resolve, reject) => {
-          closingServer.close((err) => (err ? reject(err) : resolve()));
-          closingServer.closeAllConnections();
-        });
-        server = undefined;
-      }
-      if (coreContainer) {
-        await coreContainer.stop();
-        coreContainer = undefined;
-      }
-      if (postgresContainer) {
-        await postgresContainer.stop();
-        postgresContainer = undefined;
-      }
-      if (network) {
-        await network.stop();
-        network = undefined;
-      }
-    },
+    stop: stopIntegrationHarness,
   };
 }

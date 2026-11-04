@@ -27,6 +27,10 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.io.IOException
@@ -67,22 +71,33 @@ object SuperTokensSessionBridge {
         }
 
     val isInitialized = AtomicBoolean(false)
+    private val sessionEventListeners = CopyOnWriteArrayList<(EventHandler.EventType) -> Unit>()
+
+    // The SDK fires events synchronously on the request thread, some while it holds the refresh
+    // lock, so listeners must hand off work instead of calling back into the SDK.
+    internal fun addSessionEventListener(listener: (EventHandler.EventType) -> Unit) {
+        sessionEventListeners.addIfAbsent(listener)
+    }
+
+    internal fun removeSessionEventListener(listener: (EventHandler.EventType) -> Unit) {
+        sessionEventListeners.remove(listener)
+    }
+
+    internal val sessionEventHandler = object : EventHandler {
+        override fun handleEvent(eventType: EventHandler.EventType) {
+            debugLog("SuperTokens event: $eventType")
+            sessionEventListeners.forEach { it(eventType) }
+        }
+    }
+
     private var enableDebugMode = false
 
-    internal var buildSuperTokens: (Context, String, String, Boolean) -> Unit = { context, apiDomain, apiBasePath, enableDebugMode ->
-        val builder = SuperTokens.Builder(context, apiDomain)
+    internal var buildSuperTokens: (Context, String, String, Boolean) -> Unit = { context, apiDomain, apiBasePath, _ ->
+        SuperTokens.Builder(context, apiDomain)
             .apiBasePath(apiBasePath)
             .tokenTransferMethod("header")
-
-        if (enableDebugMode) {
-            builder.eventHandler(object : EventHandler {
-                override fun handleEvent(eventType: EventHandler.EventType) {
-                    Log.d(TAG, "SuperTokens event: $eventType")
-                }
-            })
-        }
-
-        builder.build()
+            .eventHandler(sessionEventHandler)
+            .build()
     }
 
     fun initializeIfNeeded(context: Context, apiDomain: String, apiBasePath: String = "/auth", enableDebugMode: Boolean = false) {
@@ -207,17 +222,75 @@ object SuperTokensSessionBridge {
     private fun sessionHandle(token: String?): String? =
         token?.let { runCatching { JWT(it).getClaim("sessionHandle").asString() }.getOrNull() }
 
-    private fun sameSession(first: String?, second: String?): Boolean {
-        if (first == null || second == null) return false
-        return runCatching {
-            val old = JWT(first)
-            val current = JWT(second)
-            val handle = old.getClaim("sessionHandle").asString()
-            !handle.isNullOrBlank() && handle == current.getClaim("sessionHandle").asString() &&
-                (old.subject ?: old.getClaim("userId").asString()) == (current.subject ?: current.getClaim("userId").asString()) &&
-                (old.getClaim("tId").asString() ?: old.getClaim("tenantId").asString()) ==
-                    (current.getClaim("tId").asString() ?: current.getClaim("tenantId").asString())
-        }.getOrDefault(false)
+    internal fun sameSession(first: String?, second: String?): Boolean {
+        val old = first?.let(::claims) ?: return false
+        val current = second?.let(::claims) ?: return false
+        fun JsonObject.claim(vararg names: String) =
+            names.firstNotNullOfOrNull { (this[it] as? JsonPrimitive)?.takeIf { value -> value.isString }?.content }
+        val handle = old.claim("sessionHandle")
+        return !handle.isNullOrBlank() && handle == current.claim("sessionHandle") &&
+            old.claim("sub", "userId") == current.claim("sub", "userId") &&
+            old.claim("tId", "tenantId") == current.claim("tId", "tenantId")
+    }
+
+    // A sign-out clears whatever the SDK holds, so one decided for a session must not run once
+    // the SDK holds another.
+    internal fun storesAnotherSession(context: Context, accessToken: String?): Boolean =
+        storedAccessToken(context)?.let { !isSameSession(accessToken, it) } ?: false
+
+    // Legacy credentials carry no session handle, so only the identical token belongs to their session.
+    internal fun isSameSession(first: String?, second: String?): Boolean = first == second || sameSession(first, second)
+
+    private fun claims(token: String): JsonObject? = runCatching {
+        lenientJson.parseToJsonElement(String(Base64.getUrlDecoder().decode(padBase64(token.split(".")[1])))).jsonObject
+    }.getOrNull()
+
+    internal fun isLikelySuperTokensToken(token: String): Boolean {
+        val payload = claims(token) ?: return false
+        return listOf("sessionHandle", "tId", "refreshTokenHash1", "parentRefreshTokenHash1").any {
+            (payload[it] as? JsonPrimitive)?.isString == true
+        }
+    }
+
+    // When the SDK cannot reach the server to verify a stored session, keep the user signed in
+    // on its stored tokens rather than signing them out while offline.
+    internal fun adoptUnverifiedSession(context: Context, store: Store<GlobalState, StateAction>): String? =
+        synchronized(sessionCommitLock) {
+            val token = storedAccessToken(context)
+            if (token == null || getRefreshToken(context).isNullOrBlank() || store.currentState.auth.accessToken != null) {
+                return@synchronized null
+            }
+            store.dispatch(StateAction.ReconcileNativeSession(
+                expectedAccessToken = null,
+                accessToken = token,
+                preserveProfile = false,
+                isCurrent = { storedAccessToken(context) == token },
+            ))
+            token.takeIf { store.currentState.auth.accessToken == it }
+        }
+
+    internal data class SessionTokens(
+        val accessToken: String,
+        val refreshToken: String,
+        val frontToken: String?,
+        val antiCSRF: String?,
+    )
+
+    // The SDK writes each token separately, so a read racing a refresh or a session replacement can
+    // mix two sessions. Only a read that a second read confirms is returned.
+    internal fun readSessionTokens(context: Context): SessionTokens? {
+        fun read(): SessionTokens? {
+            val accessToken = storedAccessToken(context)?.takeIf { it.isNotBlank() } ?: return null
+            val refreshToken = getRefreshToken(context)?.takeIf { it.isNotBlank() } ?: return null
+            return SessionTokens(accessToken, refreshToken, getFrontToken(context), getAntiCSRF(context))
+        }
+        var previous = read() ?: return null
+        repeat(2) {
+            val current = read() ?: return null
+            if (current == previous) return current
+            previous = current
+        }
+        return null
     }
 
     fun getRefreshToken(context: Context): String? =
@@ -343,7 +416,7 @@ object SuperTokensSessionBridge {
         return synchronized(sessionCommitLock) {
             if (!isCurrent() || generation != currentSignOutGeneration() ||
                 sharedPrefs(context).getString(ACCESS_TOKEN_STORAGE_KEY, null) != accessToken) return@synchronized false
-            store.dispatch(StateAction.SetAuth(AuthState(accessToken = accessToken, refreshToken = null)))
+            store.dispatch(StateAction.AdoptNativeSession(accessToken))
             true
         }
     }

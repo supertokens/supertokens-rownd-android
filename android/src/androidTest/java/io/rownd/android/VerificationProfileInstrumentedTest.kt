@@ -9,6 +9,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import com.supertokens.session.SuperTokens
+import com.supertokens.session.EventHandler
 import io.ktor.client.engine.mock.MockEngineConfig
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.HttpRequestRetry
@@ -29,6 +30,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -97,7 +99,8 @@ class VerificationProfileInstrumentedTest {
         withTimeout(5_000) { requested.await() }
         val newer = User(data = mapOf("email" to "new-login@example.com"))
         rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState(accessToken = "S2")))
-        rownd.stateRepo.getStore().dispatch(StateAction.SetUser(newer))
+        // The new session's profile arrives through its own profile write, which supersedes the load.
+        rownd.userRepo.applyHubUpdate(newer, "S2")
         release.complete(Unit)
         assertNull(withTimeout(5_000) { load.await() })
         assertEquals(newer, rownd.state.value.user)
@@ -127,6 +130,42 @@ class VerificationProfileInstrumentedTest {
     }
 
     @Test
+    fun staleNotFoundCannotSignOutReplacementSession() = runBlocking {
+        status = HttpStatusCode.NotFound
+        val load = rownd.userRepo.loadUserAsync()
+        withTimeout(5_000) { requested.await() }
+        rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState(accessToken = "S2")))
+        rownd.userRepo.applyHubUpdate(User(data = mapOf("email" to "new@example.com")), "S2")
+        release.complete(Unit)
+        assertNull(withTimeout(5_000) { load.await() })
+        assertEquals("S2", rownd.state.value.auth.accessToken)
+        assertEquals("new@example.com", rownd.state.value.user.data["email"])
+    }
+
+    @Test
+    fun supersededSaveStillReturnsTheSavedProfileWithoutWritingIt() = runBlocking {
+        val save = rownd.userRepo.set("nickname", "saved")
+        withTimeout(5_000) { requested.await() }
+        val newer = User(data = mapOf("email" to "hub@example.com"))
+        rownd.userRepo.applyHubUpdate(newer, "S1")
+        release.complete(Unit)
+        assertEquals("verified@example.com", withTimeout(5_000) { save.await() }?.data?.get("email"))
+        assertEquals(newer, rownd.state.value.user)
+    }
+
+    @Test
+    fun droppedResponseForReplacedSessionLoadsTheCurrentProfile() = runBlocking {
+        val load = rownd.userRepo.loadUserAsync()
+        withTimeout(5_000) { requested.await() }
+        rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState(accessToken = "S2")))
+        release.complete(Unit)
+        assertNull(withTimeout(5_000) { load.await() })
+        withTimeout(5_000) {
+            while (rownd.state.value.user.data["email"] != "verified@example.com" || rownd.state.value.user.isLoading) delay(10)
+        }
+    }
+
+    @Test
     fun profileFailurePreservesAdoptedSession() = runBlocking {
         status = HttpStatusCode.ServiceUnavailable
         val load = rownd.userRepo.loadUserAsync { currentVerification }
@@ -147,7 +186,17 @@ class VerificationProfileInstrumentedTest {
         assertVerificationAckWithDelayedProfile(HttpStatusCode.ServiceUnavailable)
     }
 
-    private fun assertVerificationAckWithDelayedProfile(profileStatus: HttpStatusCode) = runBlocking {
+    @Test
+    fun nativeRefreshDuringVerificationProfileLoadKeepsHydration() {
+        assertVerificationAckWithDelayedProfile(HttpStatusCode.OK, refreshDuringLoad = true)
+    }
+
+    @Test
+    fun replacementSessionDuringVerificationProfileLoadRejectsOldHydration() {
+        assertVerificationAckWithDelayedProfile(HttpStatusCode.OK, refreshDuringLoad = true, differentSession = true)
+    }
+
+    private fun assertVerificationAckWithDelayedProfile(profileStatus: HttpStatusCode, refreshDuringLoad: Boolean = false, differentSession: Boolean = false) = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val previousConfig = Rownd.config.supertokens
@@ -157,11 +206,15 @@ class VerificationProfileInstrumentedTest {
         val jwt = JwtGenerator()
         val originalToken = jwt.generateTestJwt(sessionHandle = "verification-original")
         val replacementToken = jwt.generateTestJwt(sessionHandle = "verification-replacement")
+        val refreshedToken = jwt.generateTestJwt(sessionHandle = if (differentSession) "new-session" else "verification-replacement")
         status = profileStatus
         SuperTokens.resetForTests()
-        SuperTokens.Builder(context, "https://api.example.com").apiBasePath("/auth").tokenTransferMethod("header").build()
+        SuperTokens.Builder(context, "https://api.example.com").apiBasePath("/auth").tokenTransferMethod("header")
+            .eventHandler(SuperTokensSessionBridge.sessionEventHandler).build()
+        SuperTokensSessionBridge.addSessionEventListener(rownd.nativeSessionEventListener)
         SuperTokensSessionBridge.isInitialized.set(true)
         Rownd._registerActivityLifecycle(context.applicationContext as Application)
+        rownd._registerActivityLifecycle(context.applicationContext as Application)
         Rownd.config.baseUrl = "https://hub.example.com"
         Rownd.config.supertokens = SuperTokensConfig(appInfo = SuperTokensAppInfo(apiDomain = "https://api.example.com", apiBasePath = "/auth"))
         SuperTokensSessionBridge.bootstrapSession(context, originalToken, "original-refresh", replaceExisting = true)
@@ -193,16 +246,32 @@ class VerificationProfileInstrumentedTest {
                 while (evaluateJavascript(view.get(), "window.verificationResult?.status") != "\"OK\"") delay(25)
             }
             assertEquals(1, verifications)
-            assertEquals(replacementToken, rownd.state.value.auth.accessToken)
+            assertTrue(replacementToken == rownd.state.value.auth.accessToken)
+            if (refreshDuringLoad) {
+                SuperTokensSessionBridge.bootstrapSession(context, refreshedToken, "refreshed-refresh", replaceExisting = true)
+                SuperTokensSessionBridge.sessionEventHandler.handleEvent(EventHandler.EventType.REFRESH_SESSION)
+                assertTrue("refresh event must update the store", withTimeoutOrNull(5_000) {
+                    while (rownd.state.value.auth.accessToken != refreshedToken) delay(10)
+                    true
+                } ?: false)
+                if (differentSession) {
+                    rownd.userRepo.applyHubUpdate(User(data = mapOf("email" to "new-login@example.com")), refreshedToken)
+                }
+            }
             instrumentation.runOnMainSync { view.get().destroy() }
             view.set(null)
             release.complete(Unit)
             withTimeout(5_000) { while (rownd.state.value.user.isLoading) delay(25) }
-            if (profileStatus == HttpStatusCode.OK) {
-                withTimeout(5_000) { while (rownd.state.value.user.data["email"] != "verified@example.com") delay(25) }
+            if (differentSession) {
+                assertEquals("new-login@example.com", rownd.state.value.user.data["email"])
+            } else if (profileStatus == HttpStatusCode.OK) {
+                assertTrue("verification profile must hydrate", withTimeoutOrNull(5_000) {
+                    while (rownd.state.value.user.data["email"] != "verified@example.com") delay(25)
+                    true
+                } ?: false)
                 assertEquals("verified@example.com", rownd.state.value.user.data["email"])
             }
-            assertEquals(replacementToken, rownd.state.value.auth.accessToken)
+            assertTrue((if (refreshDuringLoad) refreshedToken else replacementToken) == rownd.state.value.auth.accessToken)
             assertEquals(1, verifications)
         } finally {
             release.complete(Unit)
@@ -210,6 +279,7 @@ class VerificationProfileInstrumentedTest {
             scenario.close()
             Rownd.config.supertokens = previousConfig
             Rownd.config.baseUrl = previousBaseUrl
+            SuperTokensSessionBridge.removeSessionEventListener(rownd.nativeSessionEventListener)
             SuperTokensSessionBridge.clearLocalSession(context)
             SuperTokens.resetForTests()
             SuperTokensSessionBridge.isInitialized.set(false)

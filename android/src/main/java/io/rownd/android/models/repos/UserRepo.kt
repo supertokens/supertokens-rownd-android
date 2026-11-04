@@ -12,12 +12,13 @@ import io.rownd.android.models.domain.User
 import io.rownd.android.util.AuthenticatedApiClient
 import io.rownd.android.util.RowndContext
 import io.rownd.android.util.RowndException
+import io.rownd.android.util.SuperTokensSessionBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import io.rownd.android.models.network.User as NetworkUser
@@ -32,70 +33,98 @@ class UserRepo @Inject constructor() {
 
     @Inject
     lateinit var authenticatedApiClient: AuthenticatedApiClient
-    private val loadGeneration = AtomicLong()
 
-    internal fun setIsLoading(value: Boolean) {
-        stateRepo.getStore().dispatch(StateAction.SetUserIsLoading(value))
+    private class ProfileRequest(val id: Long, val accessToken: String?, val isCurrent: () -> Boolean)
+
+    // The session is identified by its handle, so a refresh during the request keeps the response.
+    private fun beginRequest(isCurrent: () -> Boolean = { true }, update: (User) -> User = { it }): ProfileRequest {
+        val accessToken = stateRepo.state.value.auth.accessToken
+        val request = ProfileRequest(stateRepo.nextProfileRequestId(), accessToken, isCurrent)
+        stateRepo.getStore().dispatch(StateAction.BeginProfileRequest(request.id, accessToken, update))
+        return request
     }
 
-    internal fun loadUserAsync(isCurrentAuthentication: () -> Boolean = { true }): Deferred<User?> {
-        return CoroutineScope(Dispatchers.IO).async {
-            loadUserIfCurrent(isCurrentAuthentication)
+    private fun owns(request: ProfileRequest): Boolean =
+        request.isCurrent() && stateRepo.ownsProfile(request.id, request.accessToken)
+
+    // Returns whether the request was still the owner of the profile when it completed, which is
+    // when its response (if any) was applied.
+    private fun complete(request: ProfileRequest, user: User? = null): Boolean {
+        val accepted = AtomicBoolean()
+        stateRepo.getStore().dispatch(StateAction.CompleteProfileRequest(
+            request.id, request.accessToken, user, accepted, request.isCurrent))
+        return accepted.get()
+    }
+
+    // A response for a replaced session is dropped. Unless a newer request already covers the
+    // current session, load its profile instead.
+    private fun scheduleFreshLoad(request: ProfileRequest) {
+        val accessToken = stateRepo.state.value.auth.accessToken ?: return
+        if (stateRepo.isLatestProfileRequest(request.id) &&
+            !SuperTokensSessionBridge.isSameSession(request.accessToken, accessToken)) {
+            loadUserAsync(allowFreshLoad = false)
         }
     }
 
-    internal suspend fun loadUserIfCurrent(isCurrentAuthentication: () -> Boolean): User? {
-        val generation = loadGeneration.incrementAndGet()
-        val requestedAccessToken = stateRepo.state.value.auth.accessToken
-        fun isCurrentUser() = isCurrentAuthentication() &&
-            stateRepo.state.value.auth.accessToken == requestedAccessToken
-        setIsLoading(value = true)
+    internal fun loadUserAsync(isCurrentAuthentication: () -> Boolean = { true }): Deferred<User?> =
+        loadUserAsync(isCurrentAuthentication, allowFreshLoad = true)
+
+    private fun loadUserAsync(isCurrentAuthentication: () -> Boolean = { true }, allowFreshLoad: Boolean): Deferred<User?> {
+        val request = beginRequest(isCurrentAuthentication)
+        return CoroutineScope(Dispatchers.IO).async { loadUser(request, allowFreshLoad) }
+    }
+
+    internal suspend fun loadUserIfCurrent(isCurrentAuthentication: () -> Boolean): User? =
+        loadUser(beginRequest(isCurrentAuthentication), allowFreshLoad = true)
+
+    private suspend fun loadUser(request: ProfileRequest, allowFreshLoad: Boolean): User? {
         return try {
             val user: NetworkUser = authenticatedApiClient.client.get(rowndPluginUrl("user")) {
                 headers { remove("x-rownd-app-key") }
             }.body()
-            if (generation == loadGeneration.get()) {
-                setIsLoading(value = false)
-                if (isCurrentUser()) {
-                    user.asDomainModel(stateRepo, this@UserRepo).also {
-                        stateRepo.getStore().dispatch(StateAction.SetUser(it))
-                    }
-                } else {
-                    null
-                }
+            val result = user.asDomainModel(stateRepo, this@UserRepo)
+            if (complete(request, result)) {
+                result
             } else {
+                if (allowFreshLoad) scheduleFreshLoad(request)
                 null
             }
         } catch (ex: CancellationException) {
-            if (generation == loadGeneration.get()) {
-                setIsLoading(value = false)
-            }
+            complete(request)
             throw ex
         } catch (ex: ClientRequestException) {
-            if (generation == loadGeneration.get()) {
-                setIsLoading(value = false)
-                Log.e("RowndUsersApi", "Failed to fetch the user")
-
-                if (ex.response.status == HttpStatusCode.NotFound && isCurrentUser()) {
-                    rowndContext.client?.signOut()
+            Log.e("RowndUsersApi", "Failed to fetch the user")
+            if (!complete(request)) {
+                if (allowFreshLoad) scheduleFreshLoad(request)
+            } else if (ex.response.status == HttpStatusCode.NotFound) {
+                // The decision above predates the sign-out, so it is checked again where the
+                // sign-out commits: a newer request or another session may have arrived since.
+                rowndContext.client?.signOutIfCurrent(request.accessToken) { owns(request) }
+            } else if (ex.response.status == HttpStatusCode.Unauthorized) {
+                // The SDK clears a session the server rejects during refresh; follow it.
+                try {
+                    stateRepo.authRepo.getLatestAuthState()
+                } catch (err: CancellationException) {
+                    throw err
+                } catch (err: Exception) {
+                    Log.d("RowndUsersApi", "Failed to reconcile the session after an unauthorized response", err)
                 }
             }
             null
         } catch (ex: Exception) {
-            if (generation == loadGeneration.get()) {
-                setIsLoading(value = false)
-                Log.e("RowndUsersApi", "Failed to fetch the user")
-            }
+            complete(request)
+            Log.e("RowndUsersApi", "Failed to fetch the user")
             null
         }
     }
 
-    internal fun saveUserAsync(user: User): Deferred<User?> {
+    internal fun saveUserAsync(user: User): Deferred<User?> = saveUserAsync(user, beginRequest())
+
+    private fun saveUserAsync(user: User, request: ProfileRequest): Deferred<User?> {
         // Create network user based on domain user
         val networkUser = user.asNetworkModel(stateRepo, this)
         return CoroutineScope(Dispatchers.IO).async {
             try {
-                setIsLoading(value = true)
                 val savedUser: NetworkUser =
                     authenticatedApiClient.client.put(rowndPluginUrl("user")) {
                         headers { remove("x-rownd-app-key") }
@@ -103,15 +132,27 @@ class UserRepo @Inject constructor() {
                             networkUser
                         )
                     }.body()
-                stateRepo.getStore().dispatch(StateAction.SetUser(savedUser.asDomainModel(stateRepo, this@UserRepo)))
-                setIsLoading(value = false)
-                return@async savedUser.asDomainModel(stateRepo, this@UserRepo)
+                val result = savedUser.asDomainModel(stateRepo, this@UserRepo)
+                // Whether a newer request kept this response from the state does not change that
+                // the server saved it.
+                complete(request, result)
+                result
+            } catch (ex: CancellationException) {
+                complete(request)
+                throw ex
             } catch (ex: Exception) {
-                setIsLoading(value = false)
+                complete(request)
                 Log.e("RowndUsersApi", "Failed to save the user")
                 throw RowndException("Failed to save the user")
             }
         }
+    }
+
+    // The Hub saved the profile itself; that supersedes any request still in flight.
+    internal fun applyHubUpdate(user: User, accessToken: String) {
+        if (!SuperTokensSessionBridge.isSameSession(accessToken, stateRepo.state.value.auth.accessToken)) return
+        val request = ProfileRequest(stateRepo.nextProfileRequestId(), accessToken) { true }
+        if (!complete(request, user)) scheduleFreshLoad(request)
     }
 
     fun get(): User {
@@ -136,20 +177,12 @@ class UserRepo @Inject constructor() {
         val updatedUser = User(
             data = data
         )
-        stateRepo.getStore().dispatch(StateAction.SetUser(updatedUser))
-
-        return saveUserAsync(updatedUser)
+        return saveUserAsync(updatedUser, beginRequest { updatedUser })
     }
 
     fun set(field: String, data: Any): Deferred<User?> {
-        val existingUser = stateRepo.state.value.user
-        val userData = existingUser.data.toMutableMap()
-        userData[field] = data
-        val updatedUser = existingUser.copy(
-            data = userData
-        )
-        stateRepo.getStore().dispatch(StateAction.SetUser(updatedUser))
-        return saveUserAsync(User(data = mapOf(field to data)))
+        val request = beginRequest { it.copy(data = it.data + (field to data)) }
+        return saveUserAsync(User(data = mapOf(field to data)), request)
     }
 
     private fun rowndPluginUrl(path: String): String {

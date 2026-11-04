@@ -37,6 +37,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
 class EmailChangeGoogleCompletionInstrumentedTest {
@@ -51,6 +52,7 @@ class EmailChangeGoogleCompletionInstrumentedTest {
     private var userType = "existing_user"
     private val profileRequested = CompletableDeferred<Unit>()
     private val releaseProfile = CompletableDeferred<Unit>()
+    private val profileRequests = AtomicInteger()
 
     @Before fun setUp() {
         SuperTokens.resetForTests()
@@ -60,9 +62,12 @@ class EmailChangeGoogleCompletionInstrumentedTest {
         val engine = MockEngineConfig().apply {
             addHandler { request ->
                 if (request.url.encodedPath.endsWith("/user")) {
+                    // Later requests stand for the profile of whichever session replaced the first.
+                    val email = if (profileRequests.incrementAndGet() == 1) "original-google-account@example.com"
+                        else "newer-session@example.com"
                     profileRequested.complete(Unit)
                     releaseProfile.await()
-                    return@addHandler respond("""{"data":{"email":"original-google-account@example.com"}}""",
+                    return@addHandler respond("""{"data":{"email":"$email"}}""",
                         HttpStatusCode.OK, headersOf("Content-Type", "application/json"))
                 }
                 body = request.body.toByteArray().decodeToString()
@@ -137,11 +142,13 @@ class EmailChangeGoogleCompletionInstrumentedTest {
             SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(context, rownd.stateRepo.getStore())
         }
         releaseProfile.complete(Unit)
+        // The replacement session's profile is loaded afresh once the stale response is dropped.
+        val expectedEmail = if (supersede) "newer-session@example.com" else "original-google-account@example.com"
         withTimeout(5_000) {
-            while (if (supersede) rownd.state.value.user.isLoading
-                else rownd.state.value.user.data["email"] != "original-google-account@example.com") delay(20)
+            while (rownd.state.value.user.isLoading || rownd.state.value.user.data["email"] != expectedEmail) delay(20)
         }
-        assertEquals(if (supersede) null else "original-google-account@example.com", rownd.state.value.user.data["email"])
+        assertEquals(if (supersede) 2 else 1, profileRequests.get())
+        assertEquals(expectedEmail, rownd.state.value.user.data["email"])
         assertEquals(if (supersede) newerToken else token, rownd.state.value.auth.accessToken)
     }
 
