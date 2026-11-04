@@ -40,6 +40,13 @@ the command deadline (default 2,400,000 ms); it must be a positive integer.
 The independent pinned wrapper remains available for reproducing the historical
 qualification; neither fixture qualifies a customer's external verification flow.
 
+Integration CI installs a pinned Chrome/WebView 122 fixture on API 26/29 before
+the bridge capability preflight. The download mirror is not trusted: the script
+checks the complete APK SHA-256 and the Google signing certificate before adb
+installs it. API 29 uses the x86 image for this fixture; API 33/35 retain x86_64.
+Unsupported providers still fail the security preflight, and unsupported-capability
+tests remain enabled.
+
 With plugin 1.0.4 and Core 12.4.1, host characterization found that a pending
 email-change link verified without a session or with a different session for
 the same account returns `email change verification requires the initiating

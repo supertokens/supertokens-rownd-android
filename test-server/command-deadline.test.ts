@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import { commandTimeout } from "./command-deadline";
+
+test("default deadline leaves time for the 605-second age proof and full suite", () => {
+  const configured = process.env.ANDROID_HARNESS_COMMAND_TIMEOUT_MS;
+  delete process.env.ANDROID_HARNESS_COMMAND_TIMEOUT_MS;
+  try {
+    assert.equal(commandTimeout(), 2_400_000);
+  } finally {
+    if (configured !== undefined) process.env.ANDROID_HARNESS_COMMAND_TIMEOUT_MS = configured;
+  }
+});
 
 function run(value: string | undefined, command: string) {
   const env = { ...process.env, ANDROID_HARNESS_COMMAND_TIMEOUT_MS: value };

@@ -21,7 +21,7 @@ for port in "$ANDROID_HARNESS_PORT" "$ANDROID_HUB_PORT"; do
 done
 ports=()
 cleanup() {
-  for port in "${ports[@]}"; do adb -s "$device" reverse --remove "tcp:$port" || true; done
+  for port in ${ports[@]+"${ports[@]}"}; do adb -s "$device" reverse --remove "tcp:$port" || true; done
 }
 trap cleanup EXIT
 for port in "$ANDROID_HARNESS_PORT" "$ANDROID_HUB_PORT"; do
