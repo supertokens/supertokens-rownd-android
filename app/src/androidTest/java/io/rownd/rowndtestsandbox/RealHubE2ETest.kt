@@ -240,8 +240,9 @@ class RealHubE2ETest {
 
     @Test
     fun coldVerifiedEmailPersistsAndRefreshesAfterProcessRestart() {
+        assumeTrue("Controller checkpoint requires preserved scenario data", InstrumentationRegistry.getArguments().getString("preserveDraft") == "true")
         val saved = context.getSharedPreferences("draft-email-qualification", 0)
-        val destination = requireNotNull(saved.getString("destination", null))
+        val destination = requireNotNull(saved.getString("destination", null)?.takeIf { it.isNotBlank() })
         launchApp()
         val handle = requireNotNull(sessionHandle(runBlocking { Rownd.getAccessToken() }))
         assertFalse(saved.getString("originalHandle", null) == handle)
@@ -561,6 +562,17 @@ class RealHubE2ETest {
 
     private fun openEmailChallenge(email: String) {
         clickResource("e2e.action.open-auth")
+        waitForWebElement("#rph-sign-in-identifier-input")
+        val secure = AtomicBoolean(false)
+        val evaluated = AtomicBoolean(false)
+        val webView = requireNotNull(activeHubWebView())
+        instrumentation.runOnMainSync {
+            webView.evaluateJavascript(
+                "window.isSecureContext && !!window.crypto && !!window.crypto.subtle && typeof window.crypto.subtle.importKey === 'function'"
+            ) { result -> secure.set(result == "true"); evaluated.set(true) }
+        }
+        waitUntil("Hub secure-context capability") { evaluated.get() }
+        assertTrue("Real Hub requires a secure context and WebCrypto importKey", secure.get())
         enterEmailChallenge(email)
     }
 

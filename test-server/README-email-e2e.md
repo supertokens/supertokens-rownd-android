@@ -31,6 +31,15 @@ mappings; cleartext verification requires the loopback URLs shown above. Do not 
 verification links, or unredacted screenshots. This fixture does not establish
 external-verification E2E coverage or canonical account-link rendering.
 
+CI's `npm run test:e2e` uses remote Hub `develop` (recorded in the job artifact),
+loopback with scoped adb reverse mappings, and the same pinned backend images,
+real-email-change mode and 90-second token validity as this fixture. It runs the
+ordinary real-Hub class, including the real 605-second age proof, then the
+controller's restart checkpoints. `ANDROID_HARNESS_COMMAND_TIMEOUT_MS` controls
+the command deadline (default 2,400,000 ms); it must be a positive integer.
+The independent pinned wrapper remains available for reproducing the historical
+qualification; neither fixture qualifies a customer's external verification flow.
+
 With plugin 1.0.4 and Core 12.4.1, host characterization found that a pending
 email-change link verified without a session or with a different session for
 the same account returns `email change verification requires the initiating

@@ -80,7 +80,12 @@ jobs:
           target: ${{ matrix.target }}
           arch: ${{ matrix.api-level > 27 && 'x86_64' || 'x86' }}
           profile: pixel_3a
-          script: npm run test:integration
+          script: |
+            adb shell dumpsys webviewupdate
+            status=0
+            ./gradlew :android:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.rownd.android.WebViewCapabilityInstrumentedTest || status=$?
+            npm run test:integration || status=$?
+            exit "$status"
 
       - name: Upload Reports
         uses: actions/upload-artifact@v4.6.2
@@ -114,11 +119,14 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: supertokens/supertokens-rownd-hub
-          # Includes the native profile sign-in handoff exercised by RealHubE2ETest.
-          ref: 509f12d41400d7e95d011cc0d8c22b28c5dba447
+          ref: develop
           path: supertokens-rownd-hub
           token: ${{ secrets.ROWND_HUB_REPOSITORY_TOKEN }}
           persist-credentials: false
+
+      - name: Record Hub revision
+        if: matrix.name == 'real-hub' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+        run: git -C supertokens-rownd-hub rev-parse HEAD | tee hub-revision.txt
 
       - name: Enable KVM group perms
         run: |
@@ -151,6 +159,11 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2.38.0
         env:
           ANDROID_HUB_DIR: ${{ github.workspace }}/supertokens-rownd-hub
+          ANDROID_HOST: ${{ matrix.name == 'real-hub' && '127.0.0.1' || '10.0.2.2' }}
+          ANDROID_REAL_EMAIL_CHANGES: ${{ matrix.name == 'real-hub' && '1' || '0' }}
+          ANDROID_ACCESS_TOKEN_VALIDITY_SECONDS: ${{ matrix.name == 'real-hub' && '90' || '' }}
+          ANDROID_CORE_IMAGE: ${{ matrix.name == 'real-hub' && 'supertokens/supertokens-postgresql@sha256:c74eef1f69b78388d6a3b5af142c8338be7824e532fe6d9e778a932227151637' || '' }}
+          ANDROID_POSTGRES_IMAGE: ${{ matrix.name == 'real-hub' && 'postgres@sha256:c2427de38f998489d36de7ca3553db2134872c400f2b08be4b824e5c50e4d619' || '' }}
         with:
           api-level: 35
           target: playstore
@@ -170,5 +183,6 @@ jobs:
             android/build/outputs/androidTest-results
             app/build/reports
             app/build/outputs/androidTest-results
+            hub-revision.txt
           if-no-files-found: warn
           retention-days: 14

@@ -149,3 +149,5 @@ instrument('verifiedEmailIsVisibleInHostAndRenderedHubAfterProcessRestart', True
 second_pid = checkpoint_pid()
 assert second_pid and second_pid != first_pid, 'second restart did not create a new process'
 print('Two distinct process restarts with retained app data: PASS', flush=True)
+command('shell', 'am', 'force-stop', package)
+instrument('coldVerifiedEmailPersistsAndRefreshesAfterProcessRestart', True)

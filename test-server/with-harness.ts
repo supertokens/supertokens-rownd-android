@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { commandTimeout, runCommand } from "./command-deadline";
 import { startLocalHub, type LocalHub } from "./local-hub";
 import { startIntegrationHarness, type AndroidIntegrationHarness } from "./server";
 
@@ -23,6 +23,7 @@ function parseCommand() {
 
 async function main() {
   const [command, ...args] = parseCommand();
+  commandTimeout();
   let localHub: LocalHub | undefined;
   let harness: AndroidIntegrationHarness | undefined;
 
@@ -40,45 +41,13 @@ async function main() {
     console.log(`  public:  ${harness.publicUrl}`);
     console.log(`  hub:     ${harness.hubUrl}`);
 
-    const child = spawn(command, args, {
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        HARNESS_URL: process.env.HARNESS_URL || harness.serverUrl,
-        ANDROID_HARNESS_URL: process.env.ANDROID_HARNESS_URL || harness.androidUrl,
-        ANDROID_API_URL: process.env.ANDROID_API_URL || harness.androidUrl,
-        ANDROID_HUB_URL: process.env.ANDROID_HUB_URL || harness.hubUrl,
-        ANDROID_APP_KEY: process.env.ANDROID_APP_KEY || harness.appKey,
-      },
-    });
-    let interrupted = false;
-    const terminateChild = () => {
-      interrupted = true;
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
-    };
-    process.once("SIGINT", terminateChild);
-    process.once("SIGTERM", terminateChild);
-
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      const deadline = setTimeout(() => {
-        console.error("Harness command exceeded 15-minute deadline");
-        terminateChild();
-      }, 900_000);
-      child.on("error", (error) => { clearTimeout(deadline); reject(error); });
-      child.on("close", (code, signal) => {
-        clearTimeout(deadline);
-        if (signal || interrupted) {
-          console.error(`Command terminated by signal ${signal}`);
-          resolve(1);
-          return;
-        }
-
-        resolve(code ?? 1);
-      });
-    }).finally(() => {
-      process.removeListener("SIGINT", terminateChild);
-      process.removeListener("SIGTERM", terminateChild);
+    const exitCode = await runCommand(command, args, {
+      ...process.env,
+      HARNESS_URL: process.env.HARNESS_URL || harness.serverUrl,
+      ANDROID_HARNESS_URL: process.env.ANDROID_HARNESS_URL || harness.androidUrl,
+      ANDROID_API_URL: process.env.ANDROID_API_URL || harness.androidUrl,
+      ANDROID_HUB_URL: process.env.ANDROID_HUB_URL || harness.hubUrl,
+      ANDROID_APP_KEY: process.env.ANDROID_APP_KEY || harness.appKey,
     });
 
     process.exitCode = exitCode;
