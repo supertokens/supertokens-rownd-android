@@ -202,7 +202,7 @@ class AuthRepo @Inject constructor() {
                             throw RowndException("Migration response missing SuperTokens session headers")
                         }
                         validateMigrationSessionHeaders(accessToken, frontToken)
-                        SuperTokensSessionBridge.sessionMutationMutex.withLock {
+                        val adoptedToken = SuperTokensSessionBridge.sessionMutationMutex.withLock {
                             if (!isCurrent(attempt)) return
                             val existingAccessToken = getUsableSuperTokensAccessToken(context)
                             if (!isCurrent(attempt)) return
@@ -215,10 +215,12 @@ class AuthRepo @Inject constructor() {
                             if (!isCurrent(attempt)) return
                             if (adoptedAccessToken != null) {
                                 updateAttempt(attempt, AuthState(accessToken = adoptedAccessToken))
+                                adoptedAccessToken
                             } else {
                                 throw RowndException("Migration response did not establish a usable SuperTokens session")
                             }
                         }
+                        stateRepo.hydrateProfileOnFirstResume(adoptedToken)
                         return
                     }
                     else -> throw RowndException("Legacy session migration failed with HTTP ${response.status.value}")

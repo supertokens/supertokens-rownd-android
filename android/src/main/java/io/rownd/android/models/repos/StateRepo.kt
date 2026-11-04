@@ -270,7 +270,7 @@ class StateRepo @Inject constructor() {
 
     // Initialization usually finishes before the first activity resumes, and a profile request
     // made while backgrounded is not needed yet.
-    private suspend fun hydrateProfileOnFirstResume(startupAccessToken: String?) {
+    internal suspend fun hydrateProfileOnFirstResume(startupAccessToken: String?) {
         if (startupAccessToken == null) return
         val loadIfStillSignedIn = {
             CoroutineScope(Dispatchers.IO).launch {

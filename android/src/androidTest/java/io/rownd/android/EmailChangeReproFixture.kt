@@ -109,7 +109,7 @@ internal class EmailChangeReproFixture {
 
     /** Starts a process whose state file holds [persistedJson], as written by an older SDK version. */
     fun launchWithPersistedState(persistedJson: String) =
-        AppProcess(newStateFile().also { it.writeText(persistedJson) }, null)
+        AppProcess(newStateFile().also { it.parentFile?.mkdirs(); it.writeText(persistedJson) }, null)
 
     fun reopen(previous: AppProcess, restoreGate: Deferred<Unit>? = null): AppProcess {
         val file = newStateFile()

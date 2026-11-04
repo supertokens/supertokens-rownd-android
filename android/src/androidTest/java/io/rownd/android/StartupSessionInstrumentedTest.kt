@@ -87,6 +87,27 @@ class StartupSessionInstrumentedTest {
     }
 
     @Test
+    fun delayedLegacyMigrationLoadsProfileAfterFirstResume() {
+        val userId = fixture.uniqueUserId("legacy-resume")
+        val legacy = HarnessClient.createLegacySession(userId = userId, expired = false)
+        HarnessClient.armResponseGate("POST", "/auth/plugin/rownd/migrate")
+        val process = fixture.launchWithPersistedState(
+            """{"auth":{"access_token":"${legacy.access_token}","refresh_token":"${legacy.refresh_token}"},"user":{"data":{"email":"old@example.com"}}}"""
+        )
+        SuperTokensSessionBridge.observeAndInitialize(fixture.context, process.client.stateRepo)
+        fixture.waitUntil("Migration must reach the gate", 10_000) { HarnessClient.responseGateReached() }
+        process.awaitStartup()
+        process.resume()
+        HarnessClient.releaseResponseGate()
+        fixture.waitUntil("Migration must adopt a native session", 10_000) {
+            process.state.auth.accessToken?.let(SuperTokensSessionBridge::isLikelySuperTokensToken) == true
+        }
+        fixture.waitUntil("Migrated session must load the canonical profile", 10_000) {
+            process.state.user.data["email"] == "$userId@example.com"
+        }
+    }
+
+    @Test
     fun resumeBeforeInitializationLoadsProfile() {
         val userId = fixture.uniqueUserId("resume-first")
         val first = fixture.launch()
