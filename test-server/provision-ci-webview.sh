@@ -50,6 +50,18 @@ if ! "$tools_dir/aapt" dump badging "$apk" | grep -F "package: name='$package'" 
   echo "WebView APK package verification failed" >&2
   exit 1
 fi
-adb install -r "$apk"
+if install_output=$(adb install -r "$apk" 2>&1); then
+  printf '%s\n' "$install_output"
+else
+  printf '%s\n' "$install_output" >&2
+  case "$install_output" in
+    *"Failure calling service package: Broken pipe"*)
+      echo "Streamed install lost the package service; retrying once without streaming" >&2
+      adb wait-for-device
+      adb install --no-streaming -r "$apk"
+      ;;
+    *) exit 1 ;;
+  esac
+fi
 adb shell cmd webviewupdate set-webview-implementation "$package"
 adb shell dumpsys webviewupdate
