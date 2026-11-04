@@ -15,9 +15,29 @@ import org.junit.runner.RunWith
 class EmailVerificationChromeE2ETest {
     @Test
     fun chromeCustomSchemeLinkOpensApp() {
+        openVerificationLink()
+    }
+
+    @Test
+    fun chromeCustomSchemeLinkOpensAppFromSleepingDisplay() {
+        val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        device.sleep()
+        try {
+            openVerificationLink()
+        } finally {
+            device.wakeUp()
+            device.executeShellCommand("wm dismiss-keyguard")
+        }
+    }
+
+    private fun openVerificationLink() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val chromePackage = "com.android.chrome"
+        val device = UiDevice.getInstance(instrumentation)
+        // Starting Chrome does not wake the emulator or dismiss its keyguard.
+        device.wakeUp()
+        device.executeShellCommand("wm dismiss-keyguard")
 
         val launcherUrl = Uri.parse(
             InstrumentationRegistry.getArguments().getString("harnessUrl")
@@ -36,7 +56,6 @@ class EmailVerificationChromeE2ETest {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         })
 
-        val device = UiDevice.getInstance(instrumentation)
         assertNotNull("Chrome did not open", device.wait(Until.findObject(By.pkg(chromePackage)), 10_000))
         dismissChromeFirstRun(device)
 
@@ -57,7 +76,14 @@ class EmailVerificationChromeE2ETest {
         val deadline = System.currentTimeMillis() + 15_000
         while (System.currentTimeMillis() < deadline) {
             if (device.hasObject(By.desc("Open email verification"))) return
-            val dismissButton = dismissButtons.firstNotNullOfOrNull { text -> device.findObject(By.text(text)) }
+            val privacyButtons = if (device.hasObject(By.text("Other ad privacy features now available"))) {
+                listOf("More", "Got it")
+            } else {
+                emptyList()
+            }
+            val dismissButton = (dismissButtons + privacyButtons).firstNotNullOfOrNull { text ->
+                device.findObject(By.pkg("com.android.chrome").text(text))
+            }
             if (dismissButton != null) {
                 dismissButton.click()
                 device.waitForIdle()
