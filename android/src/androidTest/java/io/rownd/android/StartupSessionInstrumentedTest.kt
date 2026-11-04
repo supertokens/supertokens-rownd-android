@@ -127,7 +127,15 @@ class StartupSessionInstrumentedTest {
     fun refreshBetweenMigrationAndStartupSharesPendingHydration() =
         assertEarlyMigrationProfileLoad(replaceSession = false, refreshSession = true)
 
-    private fun assertEarlyMigrationProfileLoad(replaceSession: Boolean, refreshSession: Boolean = false) = runBlocking {
+    @Test
+    fun staleMigrationSchedulingCannotDisplaceReplacementSession() =
+        assertEarlyMigrationProfileLoad(replaceSession = true, scheduleStaleAfterStartup = true)
+
+    private fun assertEarlyMigrationProfileLoad(
+        replaceSession: Boolean,
+        refreshSession: Boolean = false,
+        scheduleStaleAfterStartup: Boolean = false,
+    ) = runBlocking {
         val userId = fixture.uniqueUserId("legacy-early")
         val legacy = HarnessClient.createLegacySession(userId = userId, expired = false)
         val replacement = if (replaceSession) HarnessClient.createSTSession(fixture.uniqueUserId("new-session")) else null
@@ -153,6 +161,7 @@ class StartupSessionInstrumentedTest {
             process.client.authRepo.migrateLegacySessionIfNeeded(fixture.context)
             assertTrue("Migration must adopt a native session before startup completes",
                 process.state.auth.accessToken?.let(SuperTokensSessionBridge::isLikelySuperTokensToken) == true)
+            val migratedToken = process.state.auth.accessToken
             if (replacement != null) {
                 SuperTokensSessionBridge.bootstrapSession(fixture.context, replacement.accessToken, replacement.refreshToken, replaceExisting = true)
                 assertTrue(SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(fixture.context, process.client.stateRepo.getStore()))
@@ -167,6 +176,9 @@ class StartupSessionInstrumentedTest {
             }
             HarnessClient.releaseResponseGate()
             process.awaitStartup()
+            if (scheduleStaleAfterStartup) {
+                process.client.stateRepo.hydrateProfileOnFirstResume(migratedToken)
+            }
             process.resume()
             fixture.waitUntil("Profile request must start", 5_000) { requests.get() > 0 }
             assertTrue("Only one profile request should start", withTimeoutOrNull(1_000) { secondRequest.await(); false } ?: true)

@@ -278,6 +278,7 @@ class StateRepo @Inject constructor() {
     internal suspend fun hydrateProfileOnFirstResume(startupAccessToken: String?) {
         if (startupAccessToken == null) return
         withContext(Dispatchers.Main) {
+            if (!SuperTokensSessionBridge.isSameSession(startupAccessToken, store.currentState.auth.accessToken)) return@withContext
             if (pendingStartupHydration?.let {
                     SuperTokensSessionBridge.isSameSession(it.accessToken, startupAccessToken)
                 } == true) return@withContext
