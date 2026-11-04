@@ -257,7 +257,7 @@ class SignInWithGoogle @Inject constructor(internal val rowndContext: RowndConte
         // Successful adoption owns hydration even after the sign-in presentation is retired.
         client.userRepo.loadUserAsync {
             adoptedToken != null && signOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration() &&
-                client.state.value.auth.accessToken == adoptedToken
+                SuperTokensSessionBridge.isSameSession(adoptedToken, client.state.value.auth.accessToken)
         }
         val accepted = completed()
         if (accepted) rowndContext.eventEmitter?.emit(RowndEvent(

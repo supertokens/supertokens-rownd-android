@@ -970,7 +970,7 @@ class RowndJavascriptInterface constructor(
                     // that ACK nor retry verification, and must survive the Hub closing on success.
                     parentWebView.rowndClient.userRepo.loadUserAsync {
                         isCurrentSession() &&
-                            parentWebView.rowndClient.stateRepo.state.value.auth.accessToken == replacementAccessToken
+                            SuperTokensSessionBridge.isSameSession(replacementAccessToken, parentWebView.rowndClient.stateRepo.state.value.auth.accessToken)
                     }
                 }
                 status
@@ -1147,7 +1147,7 @@ class RowndJavascriptInterface constructor(
                                     parentWebView.rowndClient.userRepo.loadUserAsync {
                                         adoptedToken != null &&
                                             signOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration() &&
-                                            parentWebView.rowndClient.stateRepo.state.value.auth.accessToken == adoptedToken
+                                            SuperTokensSessionBridge.isSameSession(adoptedToken, parentWebView.rowndClient.stateRepo.state.value.auth.accessToken)
                                     }
                                     independentProfileLoad = true
                                 }
