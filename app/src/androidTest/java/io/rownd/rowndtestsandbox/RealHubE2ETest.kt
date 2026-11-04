@@ -229,8 +229,15 @@ class RealHubE2ETest {
             println("DRAFT_EMAIL_EXPLICIT_PUBLIC_REFRESH profileMatches=true")
         }
         waitUntil("verified canonical email in native profile", 30_000) { Rownd.state.value.user.data["email"] == destination }
-        onWebView().withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-email-verification-close']"))
-            .perform(webClick())
+        waitForWebElement("[data-testid='rownd-ui-email-verification-close']")
+        val verificationWebView = requireNotNull(activeHubWebView())
+        instrumentation.runOnMainSync {
+            // Closing destroys this WebView, which may be outside Espresso's default root after Chrome dispatch.
+            verificationWebView.evaluateJavascript(
+                "document.querySelector('[data-testid=\"rownd-ui-email-verification-close\"]').click()",
+                null,
+            )
+        }
         scenario?.close()
         scenario = ActivityScenario.launch(MainActivity::class.java)
         waitForResource("e2e.action.manage-account")

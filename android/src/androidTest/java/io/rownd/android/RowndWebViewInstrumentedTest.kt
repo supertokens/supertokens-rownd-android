@@ -2,12 +2,15 @@ package io.rownd.android
 
 import android.app.Instrumentation
 import android.app.Application
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.SystemClock
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -185,6 +188,19 @@ class RowndWebViewInstrumentedTest {
     fun hubLoadedBeforePageFinishedInvokesTargetExactlyOnce() {
         val targetUrl = requestUrl(requestId = 1, config = "early-hub-loaded")
         instrumentation.runOnMainSync {
+            // Inline fixture JS can beat onPageStarted on fast providers. Control the readiness
+            // order here; loadDocument tests independently exercise the real message bridge.
+            webView.webViewClient = object : WebViewClient() {
+                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                    webView.rowndWebViewClient.onPageStarted(view, url, favicon)
+                }
+
+                override fun onPageFinished(view: WebView, url: String) {
+                    webView.rowndWebViewClient.onHubLoaded()
+                    assertEquals("Hub readiness alone must not invoke the target", 0, javascriptProbe.targetInvocationCount.get())
+                    webView.rowndWebViewClient.onPageFinished(view, url)
+                }
+            }
             webView.prepareTargetPageRequest(
                 HubPageSelector.SignIn,
                 """{"marker":"early-hub-loaded"}""",
@@ -192,7 +208,7 @@ class RowndWebViewInstrumentedTest {
             )
             webView.loadDataWithBaseURL(
                 targetUrl,
-                HUB_DOCUMENT_WITH_EARLY_HUB_LOADED,
+                HUB_DOCUMENT,
                 "text/html",
                 "UTF-8",
                 null,
@@ -594,30 +610,6 @@ class RowndWebViewInstrumentedTest {
                       }
                     }
                   };
-                  $JAVASCRIPT_PROBE_NAME.documentLoaded();
-                </script>
-              </body>
-            </html>
-        """.trimIndent()
-        val HUB_DOCUMENT_WITH_EARLY_HUB_LOADED = """
-            <!doctype html>
-            <html>
-              <body>
-                <script>
-                  window.rownd = {
-                    setSessionStorage: function() {
-                      $JAVASCRIPT_PROBE_NAME.pageFinished();
-                    },
-                    requestSignIn: function(options) {
-                      $JAVASCRIPT_PROBE_NAME.recordTarget(options && options.marker);
-                    },
-                    user: {
-                      manageAccount: function() {
-                        $JAVASCRIPT_PROBE_NAME.recordTarget("manage-account");
-                      }
-                    }
-                  };
-                  window.rowndAndroidSDK.postMessage(JSON.stringify({type: "hub_loaded"}));
                   $JAVASCRIPT_PROBE_NAME.documentLoaded();
                 </script>
               </body>
