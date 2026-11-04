@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.webkit.CookieManager
 import android.webkit.WebStorage
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -205,12 +206,10 @@ class RealHubE2ETest {
         dispatchVerificationThroughChrome(callback)
         try {
             waitForText("Email verified")
+        } catch (failure: ComposeTimeoutException) {
+            reportVerificationFailure(failure)
         } catch (failure: AssertionError) {
-            val labels = listOf("Email verified", "Invalid link", "Something went wrong", "Open", "Just once", "Verify your new email")
-            val marker = "EMAIL_E2E_CALLBACK_UI " + labels.joinToString(" ") { label ->
-                "${labels.indexOf(label)}=${device.hasObject(By.text(label))}"
-            }
-            throw AssertionError(marker, failure)
+            reportVerificationFailure(failure)
         }
         val replacementHandle = requireNotNull(sessionHandle(runBlocking { Rownd.getAccessToken() }))
         assertFalse(verificationSessionHandle == replacementHandle)
@@ -372,6 +371,30 @@ class RealHubE2ETest {
 
     private fun reportCheckpoint(details: JSONObject) {
         instrumentation.sendStatus(0, android.os.Bundle().apply { putString("rownd_e2e", "EMAIL_E2E_DIAGNOSTIC $details") })
+    }
+
+    private fun reportVerificationFailure(failure: Throwable): Nothing {
+        val labels = listOf("Email verified", "Verification link is invalid", "Verification failed", "Update required", "Open", "Just once", "Verify your new email")
+        val details = JSONObject()
+        labels.forEachIndexed { index, label -> details.put("label$index", device.hasObject(By.text(label))) }
+        val observed = java.util.concurrent.CountDownLatch(1)
+        val webView = activeHubWebView()
+        if (webView != null) {
+            instrumentation.runOnMainSync {
+                webView.evaluateJavascript("""
+                    JSON.stringify(Object.fromEntries(['success', 'invalid', 'error', 'loading', 'update-required'].map(
+                        state => [state, !!document.querySelector('[data-testid="rownd-ui-email-verification-' + state + '"]')]
+                    )))
+                """.trimIndent()) { value ->
+                    runCatching { details.put("dom", JSONObject(JSONTokener(value).nextValue() as String)) }
+                    observed.countDown()
+                }
+            }
+            observed.await(5, java.util.concurrent.TimeUnit.SECONDS)
+        }
+        details.put("webViewAvailable", webView != null)
+        reportCheckpoint(JSONObject().put("phase", "verification-failure").put("observations", details))
+        throw AssertionError("EMAIL_E2E_VERIFICATION_FAILURE $details", failure)
     }
 
     @Test
