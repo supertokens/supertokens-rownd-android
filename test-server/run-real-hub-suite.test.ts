@@ -5,6 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+test("locked backend SDK matches the qualified real-Hub fixture", () => {
+  const lock = JSON.parse(readFileSync(path.resolve("package-lock.json"), "utf8"));
+  assert.equal(lock.packages["node_modules/supertokens-node"].version, "24.0.3");
+  assert.equal(lock.packages["node_modules/@supertokens-plugins/rownd-nodejs"].version, "1.0.4");
+});
+
 test("real Hub runner removes each reverse once and exits successfully on Bash 3", () => {
   const work = mkdtempSync(path.join(os.tmpdir(), "rownd-suite-test-"));
   try {

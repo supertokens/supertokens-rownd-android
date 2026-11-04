@@ -43,6 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: sdk
     strategy:
+      fail-fast: false
       matrix:
         api-level: [26, 29, 33, 35]
         target: [playstore]
@@ -74,7 +75,7 @@ jobs:
         run: npm ci
 
       - name: Test harness scripts
-        run: node --import tsx --test test-server/command-deadline.test.ts test-server/provision-ci-webview.test.ts test-server/run-real-hub-suite.test.ts
+        run: node --import tsx --test test-server/command-deadline.test.ts test-server/provision-ci-webview.test.ts test-server/run-ci-integration.test.ts test-server/run-real-hub-suite.test.ts
 
       - name: Integration Tests
         uses: reactivecircus/android-emulator-runner@v2.38.0
@@ -83,14 +84,7 @@ jobs:
           target: ${{ matrix.target }}
           arch: ${{ matrix.api-level >= 33 && 'x86_64' || 'x86' }}
           profile: pixel_3a
-          script: |
-            bash test-server/provision-ci-webview.sh || exit 1
-            adb shell dumpsys webviewupdate
-            status=0
-            ./gradlew :android:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.rownd.android.WebViewCapabilityInstrumentedTest || status=$?
-            adb logcat -d -s RowndWebViewPreflight:I '*:S'
-            npm run test:integration || status=$?
-            exit "$status"
+          script: bash test-server/run-ci-integration.sh
 
       - name: Upload Reports
         uses: actions/upload-artifact@v4.6.2
