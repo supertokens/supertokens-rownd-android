@@ -205,7 +205,7 @@ class RealHubE2ETest {
         if (InstrumentationRegistry.getArguments().getString("prepareDraftOnly") == "true") return
         dispatchVerificationThroughChrome(callback)
         try {
-            waitForText("Email verified")
+            waitForWebElement("[data-testid='rownd-ui-email-verification-success']")
         } catch (failure: ComposeTimeoutException) {
             reportVerificationFailure(failure)
         } catch (failure: AssertionError) {
@@ -229,7 +229,8 @@ class RealHubE2ETest {
             println("DRAFT_EMAIL_EXPLICIT_PUBLIC_REFRESH profileMatches=true")
         }
         waitUntil("verified canonical email in native profile", 30_000) { Rownd.state.value.user.data["email"] == destination }
-        device.findObject(By.text("Close"))?.click()
+        onWebView().withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-email-verification-close']"))
+            .perform(webClick())
         scenario?.close()
         scenario = ActivityScenario.launch(MainActivity::class.java)
         waitForResource("e2e.action.manage-account")
@@ -544,11 +545,11 @@ class RealHubE2ETest {
         assertFalse("test must observe a new nickname", Rownd.state.value.user.data["nickname"] == nickname)
 
         clickResource("e2e.action.manage-account")
-        waitForText("Personal information")
+        waitForWebElement("[data-testid='rownd-ui-profile-mobile-tab-personal']")
         onWebView()
             .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-profile-mobile-tab-personal']"))
             .perform(webClick())
-        waitForText("Nickname")
+        waitForWebElement("[data-testid='rownd-ui-profile-field-nickname']")
         onWebView()
             .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-profile-field-nickname']"))
             .perform(webKeys(nickname))
@@ -600,13 +601,11 @@ class RealHubE2ETest {
     }
 
     private fun enterEmailChallenge(email: String) {
-        waitForTextContaining("Email")
+        waitForWebElement("#rph-sign-in-identifier-input")
         onWebView()
             .withElement(findElement(Locator.ID, "rph-sign-in-identifier-input"))
             .perform(webKeys(email))
-        waitUntil("email continue button to become enabled") {
-            device.findObject(By.text("Continue"))?.isEnabled == true
-        }
+        waitForWebElement("[data-testid='rownd-ui-login-continue-button']")
         onWebView()
             .withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-login-continue-button']"))
             .perform(webClick())
@@ -859,10 +858,6 @@ class RealHubE2ETest {
             }
             ready.get()
         }
-    }
-
-    private fun waitForTextContaining(text: String, timeoutMs: Long = 15_000) {
-        waitUntil("text containing '$text'", timeoutMs) { device.findObject(By.textContains(text)) != null }
     }
 
     private fun clickResource(resourceName: String, timeoutMs: Long = 15_000) {
