@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'status=$?; echo "WebView provisioning failed at line $LINENO (exit $status)" >&2' ERR
 
 api=$(adb shell getprop ro.build.version.sdk | tr -d '\r')
 abi=$(adb shell getprop ro.product.cpu.abilist | tr -d '\r')
@@ -25,7 +26,10 @@ case "$api:$abi" in
 esac
 
 build_tools=$(find "${ANDROID_HOME:?ANDROID_HOME is required}/build-tools" -name apksigner -type f | sort | tail -n 1)
-test -n "$build_tools"
+if [ -z "$build_tools" ]; then
+  echo "Android build-tools apksigner not found" >&2
+  exit 1
+fi
 tools_dir=$(dirname "$build_tools")
 work=$(mktemp -d "${TMPDIR:-/tmp}/rownd-webview.XXXXXXXX")
 apk="$work/provider.apk"
@@ -33,10 +37,19 @@ trap 'rm -f "$apk"; rmdir "$work"' EXIT
 url="https://github.com/JonaNorman/WebViewPackage/releases/download/$kind/122.0.6261.64_min26_$arch.apk"
 # The mirror is untrusted: pin the bytes and verify Google's signing certificate before installation.
 curl --fail --location --silent --show-error --retry 3 "$url" -o "$apk"
-echo "$digest  $apk" | shasum -a 256 --check --status
-certificates=$("$build_tools" verify --print-certs "$apk" | sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p')
-test "$certificates" = "$signer"
-"$tools_dir/aapt" dump badging "$apk" | grep -F "package: name='$package'" >/dev/null
+if ! echo "$digest  $apk" | shasum -a 256 --check --status; then
+  echo "WebView APK SHA-256 verification failed" >&2
+  exit 1
+fi
+certificates=$("$build_tools" verify --print-certs "$apk" | sed -nE 's/^(Signer #[0-9]+|V[0-9]+(\.[0-9]+)? Signer:) certificate SHA-256 digest: //p' | sort -u)
+if [ "$certificates" != "$signer" ]; then
+  echo "WebView APK signer verification failed or apksigner output was unrecognized" >&2
+  exit 1
+fi
+if ! "$tools_dir/aapt" dump badging "$apk" | grep -F "package: name='$package'" >/dev/null; then
+  echo "WebView APK package verification failed" >&2
+  exit 1
+fi
 adb install -r "$apk"
 adb shell cmd webviewupdate set-webview-implementation "$package"
 adb shell dumpsys webviewupdate
