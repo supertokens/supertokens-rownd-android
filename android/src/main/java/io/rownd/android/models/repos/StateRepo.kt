@@ -268,29 +268,50 @@ class StateRepo @Inject constructor() {
         }
     }
 
+    // Accessed only on Main, including lifecycle callbacks and completion cleanup.
+    private class PendingStartupHydration(val accessToken: String, var started: Boolean = false)
+    private var pendingStartupHydration: PendingStartupHydration? = null
+    private var startupResumeListenerRegistered = false
+
     // Initialization usually finishes before the first activity resumes, and a profile request
     // made while backgrounded is not needed yet.
     internal suspend fun hydrateProfileOnFirstResume(startupAccessToken: String?) {
         if (startupAccessToken == null) return
-        val loadIfStillSignedIn = {
-            CoroutineScope(Dispatchers.IO).launch {
-                val auth = try {
-                    authRepo.getLatestAuthState()
-                } catch (err: Exception) {
-                    Log.d("Rownd.StateRepo", "Failed to verify the session before loading the profile", err)
-                    null
-                }
-                if (SuperTokensSessionBridge.sameSession(startupAccessToken, auth?.accessToken)) {
-                    userRepo.loadUserAsync().await()
+        withContext(Dispatchers.Main) {
+            if (pendingStartupHydration?.let {
+                    SuperTokensSessionBridge.isSameSession(it.accessToken, startupAccessToken)
+                } == true) return@withContext
+            pendingStartupHydration = PendingStartupHydration(startupAccessToken)
+            val loadIfStillSignedIn = {
+                val pending = pendingStartupHydration
+                if (pending != null && !pending.started) {
+                    pending.started = true
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            val auth = try {
+                                authRepo.getLatestAuthState()
+                            } catch (err: Exception) {
+                                Log.d("Rownd.StateRepo", "Failed to verify the session before loading the profile", err)
+                                null
+                            }
+                            if (SuperTokensSessionBridge.sameSession(pending.accessToken, auth?.accessToken)) {
+                                userRepo.loadUserAsync().await()
+                            }
+                        } finally {
+                            withContext(Dispatchers.Main) {
+                                if (pendingStartupHydration === pending) pendingStartupHydration = null
+                            }
+                        }
+                    }
                 }
             }
-        }
-        withContext(Dispatchers.Main) {
             val lifecycle = authRepo.rowndContext.client?.appHandleWrapper
             if (AppLifecycleListener.isAppInForeground || lifecycle == null) {
                 loadIfStillSignedIn()
-            } else {
+            } else if (!startupResumeListenerRegistered) {
+                startupResumeListenerRegistered = true
                 lifecycle.registerActivityListener(persistentListOf(Lifecycle.State.RESUMED), once = true) {
+                    startupResumeListenerRegistered = false
                     loadIfStillSignedIn()
                 }
             }
