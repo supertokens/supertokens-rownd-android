@@ -1,5 +1,30 @@
 
 
+## [0.1.19](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.18...v0.1.19) (2026-11-05)
+
+
+### Bug Fixes
+
+* accept build-tools 37 APK signer output ([cbc6195](https://github.com/supertokens/supertokens-rownd-android/commit/cbc61955a175d35c6543461ac1c521fecd9d5f13))
+* align CI harness with Hub integration fixtures ([4f5c60d](https://github.com/supertokens/supertokens-rownd-android/commit/4f5c60d0b46631cbc767b7f2a161478963e8834e))
+* align release E2E with qualified PR fixtures ([9ce4291](https://github.com/supertokens/supertokens-rownd-android/commit/9ce4291fa0be840c9d0bd2167fb48655c6691c5f))
+* apply profile responses only for the latest request of the current session ([44b06f9](https://github.com/supertokens/supertokens-rownd-android/commit/44b06f9cfb44df9ada0ea8d184d7ec754ecb50d1))
+* assert real Hub UI through rendered DOM fixtures ([1479821](https://github.com/supertokens/supertokens-rownd-android/commit/147982138b922aea9594fdc27af4e5e8549e6f85))
+* build rph_init from one coherent read of the SDK session ([505efeb](https://github.com/supertokens/supertokens-rownd-android/commit/505efeba9526d92a8fe8664f08a38a6d3befd72b))
+* control readiness fixture order and close active verification WebView ([e64b4c8](https://github.com/supertokens/supertokens-rownd-android/commit/e64b4c896b286e726b6ad469e1393638f4761efb))
+* follow SuperTokens session events in the Rownd store ([73e6080](https://github.com/supertokens/supertokens-rownd-android/commit/73e6080f6c692bb204468dc5e7c5278afad4a6d3))
+* ignore Hub messages from a document of another session ([fcfe613](https://github.com/supertokens/supertokens-rownd-android/commit/fcfe613b9aff976218c3b8f84a85b0c4e24d3d1a))
+* keep the saved profile result and report what a profile response applied ([45bccc2](https://github.com/supertokens/supertokens-rownd-android/commit/45bccc20188a54acef7075bf00cab8e29deef413))
+* prepare Chrome display for verification E2E ([6500725](https://github.com/supertokens/supertokens-rownd-android/commit/650072513601f27ea890cd918cfcc37974b435dc))
+* provision compatible CI WebViews and harden harness cleanup ([a64d606](https://github.com/supertokens/supertokens-rownd-android/commit/a64d606118e569fbc72e8f7965f1a162e33971ad))
+* rebuild session state from the SDK on startup ([78c1aae](https://github.com/supertokens/supertokens-rownd-android/commit/78c1aaebcfe8ecabfb1098e02804e8011d98194d))
+* recover from broken streamed WebView installs ([520d606](https://github.com/supertokens/supertokens-rownd-android/commit/520d606954fea36fdf098833c8ea5ba0b8dc25f7))
+* report real Hub verification state on Compose timeouts ([e2c097a](https://github.com/supertokens/supertokens-rownd-android/commit/e2c097a624dad40ffaa32e59dd45a54db00ec50a))
+* report the app as initialized only after the startup session is settled ([ea9197e](https://github.com/supertokens/supertokens-rownd-android/commit/ea9197e9949f1b777dbbcb2ec557139c18c2c434))
+* run emulator checks in one shell and pin backend fixture ([303145f](https://github.com/supertokens/supertokens-rownd-android/commit/303145f6179b4050fdff7651eed601ab4a5cb480))
+* sign out on a profile 404 only for the session that received it ([56ac509](https://github.com/supertokens/supertokens-rownd-android/commit/56ac509739fe46e1af3eb7a2a2d5524567bd1f87))
+* start another session without the profile of the previous one ([56d34a0](https://github.com/supertokens/supertokens-rownd-android/commit/56d34a0afa94a1cac19c6b294f87870a59475cfd))
+
 ## [0.1.18](https://github.com/supertokens/supertokens-rownd-android/compare/v0.1.17...v0.1.18) (2026-10-16)
 
 
