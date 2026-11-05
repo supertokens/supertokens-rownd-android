@@ -36,6 +36,7 @@ import io.rownd.android.views.RowndWebViewModel
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import org.junit.After
@@ -169,7 +170,13 @@ class RealHubE2ETest {
             enterEmailChallenge(email)
             assertEquals(0, harnessCounters().getInt("verificationEmail"))
             submitOtp(waitForCapture(email).getString("userInputCode"))
-            waitForText("Verify your new email")
+            try {
+                waitForText("Verify your new email")
+            } catch (failure: ComposeTimeoutException) {
+                captureResumedEmailState(EmailResumePhase.REAUTH_TIMEOUT)
+                throw failure
+            }
+            captureResumedEmailState(EmailResumePhase.REAUTH_OBSERVED)
             verificationAccessToken = requireNotNull(runBlocking { Rownd.getAccessToken() })
             verificationSessionHandle = requireNotNull(sessionHandle(verificationAccessToken))
             assertFalse(originalHandle == verificationSessionHandle)
@@ -837,6 +844,25 @@ class RealHubE2ETest {
 
     private fun waitForText(text: String, timeoutMs: Long = 15_000) {
         waitUntil("text '$text'", timeoutMs) { device.findObject(By.text(text)) != null }
+    }
+
+    private fun captureResumedEmailState(phase: EmailResumePhase) {
+        captureEmailResumeDiagnostics(instrumentation, phase) {
+            val backend = JSONObject()
+            try {
+                val counters = harnessCounters()
+                for (name in listOf("passwordlessConsume", "passwordlessEmail", "verificationEmail")) {
+                    backend.put(name, counters.getInt(name))
+                }
+                val updates = getHarness("/test/email-updates").getJSONArray("updates")
+                backend.put("updateStatuses", JSONArray((0 until updates.length()).map {
+                    updates.getJSONObject(it).getInt("statusCode")
+                }))
+            } catch (failure: Exception) {
+                backend.put("diagnosticError", failure.javaClass.simpleName)
+            }
+            backend
+        }
     }
 
     private fun waitForWebElement(selector: String, timeoutMs: Long = 15_000) {
