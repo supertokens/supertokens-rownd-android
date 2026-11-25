@@ -22,18 +22,22 @@ internal interface NativeEmailVerificationSession {
     suspend fun adopt(isCurrent: () -> Boolean): Boolean
     fun reloadProfile(accessToken: String, isCurrent: () -> Boolean)
     fun storeHoldsSessionOf(accessToken: String): Boolean
+    fun isSameSession(first: String, second: String): Boolean
     fun isOtherSessionOfSameUser(first: String, second: String): Boolean
 
-    // Returns the session the Rownd store holds whose native credentials the discarded one overwrote.
-    suspend fun discardIssuedSession(result: NativeEmailVerificationResult): String?
+    // Clears the issued session locally if the SDK holds it. Returns the session the Rownd store
+    // holds whose native credentials it overwrote.
+    suspend fun discardIssuedSession(issuedAccessToken: String): String?
+    suspend fun revokeIssuedSession(request: NativeEmailVerificationRequest, issuedAccessToken: String)
 
     // Revoked only when the server rejected the session; transport and server errors are Unknown.
     suspend fun validate(): NativeSessionValidity
     fun signOutIfCurrent(accessToken: String, isCurrent: () -> Boolean): Boolean
 }
 
-internal class NativeEmailVerificationSignedOutException :
-    IllegalStateException("The session was signed out during native email verification")
+// The user signed out, or moved to another session, while the server issued a session for them.
+internal class NativeEmailVerificationSupersededException(cause: Throwable) :
+    IllegalStateException("The session changed during native email verification", cause)
 
 // The server consumes the token, revokes the current session and issues its replacement in one
 // call. Abandoning that call leaves the app on a revoked session, so the request and adoption of
@@ -85,19 +89,23 @@ internal class NativeEmailVerifier(
             return
         }
 
-        val outcome = runCatching {
-            val response = session.verify(request)
-            if (!isCurrent()) {
-                discardIssuedSession(session, response)
-                throw NativeEmailVerificationSignedOutException()
-            }
+        val verification = runCatching { session.verify(request) }
+        val issuedAccessToken = verification.getOrNull()?.issuedAccessToken
+            ?: (verification.exceptionOrNull() as? NativeEmailVerificationRejectedException)?.issuedAccessToken
+        val outcome = verification.mapCatching { response ->
+            check(isCurrent()) { "Signed out during native email verification" }
             val replacementAccessToken = session.accessToken()
             check(
                 replacementAccessToken != null &&
                     replacementAccessToken != previousAccessToken &&
+                    (issuedAccessToken == null || session.isSameSession(issuedAccessToken, replacementAccessToken)) &&
                     session.hasCompleteSession()
             ) { "Native replacement session was not adopted" }
-            check(session.adopt(isCurrent)) { "Native session was not adopted" }
+            // A sign-in to another session during the request must not be replaced by this one.
+            check(session.adopt {
+                isCurrent() && (session.storeHoldsSessionOf(previousAccessToken) ||
+                    session.storeHoldsSessionOf(replacementAccessToken))
+            }) { "Native session was not adopted" }
             // The result must neither wait for profile I/O nor depend on it.
             session.reloadProfile(replacementAccessToken, isCurrent)
             response.status
@@ -106,8 +114,17 @@ internal class NativeEmailVerifier(
         outcome.onSuccess { result.complete(it) }
         val error = outcome.exceptionOrNull() ?: return
         warn("Native email verification failed", error)
+
+        if (issuedAccessToken != null && (!isCurrent() || (
+                !session.storeHoldsSessionOf(previousAccessToken) &&
+                    !session.storeHoldsSessionOf(issuedAccessToken)))) {
+            warn("Discarding the session issued by a superseded email verification", null)
+            discard(session, request, issuedAccessToken)
+            result.completeExceptionally(NativeEmailVerificationSupersededException(error))
+            return
+        }
         result.completeExceptionally(error)
-        if (error is NativeEmailVerificationSignedOutException || !isCurrent()) return
+        if (!isCurrent()) return
 
         // The server may have revoked this session even though the response never arrived. Settle
         // that now, rather than leave the app signed in until a refresh fails on the next launch.
@@ -148,12 +165,27 @@ internal class NativeEmailVerifier(
         warn("Adopted the replacement session stored during a failed email verification", null)
     }
 
-    private suspend fun discardIssuedSession(session: NativeEmailVerificationSession, response: NativeEmailVerificationResult) {
-        val overwritten = session.discardIssuedSession(response) ?: return
-        // A sign-in that completed between the sign-out and the response lost its native session
-        // to the one this response issued. Its server session cannot be restored or revoked.
-        warn("Native email verification response overwrote a session signed in during the verification; signing it out", null)
-        session.signOutIfCurrent(overwritten) { session.storeHoldsSessionOf(overwritten) }
+    // Nobody will adopt the issued session, so it must survive neither in the SDK, where it would
+    // resurrect the user or be attached to another user's requests, nor on the server.
+    private suspend fun discard(
+        session: NativeEmailVerificationSession,
+        request: NativeEmailVerificationRequest,
+        issuedAccessToken: String,
+    ) {
+        val overwritten = session.discardIssuedSession(issuedAccessToken)
+        if (overwritten != null) {
+            // A sign-in that completed during the request lost its native session to the issued
+            // one. The SDK keeps one session, so the overwritten one cannot be restored or revoked.
+            warn("Native email verification response overwrote a session signed in during the verification; signing it out", null)
+            session.signOutIfCurrent(overwritten) { session.storeHoldsSessionOf(overwritten) }
+        }
+        scope.launch {
+            try {
+                session.revokeIssuedSession(request, issuedAccessToken)
+            } catch (error: Exception) {
+                warn("Could not revoke the unadopted email verification session", error)
+            }
+        }
     }
 }
 
@@ -188,22 +220,17 @@ internal class RowndNativeEmailVerificationSession(
     override fun storeHoldsSessionOf(accessToken: String): Boolean =
         SuperTokensSessionBridge.isSameSession(accessToken, client.stateRepo.state.value.auth.accessToken)
 
+    override fun isSameSession(first: String, second: String): Boolean =
+        SuperTokensSessionBridge.isSameSession(first, second)
+
     override fun isOtherSessionOfSameUser(first: String, second: String): Boolean =
         SuperTokensSessionBridge.isOtherSessionOfSameUser(first, second)
 
-    override suspend fun discardIssuedSession(result: NativeEmailVerificationResult): String? {
-        val accessToken = result.issuedAccessToken ?: return null
-        val overwritten = SuperTokensSessionBridge.discardSessionIssuedAfterSignOut(context, client.stateRepo.getStore(), accessToken)
-        try {
-            client.authRepo.revokeSignedOutSession(
-                SuperTokensSessionBridge.SignedOutSession(accessToken, result.issuedRefreshToken, result.issuedAntiCSRF),
-                client.authRepo.sessionRevocationUrl(),
-            )
-        } catch (error: Exception) {
-            Log.w(TAG, "Remote revocation of the session issued after sign-out unconfirmed", error)
-        }
-        return overwritten
-    }
+    override suspend fun discardIssuedSession(issuedAccessToken: String): String? =
+        SuperTokensSessionBridge.discardIssuedSession(context, client.stateRepo.getStore(), issuedAccessToken)
+
+    override suspend fun revokeIssuedSession(request: NativeEmailVerificationRequest, issuedAccessToken: String) =
+        revokeIssuedVerificationSession(client.authRepo.legacyMigrationApiClient.client, request, issuedAccessToken)
 
     override suspend fun validate(): NativeSessionValidity = try {
         if (SuperTokensSessionBridge.attemptRefresh(context)) NativeSessionValidity.Valid

@@ -5,6 +5,7 @@ import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.toByteArray
 import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpRequestRetry
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.HttpTimeoutCapability
 import io.ktor.client.request.post
@@ -18,7 +19,9 @@ import io.ktor.serialization.kotlinx.json.json
 import io.rownd.android.models.VerifyEmailMessage
 import io.rownd.android.models.RowndHubInteropMessage
 import io.rownd.android.util.NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS
+import io.rownd.android.util.NativeEmailVerificationRejectedException
 import io.rownd.android.util.NativeEmailVerificationRequest
+import io.rownd.android.util.revokeIssuedVerificationSession
 import io.rownd.android.util.nativeEmailVerificationRequest
 import io.rownd.android.util.performNativeEmailVerification
 import io.rownd.android.views.HubPageSelector
@@ -26,6 +29,7 @@ import io.rownd.android.views.urlForLogging
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
@@ -156,8 +160,7 @@ class NativeEmailVerificationTest {
 
         assertEquals("OK", result.status)
         assertEquals("replacement-access", result.issuedAccessToken)
-        assertEquals("replacement-refresh", result.issuedRefreshToken)
-        assertEquals(null, result.issuedAntiCSRF)
+        assertTrue("Results must not print tokens", !result.toString().contains("replacement-access"))
         assertEquals(NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS, requestTimeoutMillis)
         assertEquals(NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS, socketTimeoutMillis)
         assertEquals(HttpMethod.Post, requestMethod)
@@ -168,6 +171,82 @@ class NativeEmailVerificationTest {
         assertEquals("{\"method\":\"token\",\"token\":\"opaque-token\"}", requestBody)
         client.close()
     }
+
+    @Test
+    fun `a rejected verification reports the session it issued without printing it`() = runBlocking {
+        val engine = MockEngine {
+            respond(
+                content = "{\"status\":\"GENERAL_ERROR\",\"message\":\"failed\"}",
+                status = HttpStatusCode.OK,
+                headers = headersOf(
+                    HttpHeaders.ContentType to listOf("application/json"),
+                    "st-access-token" to listOf("restored-access"),
+                ),
+            )
+        }
+        val client = HttpClient(engine) { install(ContentNegotiation) { json() } }
+
+        val error = runCatching { performNativeEmailVerification(client, verificationRequest()) }.exceptionOrNull()
+
+        assertTrue(error is NativeEmailVerificationRejectedException)
+        assertEquals("restored-access", (error as NativeEmailVerificationRejectedException).issuedAccessToken)
+        assertTrue(!error.toString().contains("restored-access"))
+        client.close()
+    }
+
+    @Test
+    fun `an unadopted session is revoked with its own token and no other credentials`() = runBlocking {
+        var requestUrl: String? = null
+        var requestMethod: HttpMethod? = null
+        var requestHeaders: Map<String, List<String>> = emptyMap()
+        val engine = MockEngine { request ->
+            requestUrl = request.url.toString()
+            requestMethod = request.method
+            requestHeaders = request.headers.entries().associate { it.key.lowercase() to it.value }
+            respond(content = "{\"status\":\"OK\"}", status = HttpStatusCode.OK)
+        }
+        val client = HttpClient(engine)
+
+        revokeIssuedVerificationSession(client, verificationRequest(), "issued-access")
+
+        assertEquals("https://api.example.com/auth/signout", requestUrl)
+        assertEquals(HttpMethod.Post, requestMethod)
+        assertEquals(listOf("Bearer issued-access"), requestHeaders["authorization"])
+        assertEquals(listOf("header"), requestHeaders["st-auth-mode"])
+        assertEquals(listOf("session"), requestHeaders["rid"])
+        listOf("st-access-token", "st-refresh-token", "front-token", "anti-csrf", "x-rownd-app-key").forEach {
+            assertNull("Unexpected $it header", requestHeaders[it])
+        }
+        client.close()
+    }
+
+    @Test
+    fun `a failed revocation reports its status without the token`() = runBlocking {
+        var attempts = 0
+        // Production clients retry server errors; revocation must not.
+        val client = HttpClient(MockEngine {
+            attempts++
+            respond(content = "", status = HttpStatusCode.InternalServerError)
+        }) {
+            install(HttpRequestRetry) { retryOnServerErrors(maxRetries = 3) }
+        }
+
+        val error = runCatching {
+            revokeIssuedVerificationSession(client, verificationRequest(), "issued-access")
+        }.exceptionOrNull()
+
+        assertTrue(error?.message.orEmpty().contains("HTTP 500"))
+        assertTrue(!error.toString().contains("issued-access"))
+        assertEquals(1, attempts)
+        client.close()
+    }
+
+    private fun verificationRequest() = NativeEmailVerificationRequest(
+        token = "opaque-token",
+        pendingVerificationId = "pending-123",
+        apiDomain = "https://api.example.com",
+        apiBasePath = "/auth",
+    )
 
     // The server commits the verification before it answers, which can take longer than the
     // engine's read timeout. The engine here times out after 250ms; the server answers after 1s.
