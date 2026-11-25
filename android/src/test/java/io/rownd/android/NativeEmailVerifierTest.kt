@@ -79,6 +79,8 @@ class NativeEmailVerifierTest {
             reloadedProfiles.add(accessToken)
         }
         override fun storeHoldsSessionOf(accessToken: String): Boolean = storeAccessToken == accessToken
+        override fun storeAccessToken(): String? = storeAccessToken
+        override fun nativeAccessToken(): String? = storedAccessToken
         override fun isSameSession(first: String, second: String): Boolean = first == second
         override fun isOtherSessionOfSameUser(first: String, second: String): Boolean =
             first != second && first.substringBefore(':') == second.substringBefore(':')
@@ -373,6 +375,83 @@ class NativeEmailVerifierTest {
         assertTrue(warnings.contains("Could not revoke the unadopted email verification session"))
         assertTrue(warnings.none { it.contains("a:s1") })
         assertEquals(null, session.storedAccessToken)
+    }
+
+    // On a cold start from a magic link the store is reconciled with the SDK only after the app
+    // config loads, so verification can finish while the store holds none of its sessions.
+    @Test
+    fun `a store not yet reconciled adopts the replacement instead of revoking it`() = runBlocking {
+        listOf(null, "", "a:stale", "legacy-credential").forEach { unreconciled ->
+            val session = FakeSession(storeAccessToken = unreconciled)
+
+            assertEquals("Store $unreconciled", "OK", verifyAndSettle(session).getOrNull())
+
+            assertEquals("Store $unreconciled", listOf<String?>("a:s1"), session.adopted)
+            assertEquals("Store $unreconciled", "a:s1", session.storeAccessToken)
+            assertEquals("Store $unreconciled", "a:s1", session.storedAccessToken)
+            assertTrue("Store $unreconciled", session.discarded.isEmpty())
+            assertTrue("Store $unreconciled", session.revoked.isEmpty())
+            assertTrue("Store $unreconciled", session.signedOut.isEmpty())
+        }
+    }
+
+    @Test
+    fun `startup reconciling the store to the initiating session during the request adopts the replacement`() = runBlocking {
+        val session = FakeSession(storeAccessToken = null, verifyResponse = {
+            storeAccessToken = "a:s0"
+            storedAccessToken = "a:s1"
+            NativeEmailVerificationResult("OK", "a:s1")
+        })
+
+        assertEquals("OK", verifyAndSettle(session).getOrNull())
+
+        assertEquals("a:s1", session.storeAccessToken)
+        assertTrue(session.revoked.isEmpty())
+    }
+
+    // Migration bootstraps the SDK before it moves the store off the legacy credential.
+    @Test
+    fun `legacy migration finishing during the request adopts the replacement`() = runBlocking {
+        val session = FakeSession(storeAccessToken = "legacy-credential", verifyResponse = {
+            storeAccessToken = "a:s0"
+            storedAccessToken = "a:s1"
+            NativeEmailVerificationResult("OK", "a:s1")
+        })
+
+        assertEquals("OK", verifyAndSettle(session).getOrNull())
+
+        assertEquals("a:s1", session.storeAccessToken)
+        assertTrue(session.discarded.isEmpty())
+        assertTrue(session.revoked.isEmpty())
+    }
+
+    @Test
+    fun `an error response that restored a session is adopted by a store not yet reconciled`() = runBlocking {
+        val session = FakeSession(storeAccessToken = null, verifyResponse = {
+            storedAccessToken = "a:s2"
+            throw NativeEmailVerificationRejectedException("Email verification failed with status GENERAL_ERROR", "a:s2")
+        })
+
+        assertTrue(verifyAndSettle(session).isFailure)
+
+        assertEquals("a:s2", session.storeAccessToken)
+        assertEquals(listOf("a:s2"), session.reloadedProfiles)
+        assertTrue(session.revoked.isEmpty())
+    }
+
+    @Test
+    fun `a sign-in that overwrote a store not yet reconciled is still detected`() = runBlocking {
+        val session = FakeSession(storeAccessToken = null, verifyResponse = {
+            storeAccessToken = "b:s5"
+            storedAccessToken = "a:s1"
+            NativeEmailVerificationResult("OK", "a:s1")
+        })
+
+        assertTrue(verifyAndSettle(session).exceptionOrNull() is NativeEmailVerificationSupersededException)
+
+        assertTrue(session.adopted.isEmpty())
+        assertEquals(listOf("b:s5"), session.signedOut)
+        assertEquals(listOf("a:s1"), session.revoked)
     }
 
     @Test

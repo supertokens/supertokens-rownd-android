@@ -219,6 +219,9 @@ object SuperTokensSessionBridge {
     private fun storedAccessToken(context: Context): String? =
         sharedPrefs(context).getString(ACCESS_TOKEN_STORAGE_KEY, null)
 
+    // Unlike getAccessToken, never refreshes, so it is safe inside commit checks.
+    internal fun nativeAccessToken(context: Context): String? = storedAccessToken(context)
+
     private fun sessionHandle(token: String?): String? =
         token?.let { runCatching { JWT(it).getClaim("sessionHandle").asString() }.getOrNull() }
 
