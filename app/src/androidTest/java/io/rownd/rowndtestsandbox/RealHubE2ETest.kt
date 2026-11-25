@@ -286,7 +286,9 @@ class RealHubE2ETest {
     ) {
         postHarness("/test/response-gate", """{"method":"POST","path":"/auth/user/email/verify"}""")
         val issuedHandle = try {
-            dispatchVerificationThroughChrome(callback)
+            // The fresh-flow test already covers Chrome handoff. Deliver the same link directly
+            // so browser prompts cannot interfere with the fault-injection timing.
+            dispatchActionView(callback)
             waitUntil("Core issued a replacement before delivering the verification response") {
                 getHarness("/test/response-gate").getBoolean("reached")
             }
