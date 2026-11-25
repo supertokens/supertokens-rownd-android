@@ -254,18 +254,38 @@ object SuperTokensSessionBridge {
 
     // The SDK interceptor stores any session a response issues, even one whose request started
     // before a local sign-out committed. Only that session is removed; a newer one is kept.
+    // Returns the session the Rownd store holds whose native credentials the issued session
+    // overwrote: a sign-in that committed between the sign-out and the response. The SDK keeps one
+    // session and offers no way to restore the overwritten one, so the caller must sign it out.
     internal fun discardSessionIssuedAfterSignOut(
         context: Context,
         store: Store<GlobalState, StateAction>,
         accessToken: String,
-    ) = synchronized(sessionCommitLock) {
-        if (isSameSession(accessToken, storedAccessToken(context))) clearLocalSession(context)
+    ): String? = synchronized(sessionCommitLock) {
+        val storesIssuedSession = isSameSession(accessToken, storedAccessToken(context))
+        if (storesIssuedSession) clearLocalSession(context)
         store.dispatch(StateAction.ReconcileNativeSession(
             expectedAccessToken = accessToken,
             accessToken = null,
             preserveProfile = false,
             isCurrent = { !isSameSession(accessToken, storedAccessToken(context)) },
         ))
+        store.currentState.auth.accessToken?.takeIf { storesIssuedSession && !isSameSession(accessToken, it) }
+    }
+
+    // A session the server issued to replace another for the same user, such as after an email
+    // verification. Legacy tokens carry no session handle and never qualify.
+    internal fun isOtherSessionOfSameUser(first: String?, second: String?): Boolean {
+        val old = first?.let(::claims) ?: return false
+        val current = second?.let(::claims) ?: return false
+        fun JsonObject.claim(vararg names: String) =
+            names.firstNotNullOfOrNull { (this[it] as? JsonPrimitive)?.takeIf { value -> value.isString }?.content }
+        val oldHandle = old.claim("sessionHandle")
+        val currentHandle = current.claim("sessionHandle")
+        val user = old.claim("sub", "userId")
+        return !oldHandle.isNullOrBlank() && !currentHandle.isNullOrBlank() && oldHandle != currentHandle &&
+            !user.isNullOrBlank() && user == current.claim("sub", "userId") &&
+            old.claim("tId", "tenantId") == current.claim("tId", "tenantId")
     }
 
     // When the SDK cannot reach the server to verify a stored session, keep the user signed in

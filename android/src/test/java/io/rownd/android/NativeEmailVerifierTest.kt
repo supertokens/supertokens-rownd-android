@@ -12,14 +12,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Test
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
@@ -34,27 +32,31 @@ class NativeEmailVerifierTest {
         apiBasePath = "/auth",
     )
     private val warnings = CopyOnWriteArrayList<String>()
+    private val verifierJob = SupervisorJob()
     private val verifier = NativeEmailVerifier(
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        scope = CoroutineScope(verifierJob + Dispatchers.Default),
         warn = { message, _ -> warnings.add(message) },
     )
 
+    // Tokens are "<user>:<session>"; the Rownd store and the SDK each hold one.
     private class FakeSession(
-        var storedAccessToken: String? = "old-access",
+        var storedAccessToken: String? = "a:s0",
+        var storeAccessToken: String? = "a:s0",
         val verifyResponse: suspend FakeSession.() -> NativeEmailVerificationResult = {
-            this.storedAccessToken = "new-access"
-            NativeEmailVerificationResult("OK", "new-access", "new-refresh", null)
+            this.storedAccessToken = "a:s1"
+            NativeEmailVerificationResult("OK", "a:s1", "refresh-s1", null)
         },
         val validity: NativeSessionValidity = NativeSessionValidity.Valid,
+        val adoptFailures: Int = 0,
     ) : NativeEmailVerificationSession {
         val generation = AtomicLong()
         val verifyCalls = AtomicInteger()
+        val adoptCalls = AtomicInteger()
         val adopted = CopyOnWriteArrayList<String?>()
         val reloadedProfiles = CopyOnWriteArrayList<String>()
         val discarded = CopyOnWriteArrayList<NativeEmailVerificationResult>()
         val validations = AtomicInteger()
         val signedOut = CopyOnWriteArrayList<String>()
-        val finished = CompletableDeferred<Unit>()
 
         override fun signOutGeneration(): Long = generation.get()
         override suspend fun accessToken(): String? = storedAccessToken
@@ -64,27 +66,35 @@ class NativeEmailVerifierTest {
         }
         override fun hasCompleteSession(): Boolean = true
         override suspend fun adopt(isCurrent: () -> Boolean): Boolean {
+            if (adoptCalls.incrementAndGet() <= adoptFailures) throw IllegalStateException("adoption failed")
             if (!isCurrent()) return false
+            storeAccessToken = storedAccessToken
             adopted.add(storedAccessToken)
             return true
         }
         override fun reloadProfile(accessToken: String, isCurrent: () -> Boolean) {
             reloadedProfiles.add(accessToken)
-            finished.complete(Unit)
         }
-        override suspend fun discardIssuedSession(result: NativeEmailVerificationResult) {
+        override fun storeHoldsSessionOf(accessToken: String): Boolean = storeAccessToken == accessToken
+        override fun isOtherSessionOfSameUser(first: String, second: String): Boolean =
+            first != second && first.substringBefore(':') == second.substringBefore(':')
+        override suspend fun discardIssuedSession(result: NativeEmailVerificationResult): String? {
             discarded.add(result)
-            finished.complete(Unit)
+            if (storedAccessToken != result.issuedAccessToken) return null
+            storedAccessToken = null
+            if (storeAccessToken == result.issuedAccessToken) storeAccessToken = null
+            return storeAccessToken
         }
         override suspend fun validate(): NativeSessionValidity {
             validations.incrementAndGet()
-            if (validity != NativeSessionValidity.Revoked) finished.complete(Unit)
             return validity
         }
         override fun signOutIfCurrent(accessToken: String, isCurrent: () -> Boolean): Boolean {
             val accepted = isCurrent()
-            if (accepted) signedOut.add(accessToken)
-            finished.complete(Unit)
+            if (accepted) {
+                signedOut.add(accessToken)
+                storeAccessToken = null
+            }
             return accepted
         }
     }
@@ -92,15 +102,11 @@ class NativeEmailVerifierTest {
     private fun failingSession(error: Exception, validity: NativeSessionValidity) =
         FakeSession(verifyResponse = { throw error }, validity = validity)
 
-    private suspend fun awaitFailure(session: FakeSession): Throwable {
-        try {
-            verifier.verify(request, session).await()
-        } catch (error: Exception) {
-            withTimeout(5_000) { session.finished.await() }
-            return error
-        }
-        fail("Verification was expected to fail")
-        throw IllegalStateException()
+    // Waits for the verification and everything it does after reporting its result.
+    private suspend fun verifyAndSettle(session: FakeSession): Result<String> {
+        val result = runCatching { withTimeout(5_000) { verifier.verify(request, session).await() } }
+        withTimeout(5_000) { verifierJob.children.toList().joinAll() }
+        return result
     }
 
     @Test
@@ -110,8 +116,8 @@ class NativeEmailVerifierTest {
         val session = FakeSession(verifyResponse = {
             requestSent.complete(Unit)
             responseGate.await()
-            storedAccessToken = "new-access"
-            NativeEmailVerificationResult("OK", "new-access", "new-refresh", null)
+            storedAccessToken = "a:s1"
+            NativeEmailVerificationResult("OK", "a:s1", "refresh-s1", null)
         })
         val verification = verifier.verify(request, session)
         val pageLifecycle = Job()
@@ -125,10 +131,9 @@ class NativeEmailVerifierTest {
         responseGate.complete(Unit)
 
         assertEquals("OK", withTimeout(5_000) { verification.await() })
-        withTimeout(5_000) { session.finished.await() }
         assertEquals(1, session.verifyCalls.get())
-        assertEquals(listOf<String?>("new-access"), session.adopted)
-        assertEquals(listOf("new-access"), session.reloadedProfiles)
+        assertEquals(listOf<String?>("a:s1"), session.adopted)
+        assertEquals(listOf("a:s1"), session.reloadedProfiles)
         assertEquals(0, session.validations.get())
     }
 
@@ -137,8 +142,8 @@ class NativeEmailVerifierTest {
         val responseGate = CompletableDeferred<Unit>()
         val session = FakeSession(verifyResponse = {
             responseGate.await()
-            storedAccessToken = "new-access"
-            NativeEmailVerificationResult("OK", "new-access", "new-refresh", null)
+            storedAccessToken = "a:s1"
+            NativeEmailVerificationResult("OK", "a:s1", "refresh-s1", null)
         })
 
         val first = verifier.verify(request, session)
@@ -154,10 +159,10 @@ class NativeEmailVerifierTest {
     fun `a failure that revoked the session signs the user out`() = runBlocking {
         val session = failingSession(IOException("timeout"), NativeSessionValidity.Revoked)
 
-        awaitFailure(session)
+        assertTrue(verifyAndSettle(session).isFailure)
 
         assertEquals(1, session.validations.get())
-        assertEquals(listOf("old-access"), session.signedOut)
+        assertEquals(listOf("a:s0"), session.signedOut)
         assertTrue(warnings.any { it.startsWith("Native email verification failed") })
         assertTrue(session.adopted.isEmpty())
     }
@@ -166,10 +171,11 @@ class NativeEmailVerifierTest {
     fun `a failure keeps the session when it cannot be validated`() = runBlocking {
         val session = failingSession(IOException("offline"), NativeSessionValidity.Unknown)
 
-        awaitFailure(session)
+        assertTrue(verifyAndSettle(session).isFailure)
 
         assertEquals(1, session.validations.get())
         assertTrue(session.signedOut.isEmpty())
+        assertTrue(session.adopted.isEmpty())
         assertTrue(warnings.any { it.startsWith("Native email verification failed") })
     }
 
@@ -177,10 +183,83 @@ class NativeEmailVerifierTest {
     fun `a failure keeps a session the server still accepts`() = runBlocking {
         val session = failingSession(IllegalStateException("HTTP 400"), NativeSessionValidity.Valid)
 
-        awaitFailure(session)
+        assertTrue(verifyAndSettle(session).isFailure)
 
         assertEquals(1, session.validations.get())
         assertTrue(session.signedOut.isEmpty())
+        assertTrue(session.adopted.isEmpty())
+        assertEquals("a:s0", session.storeAccessToken)
+    }
+
+    @Test
+    fun `an error response that restored a session moves the store to it`() = runBlocking {
+        val session = FakeSession(verifyResponse = {
+            storedAccessToken = "a:s2"
+            throw IllegalStateException("Email verification failed")
+        })
+
+        assertTrue(verifyAndSettle(session).isFailure)
+
+        assertEquals(listOf<String?>("a:s2"), session.adopted)
+        assertEquals("a:s2", session.storeAccessToken)
+        assertEquals(listOf("a:s2"), session.reloadedProfiles)
+        assertTrue(session.signedOut.isEmpty())
+    }
+
+    @Test
+    fun `a replacement stored before adoption failed is adopted after validation`() = runBlocking {
+        val session = FakeSession(adoptFailures = 1)
+
+        assertTrue(verifyAndSettle(session).isFailure)
+
+        assertEquals(1, session.validations.get())
+        assertEquals(listOf<String?>("a:s1"), session.adopted)
+        assertEquals("a:s1", session.storeAccessToken)
+        assertEquals(listOf("a:s1"), session.reloadedProfiles)
+    }
+
+    @Test
+    fun `a stored replacement is adopted even when validation is inconclusive`() = runBlocking {
+        val session = FakeSession(
+            verifyResponse = {
+                storedAccessToken = "a:s2"
+                throw IllegalStateException("Email verification failed")
+            },
+            validity = NativeSessionValidity.Unknown,
+        )
+
+        assertTrue(verifyAndSettle(session).isFailure)
+
+        assertEquals("a:s2", session.storeAccessToken)
+        assertEquals(listOf("a:s2"), session.reloadedProfiles)
+    }
+
+    @Test
+    fun `a store already following the stored replacement only reloads the profile`() = runBlocking {
+        val session = FakeSession(verifyResponse = {
+            storedAccessToken = "a:s2"
+            storeAccessToken = "a:s2"
+            throw IllegalStateException("Email verification failed")
+        })
+
+        assertTrue(verifyAndSettle(session).isFailure)
+
+        assertEquals(0, session.adoptCalls.get())
+        assertEquals(listOf("a:s2"), session.reloadedProfiles)
+    }
+
+    @Test
+    fun `a stored session of another user is not adopted`() = runBlocking {
+        val session = FakeSession(verifyResponse = {
+            storedAccessToken = "b:s9"
+            throw IllegalStateException("Email verification failed")
+        })
+
+        assertTrue(verifyAndSettle(session).isFailure)
+
+        assertTrue(session.adopted.isEmpty())
+        assertTrue(session.reloadedProfiles.isEmpty())
+        assertEquals("a:s0", session.storeAccessToken)
     }
 
     @Test
@@ -190,39 +269,56 @@ class NativeEmailVerifierTest {
             validity = NativeSessionValidity.Revoked,
         )
 
-        awaitFailure(session)
+        assertTrue(verifyAndSettle(session).isFailure)
 
         assertTrue(session.adopted.isEmpty())
-        assertEquals(listOf("old-access"), session.signedOut)
+        assertEquals(listOf("a:s0"), session.signedOut)
     }
 
     @Test
     fun `a session issued after sign-out is discarded instead of adopted`() = runBlocking {
         val session = FakeSession(verifyResponse = {
             generation.incrementAndGet()
-            storedAccessToken = "new-access"
-            NativeEmailVerificationResult("OK", "new-access", "new-refresh", null)
+            storeAccessToken = null
+            storedAccessToken = "a:s1"
+            NativeEmailVerificationResult("OK", "a:s1", "refresh-s1", null)
         })
 
-        val error = awaitFailure(session)
+        val error = verifyAndSettle(session).exceptionOrNull()
 
         assertTrue(error is NativeEmailVerificationSignedOutException)
-        assertEquals(listOf("new-access"), session.discarded.map { it.issuedAccessToken })
+        assertEquals(listOf("a:s1"), session.discarded.map { it.issuedAccessToken })
+        assertEquals(null, session.storedAccessToken)
         assertTrue(session.adopted.isEmpty())
         assertEquals(0, session.validations.get())
         assertTrue(session.signedOut.isEmpty())
     }
 
     @Test
+    fun `a sign-in overwritten by a session issued after sign-out is signed out`() = runBlocking {
+        val session = FakeSession(verifyResponse = {
+            generation.incrementAndGet()
+            storeAccessToken = "b:s5"
+            storedAccessToken = "a:s1"
+            NativeEmailVerificationResult("OK", "a:s1", "refresh-s1", null)
+        })
+
+        assertTrue(verifyAndSettle(session).isFailure)
+
+        assertEquals(listOf("b:s5"), session.signedOut)
+        assertEquals(null, session.storeAccessToken)
+        assertTrue(warnings.any { it.contains("overwrote a session signed in during the verification") })
+    }
+
+    @Test
     fun `verification without a session sends no request`() = runBlocking {
         val session = FakeSession(storedAccessToken = null)
 
-        val error = runCatching { withTimeout(5_000) { verifier.verify(request, session).await() } }.exceptionOrNull()
+        val error = verifyAndSettle(session).exceptionOrNull()
 
         assertTrue(error is IllegalStateException)
         assertEquals(0, session.verifyCalls.get())
         assertEquals(0, session.validations.get())
-        assertFalse(session.finished.isCompleted)
-        assertNull(session.adopted.firstOrNull())
+        assertTrue(session.adopted.isEmpty())
     }
 }
