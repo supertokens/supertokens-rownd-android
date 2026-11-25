@@ -17,7 +17,6 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.web.sugar.Web.onWebView
 import androidx.test.espresso.web.webdriver.DriverAtoms.findElement
 import androidx.test.espresso.web.webdriver.DriverAtoms.webClick
-import androidx.test.espresso.web.webdriver.DriverAtoms.clearElement
 import androidx.test.espresso.web.webdriver.DriverAtoms.webKeys
 import androidx.test.espresso.web.webdriver.DriverAtoms.webScrollIntoView
 import androidx.test.espresso.web.webdriver.Locator
@@ -120,13 +119,27 @@ class RealHubE2ETest {
     }
 
     @Test
+    fun verificationAdoptsSessionAfterSlowResponseAndSheetDismissal() {
+        qualifyDraftEmailChange(secureAged = false, interruption = VerificationInterruption.DISMISS)
+    }
+
+    @Test
+    fun signOutDuringVerificationRevokesTheUnadoptedCoreSession() {
+        qualifyDraftEmailChange(secureAged = false, interruption = VerificationInterruption.SIGN_OUT)
+    }
+
+    private enum class VerificationInterruption { DISMISS, SIGN_OUT }
+
+    @Test
     fun secureAgedEmailChangeUsesExistingAccountSignInThenVerifies() {
         assertEquals("Secure qualification requires the newly frozen numeric-policy harness", 600,
             getHarness("/config").getInt("emailChangeSessionMaxAgeSeconds"))
         qualifyDraftEmailChange(secureAged = true)
     }
 
-    private fun qualifyDraftEmailChange(secureAged: Boolean) {
+    private fun qualifyDraftEmailChange(secureAged: Boolean, interruption: VerificationInterruption? = null) {
+        assertTrue("Run with ANDROID_REAL_EMAIL_CHANGES=1 to expose the editable email schema",
+            getHarness("/config").getBoolean("realEmailChanges"))
         if (InstrumentationRegistry.getArguments().getString("expectedHubUrl") != null) {
             assertEquals(harnessUrl, BuildConfig.API_URL)
             assertEquals(InstrumentationRegistry.getArguments().getString("expectedHubUrl"), BuildConfig.HUB_URL)
@@ -147,16 +160,17 @@ class RealHubE2ETest {
         if (remaining > 0) SystemClock.sleep(remaining)
         assertTrue(System.currentTimeMillis() - original.getLong("timeCreated") >= minimumAge * 1000)
         println("DRAFT_EMAIL_INITIATION coreCreatedAt=${original.getLong("timeCreated")} ageMs=${System.currentTimeMillis() - original.getLong("timeCreated")}")
-        clickResource("e2e.action.manage-account")
-        waitForWebElement("[data-testid='rownd-ui-profile-field-email']")
-        onWebView().withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-profile-field-email']"))
-            .perform(clearElement()).perform(webKeys(destination))
-        onWebView().withElement(findElement(Locator.CSS_SELECTOR, "[data-testid='rownd-ui-profile-save']"))
-            .perform(webScrollIntoView()).perform(webClick())
-        waitForText("Confirm your email change")
-        waitForText("You are about to change your email address to $destination. Please confirm this action.")
+        openAccountEmail()
+        evaluateInHub("""
+            const input = document.querySelector('[data-testid="rownd-ui-profile-field-email"]');
+            input.value = ${JSONObject.quote(destination)};
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        """.trimIndent())
+        waitForWebElement("[data-testid='rownd-ui-profile-field-email']", expectedValue = destination)
+        clickHubControl("[data-testid='rownd-ui-profile-save']")
+        waitForWebElement("[data-testid='rownd-ui-profile-email-confirmation']")
         assertEquals(email, getBackendUserData().getString("email"))
-        onWebView().withElement(findElement(Locator.XPATH, "//button[normalize-space()='Continue']")).perform(webClick())
+        clickHubControl("[data-testid='rownd-ui-profile-email-confirmation'] button:first-of-type")
         var verificationSessionHandle = originalHandle
         var verificationAccessToken = originalAccessToken
         if (secureAged) {
@@ -185,8 +199,7 @@ class RealHubE2ETest {
             assertEquals("public", resumed.getString("tenantId"))
             println("SECURE_EMAIL_SR_ADOPTED sameOwner=true newHandle=true destinationMailAfterExistingAccountSignIn=true")
         }
-        waitForText("Verify your new email")
-        waitForText("We have sent a confirmation email to the $destination address. Click on the email confirmation link to finalize the process.")
+        val link = Uri.parse(waitForCapture(destination).getString("emailVerifyLink"))
         assertEquals(email, getBackendUserData().getString("email"))
         assertEquals(verificationSessionHandle, sessionHandle(runBlocking { Rownd.getAccessToken() }))
         assertEquals("public", original.getString("tenantId"))
@@ -201,7 +214,6 @@ class RealHubE2ETest {
         assertEquals("PENDING", pending.getJSONObject(0).getString("status"))
         assertEquals(1, harnessCounters().getInt("verificationEmail"))
         assertEquals(if (secureAged) 2 else 1, harnessCounters().getInt("passwordlessEmail"))
-        val link = Uri.parse(waitForCapture(destination).getString("emailVerifyLink"))
         val callback = Uri.Builder().scheme(BuildConfig.DEEP_LINK_SCHEME).authority("account")
             .appendPath("verify-email").encodedQuery(link.encodedQuery).build()
         context.getSharedPreferences("draft-email-qualification", 0).edit()
@@ -210,6 +222,10 @@ class RealHubE2ETest {
             .putString("originalHandle", verificationSessionHandle).putString("owner", original.getString("userId"))
             .putInt("checkpointPid", android.os.Process.myPid()).commit()
         if (InstrumentationRegistry.getArguments().getString("prepareDraftOnly") == "true") return
+        if (interruption != null) {
+            verifyWithHeldResponse(callback, original.getString("userId"), verificationSessionHandle, destination, interruption)
+            return
+        }
         dispatchVerificationThroughChrome(callback)
         try {
             waitForWebElement("[data-testid='rownd-ui-email-verification-success']")
@@ -236,20 +252,86 @@ class RealHubE2ETest {
             println("DRAFT_EMAIL_EXPLICIT_PUBLIC_REFRESH profileMatches=true")
         }
         waitUntil("verified canonical email in native profile", 30_000) { Rownd.state.value.user.data["email"] == destination }
-        waitForWebElement("[data-testid='rownd-ui-email-verification-close']")
-        val verificationWebView = requireNotNull(activeHubWebView())
-        instrumentation.runOnMainSync {
-            // Closing destroys this WebView, which may be outside Espresso's default root after Chrome dispatch.
-            verificationWebView.evaluateJavascript(
-                "document.querySelector('[data-testid=\"rownd-ui-email-verification-close\"]').click()",
-                null,
-            )
-        }
-        scenario?.close()
-        scenario = ActivityScenario.launch(MainActivity::class.java)
-        waitForResource("e2e.action.manage-account")
+        clickHubControl("[data-testid='rownd-ui-email-verification-close']")
+        waitUntil("verification sheet to close") { !hasActiveBottomSheetActivity() }
+        val beforeReopen = getHarness("/test/http-statuses").getJSONArray("requests").length()
+        openAccountEmail(expectedValue = destination)
         assertEquals(replacementHandle, sessionHandle(runBlocking { Rownd.getAccessToken() }))
+        assertProtectedRequestSucceeds()
         assertEquals(destination, getBackendUserData().getString("email"))
+        fun profileReads() =
+            getHarness("/test/http-statuses").getJSONArray("requests").let { requests ->
+                (beforeReopen until requests.length()).map(requests::getJSONObject)
+                    .filter { it.getString("method") == "GET" && it.getString("path") == "/auth/plugin/rownd/user" }
+            }
+        waitUntil("reopened Hub to read the profile successfully") {
+            profileReads().any { it.getBoolean("originPresent") && it.getInt("status") == 200 }
+        }
+        assertTrue("Reopening the profile must not produce any profile 401s", profileReads().none { it.getInt("status") == 401 })
+    }
+
+    private fun verifyWithHeldResponse(
+        callback: Uri,
+        ownerId: String,
+        originalHandle: String,
+        destination: String,
+        interruption: VerificationInterruption,
+    ) {
+        postHarness("/test/response-gate", """{"method":"POST","path":"/auth/user/email/verify"}""")
+        val issuedHandle = try {
+            dispatchVerificationThroughChrome(callback)
+            waitUntil("Core issued a replacement before delivering the verification response") {
+                getHarness("/test/response-gate").getBoolean("reached")
+            }
+            val handle = coreSessionHandles(ownerId).single()
+            assertFalse("Core must have already replaced the initiating session", handle == originalHandle)
+            assertEquals(ownerId, getHarness("/test/email-change-session?handle=$handle").getString("userId"))
+            val heldAt = SystemClock.elapsedRealtime()
+            when (interruption) {
+                VerificationInterruption.DISMISS -> {
+                    clickHubControl("[data-testid='rownd-ui-email-verification-close']", timeoutMs = 20_000)
+                    waitUntil("verification sheet to close before response delivery") { !hasActiveBottomSheetActivity() }
+                    val remainingHold = 12_000 - (SystemClock.elapsedRealtime() - heldAt)
+                    if (remainingHold > 0) SystemClock.sleep(remainingHold)
+                }
+                VerificationInterruption.SIGN_OUT -> {
+                    instrumentation.runOnMainSync { Rownd.signOut() }
+                    waitUntil("local Rownd sign-out while verification response is held") {
+                        !Rownd.state.value.auth.isAuthenticated
+                    }
+                }
+            }
+            assertEquals(listOf(handle), coreSessionHandles(ownerId))
+            handle
+        } finally {
+            postHarness("/test/response-gate/release", "{}")
+        }
+
+        when (interruption) {
+            VerificationInterruption.DISMISS -> {
+                waitUntil("verified profile to hydrate after sheet dismissal", 30_000) {
+                    Rownd.state.value.auth.isAuthenticated && Rownd.state.value.user.data["email"] == destination
+                }
+                assertEquals(issuedHandle, sessionHandle(runBlocking { Rownd.getAccessToken() }))
+                assertProtectedRequestSucceeds()
+                assertEquals(destination, getBackendUserData().getString("email"))
+                println("DELAYED_VERIFICATION sheetClosedBeforeResponse=true holdMsAtLeast=12000 replacementAdopted=true")
+            }
+            VerificationInterruption.SIGN_OUT -> {
+                waitUntil("unadopted verification session to be revoked in Core", 30_000) {
+                    coreSessionHandles(ownerId).isEmpty()
+                }
+                assertFalse(Rownd.state.value.auth.isAuthenticated)
+                assertFalse(runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
+                assertEquals(null, runBlocking { Rownd.getAccessToken() })
+                println("VERIFICATION_SIGN_OUT replacementPresentInCoreBeforeRelease=true replacementRevoked=true locallySignedOut=true")
+            }
+        }
+    }
+
+    private fun coreSessionHandles(ownerId: String): List<String> {
+        val handles = getHarness("/test/email-change-session-handles?userId=${Uri.encode(ownerId)}").getJSONArray("handles")
+        return List(handles.length(), handles::getString)
     }
 
     @Test
@@ -317,7 +399,7 @@ class RealHubE2ETest {
             .put("serverSessionStatus", 200).put("serverProfileStatus", 200))
         waitForResource("e2e.status.email")
         waitForText(destination)
-        clickResource("e2e.action.manage-account")
+        openAccountEmail()
         val observation = java.util.concurrent.atomic.AtomicReference<JSONObject>()
         val history = java.util.concurrent.CopyOnWriteArrayList<JSONObject>()
         val pending = AtomicBoolean(false)
@@ -453,8 +535,7 @@ class RealHubE2ETest {
         submitOtp(waitForCapture(email).getString("userInputCode"))
         waitForSignedInApp()
         val original = getHarness("/test/email-change-session?handle=${sessionHandle(requireNotNull(runBlocking { Rownd.getAccessToken() }))}")
-        clickResource("e2e.action.manage-account")
-        waitForWebElement("[data-testid='rownd-ui-profile-field-email']")
+        openAccountEmail()
         val envelope = JSONObject().put("version", 2).put("request_id", "diagnostic-request-123456")
             .put("expires_at", System.currentTimeMillis() + 60_000)
             .put("local_draft", JSONObject().put("owner_id", original.getString("userId")).put("tenant_id", "public")
@@ -865,14 +946,32 @@ class RealHubE2ETest {
         }
     }
 
-    private fun waitForWebElement(selector: String, timeoutMs: Long = 15_000) {
+    private fun openAccountEmail(expectedValue: String? = null) {
+        clickResource("e2e.action.manage-account")
+        // Verification fields are on Account information, the initial mobile profile tab.
+        waitForWebElement("[data-testid='rownd-ui-profile-field-email']", expectedValue = expectedValue)
+    }
+
+    private fun clickHubControl(selector: String, timeoutMs: Long = 15_000) {
+        waitForWebElement(selector, timeoutMs)
+        evaluateInHub("document.querySelector(${JSONObject.quote(selector)}).click()")
+    }
+
+    private fun evaluateInHub(script: String) {
+        val webView = requireNotNull(activeHubWebView())
+        instrumentation.runOnMainSync { webView.evaluateJavascript(script, null) }
+    }
+
+    private fun waitForWebElement(selector: String, timeoutMs: Long = 15_000, expectedValue: String? = null) {
         // Off-screen Hub controls need not appear in UIAutomator's accessibility tree.
         val ready = AtomicBoolean(false)
         val pending = AtomicBoolean(false)
         val script = """
             (() => {
                 const element = document.querySelector(${JSONObject.quote(selector)});
-                return !!element && !element.disabled && element.getClientRects().length > 0;
+                const expectedValue = ${expectedValue?.let(JSONObject::quote) ?: "null"};
+                return !!element && !element.disabled && element.getClientRects().length > 0 &&
+                    (expectedValue === null || element.value === expectedValue);
             })()
         """.trimIndent()
         waitUntil("Hub element '$selector'", timeoutMs) {
