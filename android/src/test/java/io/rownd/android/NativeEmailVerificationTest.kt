@@ -4,7 +4,11 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.toByteArray
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.HttpTimeoutCapability
+import io.ktor.client.request.post
+import io.ktor.client.statement.bodyAsText
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -24,6 +28,12 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 class NativeEmailVerificationTest {
     @Test
@@ -112,11 +122,13 @@ class NativeEmailVerificationTest {
         var requestUrl: String? = null
         var requestBody: String? = null
         var requestTimeoutMillis: Long? = null
+        var socketTimeoutMillis: Long? = null
         val engine = MockEngine { request ->
             requestMethod = request.method
             requestUrl = request.url.toString()
             requestBody = request.body.toByteArray().decodeToString()
             requestTimeoutMillis = request.getCapabilityOrNull(HttpTimeoutCapability)?.requestTimeoutMillis
+            socketTimeoutMillis = request.getCapabilityOrNull(HttpTimeoutCapability)?.socketTimeoutMillis
             respond(
                 content = "{\"status\":\"OK\"}",
                 status = HttpStatusCode.OK,
@@ -147,6 +159,7 @@ class NativeEmailVerificationTest {
         assertEquals("replacement-refresh", result.issuedRefreshToken)
         assertEquals(null, result.issuedAntiCSRF)
         assertEquals(NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS, requestTimeoutMillis)
+        assertEquals(NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS, socketTimeoutMillis)
         assertEquals(HttpMethod.Post, requestMethod)
         assertEquals(
             "https://api.example.com/auth/user/email/verify?rowndPendingVerificationId=pending+id",
@@ -156,11 +169,85 @@ class NativeEmailVerificationTest {
         client.close()
     }
 
+    // The server commits the verification before it answers, which can take longer than the
+    // engine's read timeout. The engine here times out after 250ms; the server answers after 1s.
     @Test
-    fun `verification waits less than the Hub for the server to replace the session`() {
-        // The server takes several seconds to commit; the Hub waits 50s for the native result.
-        assertEquals(45_000L, NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS)
-        assertTrue(NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS < 50_000L)
+    fun `verification waits for a response slower than the engine read timeout`() = runBlocking {
+        withSlowServer { url ->
+            val client = slowEngineClient()
+            try {
+                val result = performNativeEmailVerification(client, NativeEmailVerificationRequest(
+                    token = "opaque-token",
+                    pendingVerificationId = "pending-123",
+                    apiDomain = url,
+                    apiBasePath = "/auth",
+                ))
+                assertEquals("OK", result.status)
+                assertEquals("replacement-access", result.issuedAccessToken)
+            } finally {
+                client.close()
+            }
+        }
+    }
+
+    // Shows that the server above is slow enough to fail a request that keeps the engine timeout.
+    @Test
+    fun `a request without the verification timeout fails on the same slow response`() = runBlocking {
+        withSlowServer { url ->
+            val client = slowEngineClient()
+            try {
+                val error = runCatching { client.post("$url/auth/user/email/verify").bodyAsText() }.exceptionOrNull()
+                assertTrue("Expected a read timeout, got $error", error is IOException)
+            } finally {
+                client.close()
+            }
+        }
+    }
+
+    private fun slowEngineClient() = HttpClient(OkHttp) {
+        engine { config { readTimeout(250, TimeUnit.MILLISECONDS) } }
+        install(HttpTimeout)
+        install(ContentNegotiation) { json() }
+    }
+
+    // Answers every request after 1s with an OK verification and a replacement access token.
+    private suspend fun withSlowServer(block: suspend (String) -> Unit) {
+        val server = ServerSocket(0, 0, InetAddress.getLoopbackAddress())
+        val acceptor = thread(isDaemon = true) {
+            while (!server.isClosed) {
+                val socket = runCatching { server.accept() }.getOrNull() ?: break
+                thread(isDaemon = true) { socket.use(::respondSlowly) }
+            }
+        }
+        try {
+            block("http://127.0.0.1:${server.localPort}")
+        } finally {
+            server.close()
+            acceptor.join()
+        }
+    }
+
+    private fun respondSlowly(socket: Socket) {
+        val input = socket.getInputStream().bufferedReader()
+        val contentLength = generateSequence { input.readLine() }
+            .takeWhile { it.isNotEmpty() }
+            .firstNotNullOfOrNull { line ->
+                line.takeIf { it.startsWith("Content-Length:", ignoreCase = true) }
+                    ?.substringAfter(':')?.trim()?.toInt()
+            } ?: 0
+        repeat(contentLength) { input.read() }
+        Thread.sleep(1_000)
+        val body = "{\"status\":\"OK\"}"
+        runCatching {
+            socket.getOutputStream().write((
+                "HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: application/json\r\n" +
+                    "st-access-token: replacement-access\r\n" +
+                    "Content-Length: ${body.length}\r\n" +
+                    "Connection: close\r\n\r\n" +
+                    body
+                ).toByteArray())
+        }
     }
 
     @Test

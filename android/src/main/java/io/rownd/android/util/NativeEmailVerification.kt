@@ -138,7 +138,12 @@ internal suspend fun performNativeEmailVerification(
 ): NativeEmailVerificationResult {
     val response = client.post("${request.apiDomain}${request.apiBasePath}/user/email/verify") {
         retry { maxRetries = 0 }
-        timeout { requestTimeoutMillis = NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS }
+        timeout {
+            requestTimeoutMillis = NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS
+            // The OkHttp engine bounds the wait for the response by its read timeout (10s by
+            // default) and only replaces that with the socket timeout, not the request timeout.
+            socketTimeoutMillis = NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS
+        }
         parameter("rowndPendingVerificationId", request.pendingVerificationId)
         contentType(ContentType.Application.Json)
         setBody(NativeEmailVerificationBody(method = "token", token = request.token))
