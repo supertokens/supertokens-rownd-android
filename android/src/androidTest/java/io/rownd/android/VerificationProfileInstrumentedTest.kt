@@ -218,6 +218,7 @@ class VerificationProfileInstrumentedTest {
         Rownd.config.baseUrl = "https://hub.example.com"
         Rownd.config.supertokens = SuperTokensConfig(appInfo = SuperTokensAppInfo(apiDomain = "https://api.example.com", apiBasePath = "/auth"))
         SuperTokensSessionBridge.bootstrapSession(context, originalToken, "original-refresh", replaceExisting = true)
+        rownd.stateRepo.getStore().dispatch(StateAction.SetAuth(AuthState(accessToken = originalToken)))
         onVerification = {
             SuperTokensSessionBridge.bootstrapSession(context, replacementToken, "replacement-refresh", replaceExisting = true)
         }
