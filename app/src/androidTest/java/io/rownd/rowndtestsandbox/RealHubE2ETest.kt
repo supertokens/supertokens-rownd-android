@@ -120,12 +120,19 @@ class RealHubE2ETest {
 
     @Test
     fun verificationAdoptsSessionAfterSlowResponseAndSheetDismissal() {
+        assumeVerificationInterruptionQualification()
         qualifyDraftEmailChange(secureAged = false, interruption = VerificationInterruption.DISMISS)
     }
 
     @Test
     fun signOutDuringVerificationRevokesTheUnadoptedCoreSession() {
+        assumeVerificationInterruptionQualification()
         qualifyDraftEmailChange(secureAged = false, interruption = VerificationInterruption.SIGN_OUT)
+    }
+
+    private fun assumeVerificationInterruptionQualification() {
+        assumeTrue("Interruption qualification requires a Hub with the Pylon 3947 flow",
+            InstrumentationRegistry.getArguments().getString("qualifyVerificationInterruptions") == "true")
     }
 
     private enum class VerificationInterruption { DISMISS, SIGN_OUT }
