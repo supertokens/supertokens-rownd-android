@@ -252,6 +252,22 @@ object SuperTokensSessionBridge {
         }
     }
 
+    // The SDK interceptor stores any session a response issues, even one whose request started
+    // before a local sign-out committed. Only that session is removed; a newer one is kept.
+    internal fun discardSessionIssuedAfterSignOut(
+        context: Context,
+        store: Store<GlobalState, StateAction>,
+        accessToken: String,
+    ) = synchronized(sessionCommitLock) {
+        if (isSameSession(accessToken, storedAccessToken(context))) clearLocalSession(context)
+        store.dispatch(StateAction.ReconcileNativeSession(
+            expectedAccessToken = accessToken,
+            accessToken = null,
+            preserveProfile = false,
+            isCurrent = { !isSameSession(accessToken, storedAccessToken(context)) },
+        ))
+    }
+
     // When the SDK cannot reach the server to verify a stored session, keep the user signed in
     // on its stored tokens rather than signing them out while offline.
     internal fun adoptUnverifiedSession(context: Context, store: Store<GlobalState, StateAction>): String? =

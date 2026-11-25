@@ -4,6 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.toByteArray
+import io.ktor.client.plugins.HttpTimeoutCapability
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -12,6 +13,7 @@ import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import io.rownd.android.models.VerifyEmailMessage
 import io.rownd.android.models.RowndHubInteropMessage
+import io.rownd.android.util.NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS
 import io.rownd.android.util.NativeEmailVerificationRequest
 import io.rownd.android.util.nativeEmailVerificationRequest
 import io.rownd.android.util.performNativeEmailVerification
@@ -109,21 +111,28 @@ class NativeEmailVerificationTest {
         var requestMethod: HttpMethod? = null
         var requestUrl: String? = null
         var requestBody: String? = null
+        var requestTimeoutMillis: Long? = null
         val engine = MockEngine { request ->
             requestMethod = request.method
             requestUrl = request.url.toString()
             requestBody = request.body.toByteArray().decodeToString()
+            requestTimeoutMillis = request.getCapabilityOrNull(HttpTimeoutCapability)?.requestTimeoutMillis
             respond(
                 content = "{\"status\":\"OK\"}",
                 status = HttpStatusCode.OK,
-                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                headers = headersOf(
+                    HttpHeaders.ContentType to listOf("application/json"),
+                    "st-access-token" to listOf("replacement-access"),
+                    "st-refresh-token" to listOf("replacement-refresh"),
+                    "anti-csrf" to listOf(""),
+                ),
             )
         }
         val client = HttpClient(engine) {
             install(ContentNegotiation) { json() }
         }
 
-        val status = performNativeEmailVerification(
+        val result = performNativeEmailVerification(
             client,
             NativeEmailVerificationRequest(
                 token = "opaque-token",
@@ -133,7 +142,11 @@ class NativeEmailVerificationTest {
             ),
         )
 
-        assertEquals("OK", status)
+        assertEquals("OK", result.status)
+        assertEquals("replacement-access", result.issuedAccessToken)
+        assertEquals("replacement-refresh", result.issuedRefreshToken)
+        assertEquals(null, result.issuedAntiCSRF)
+        assertEquals(NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS, requestTimeoutMillis)
         assertEquals(HttpMethod.Post, requestMethod)
         assertEquals(
             "https://api.example.com/auth/user/email/verify?rowndPendingVerificationId=pending+id",
@@ -141,6 +154,13 @@ class NativeEmailVerificationTest {
         )
         assertEquals("{\"method\":\"token\",\"token\":\"opaque-token\"}", requestBody)
         client.close()
+    }
+
+    @Test
+    fun `verification waits less than the Hub for the server to replace the session`() {
+        // The server takes several seconds to commit; the Hub waits 50s for the native result.
+        assertEquals(45_000L, NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS)
+        assertTrue(NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS < 50_000L)
     }
 
     @Test

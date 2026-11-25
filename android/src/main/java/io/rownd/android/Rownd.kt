@@ -38,6 +38,7 @@ import io.rownd.android.util.AppLifecycleListener
 import io.rownd.android.util.AuthenticatedApiClient
 import io.rownd.android.util.HubSessionStorage
 import io.rownd.android.util.InvalidRefreshTokenException
+import io.rownd.android.util.NativeEmailVerifier
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.NoAccessTokenPresentException
 import io.rownd.android.util.NoRefreshTokenPresentException
@@ -90,6 +91,7 @@ class RowndClient(
     internal var signInWithGoogle = graph.signInWithGoogle()
     internal var telemetry = graph.telemetry()
     internal var authenticatedApiClient: AuthenticatedApiClient = graph.authenticatedApiClient()
+    internal val nativeEmailVerifier = NativeEmailVerifier()
 
     private var pendingHubDisplayRequest: HubDisplayRequest? = null
     private var isWaitingForAppConfig = false

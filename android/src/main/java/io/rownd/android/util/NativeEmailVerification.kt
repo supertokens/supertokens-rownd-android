@@ -16,13 +16,24 @@ import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
-private const val NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS = 10_000L
+// The server commits the verification and issues a replacement session in one call that can
+// take several seconds. The Hub waits 50s for the native result, so this must stay below that.
+internal const val NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS = 45_000L
 
 internal data class NativeEmailVerificationRequest(
     val token: String,
     val pendingVerificationId: String,
     val apiDomain: String,
     val apiBasePath: String,
+)
+
+// The SDK interceptor stores the issued session before this result exists; the tokens are kept so
+// that a session issued after a local sign-out can be found and discarded.
+internal data class NativeEmailVerificationResult(
+    val status: String,
+    val issuedAccessToken: String?,
+    val issuedRefreshToken: String?,
+    val issuedAntiCSRF: String?,
 )
 
 @Serializable
@@ -124,7 +135,7 @@ internal fun nativeEmailVerificationRequest(
 internal suspend fun performNativeEmailVerification(
     client: HttpClient,
     request: NativeEmailVerificationRequest,
-): String {
+): NativeEmailVerificationResult {
     val response = client.post("${request.apiDomain}${request.apiBasePath}/user/email/verify") {
         retry { maxRetries = 0 }
         timeout { requestTimeoutMillis = NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS }
@@ -137,5 +148,10 @@ internal suspend fun performNativeEmailVerification(
     }
     val status = response.body<NativeEmailVerificationResponse>().status
     check(status == "OK") { "Email verification failed" }
-    return status
+    return NativeEmailVerificationResult(
+        status = status,
+        issuedAccessToken = response.headers["st-access-token"]?.takeIf { it.isNotBlank() },
+        issuedRefreshToken = response.headers["st-refresh-token"]?.takeIf { it.isNotBlank() },
+        issuedAntiCSRF = response.headers["anti-csrf"]?.takeIf { it.isNotBlank() },
+    )
 }

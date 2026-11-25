@@ -525,7 +525,7 @@ class RowndWebViewAuthenticationInstrumentedTest {
             original.refreshToken,
         )
 
-        val status = performNativeEmailVerification(
+        val result = performNativeEmailVerification(
             Rownd.authenticatedApiClient.client,
             NativeEmailVerificationRequest(
                 token = pending.token,
@@ -536,7 +536,8 @@ class RowndWebViewAuthenticationInstrumentedTest {
         )
         val replacementAccessToken = SuperTokensSessionBridge.getAccessToken(context)
 
-        assertEquals("OK", status)
+        assertEquals("OK", result.status)
+        assertEquals("The result must carry the session the SDK installed", replacementAccessToken, result.issuedAccessToken)
         assertNotNull("Verification response must install a replacement access token", replacementAccessToken)
         assertTrue("Verification must replace the existing access token", replacementAccessToken != original.accessToken)
         val replacementRefreshToken = SuperTokensSessionBridge.getRefreshToken(context)
