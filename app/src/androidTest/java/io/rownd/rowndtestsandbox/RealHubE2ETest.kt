@@ -33,8 +33,10 @@ import io.rownd.android.views.RowndBottomSheetActivity
 import io.rownd.android.views.RowndWebView
 import io.rownd.android.views.RowndWebViewModel
 import kotlinx.coroutines.runBlocking
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -130,12 +132,18 @@ class RealHubE2ETest {
         qualifyDraftEmailChange(secureAged = false, interruption = VerificationInterruption.SIGN_OUT)
     }
 
+    @Test
+    fun differentUserSignInDuringVerificationKeepsTheirSession() {
+        assumeVerificationInterruptionQualification()
+        qualifyDraftEmailChange(secureAged = false, interruption = VerificationInterruption.OTHER_USER)
+    }
+
     private fun assumeVerificationInterruptionQualification() {
         assumeTrue("Interruption qualification requires a Hub with the Pylon 3947 flow",
             InstrumentationRegistry.getArguments().getString("qualifyVerificationInterruptions") == "true")
     }
 
-    private enum class VerificationInterruption { DISMISS, SIGN_OUT }
+    private enum class VerificationInterruption { DISMISS, SIGN_OUT, OTHER_USER }
 
     @Test
     fun secureAgedEmailChangeUsesExistingAccountSignInThenVerifies() {
@@ -284,6 +292,9 @@ class RealHubE2ETest {
         destination: String,
         interruption: VerificationInterruption,
     ) {
+        lateinit var competingHandle: String
+        lateinit var competingOwner: String
+        val competingEmail = uniqueEmail("draft-other")
         postHarness("/test/response-gate", """{"method":"POST","path":"/auth/user/email/verify"}""")
         val issuedHandle = try {
             // The fresh-flow test already covers Chrome handoff. Deliver the same link directly
@@ -308,6 +319,19 @@ class RealHubE2ETest {
                     waitUntil("local Rownd sign-out while verification response is held") {
                         !Rownd.state.value.auth.isAuthenticated
                     }
+                }
+                VerificationInterruption.OTHER_USER -> {
+                    competingHandle = signInAnotherUser(competingEmail)
+                    waitForCompletedConsumes(2)
+                    waitUntil("other user's native profile before verification response delivery") {
+                        Rownd.state.value.auth.isAuthenticated && Rownd.state.value.user.data["email"] == competingEmail
+                    }
+                    competingOwner = getHarness("/test/email-change-session?handle=$competingHandle").getString("userId")
+                    assertFalse("the competing login must belong to a different user", ownerId == competingOwner)
+                    assertEquals(competingHandle, sessionHandle(runBlocking { SuperTokensSessionBridge.getAccessToken(context) }))
+                    assertEquals(listOf(competingHandle), coreSessionHandles(competingOwner))
+                    assertProtectedRequestSucceeds()
+                    println("VERIFICATION_OTHER_USER signedInBeforeRelease=true authorizedBeforeRelease=true")
                 }
             }
             assertEquals(listOf(handle), coreSessionHandles(ownerId))
@@ -335,7 +359,63 @@ class RealHubE2ETest {
                 assertEquals(null, runBlocking { Rownd.getAccessToken() })
                 println("VERIFICATION_SIGN_OUT replacementPresentInCoreBeforeRelease=true replacementRevoked=true locallySignedOut=true")
             }
+            VerificationInterruption.OTHER_USER -> {
+                val replacementRevoked = try {
+                    waitUntil("superseded verification session to be revoked in Core", 30_000) {
+                        coreSessionHandles(ownerId).isEmpty()
+                    }
+                    true
+                } catch (_: ComposeTimeoutException) {
+                    false
+                }
+                val competingCoreRetained = coreSessionHandles(competingOwner) == listOf(competingHandle)
+                val competingSdkRetained =
+                    sessionHandle(runBlocking { SuperTokensSessionBridge.getAccessToken(context) }) == competingHandle
+                val competingProfileRetained =
+                    Rownd.state.value.auth.isAuthenticated && Rownd.state.value.user.data["email"] == competingEmail
+                println("VERIFICATION_OTHER_USER replacementRevoked=$replacementRevoked competingCoreRetained=$competingCoreRetained " +
+                    "competingSdkRetained=$competingSdkRetained competingProfileRetained=$competingProfileRetained")
+                assertTrue("the superseded verification session must be revoked", replacementRevoked)
+                assertTrue("the other user's Core session must survive", competingCoreRetained)
+                assertTrue("the SDK must retain the other user's session", competingSdkRetained)
+                assertTrue("Rownd must retain the other user's signed-in profile", competingProfileRetained)
+                assertProtectedRequestSucceeds()
+            }
         }
+    }
+
+    private fun signInAnotherUser(email: String): String {
+        val client = OkHttpClient()
+        fun passwordlessRequest(path: String, body: JSONObject) = Request.Builder()
+            .url("$harnessUrl/auth/signinup/code$path")
+            .header("rid", "passwordless")
+            .header("st-auth-mode", "header")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        val challenge = client.newCall(passwordlessRequest("", JSONObject().put("email", email))).execute().use {
+            assertEquals(200, it.code)
+            JSONObject(requireNotNull(it.body).string()).also { result -> assertEquals("OK", result.getString("status")) }
+        }
+        val consume = JSONObject()
+            .put("preAuthSessionId", challenge.getString("preAuthSessionId"))
+            .put("deviceId", challenge.getString("deviceId"))
+            .put("userInputCode", waitForCapture(email).getString("userInputCode"))
+        val handle = client.newCall(passwordlessRequest("/consume", consume)).execute().use {
+            assertEquals(200, it.code)
+            assertEquals("OK", JSONObject(requireNotNull(it.body).string()).getString("status"))
+            val accessToken = requireNotNull(it.header("st-access-token"))
+            // Use the real OTP response headers and native bootstrap used by the Hub handoff.
+            // Opening another sign-in sheet with existing credentials can skip consuming the OTP.
+            SuperTokensSessionBridge.bootstrapSession(
+                context, accessToken, requireNotNull(it.header("st-refresh-token")),
+                frontToken = requireNotNull(it.header("front-token")), antiCSRF = it.header("anti-csrf"),
+                replaceExisting = true,
+            )
+            requireNotNull(sessionHandle(accessToken))
+        }
+        assertEquals(handle, sessionHandle(runBlocking { Rownd.getAccessToken() }))
+        assertEquals(email, runBlocking { Rownd.user.refresh().await() }?.data?.get("email"))
+        return handle
     }
 
     private fun coreSessionHandles(ownerId: String): List<String> {
