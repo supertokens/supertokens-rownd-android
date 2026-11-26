@@ -133,10 +133,7 @@ class RealHubE2ETest {
     }
 
     @Test
-    fun knownLimitationDifferentUserSignInDuringVerificationRequiresSignInAgain() {
-        assumeVerificationInterruptionQualification()
-        assumeTrue("Documents the known SuperTokens Android 0.5.4 token overwrite (D′)",
-            InstrumentationRegistry.getArguments().getString("documentVerificationOwnerOverwrite") == "true")
+    fun differentUserSignInDuringVerificationKeepsNewLoginAndRevokesReplacement() {
         qualifyDraftEmailChange(secureAged = false, interruption = VerificationInterruption.OTHER_USER)
     }
 
@@ -366,9 +363,12 @@ class RealHubE2ETest {
                     coreSessionHandles(ownerId).isEmpty()
                 }
                 assertEquals("the other user's Core session survives", listOf(competingHandle), coreSessionHandles(competingOwner))
-                assertFalse("the overwritten login is signed out locally", Rownd.state.value.auth.isAuthenticated)
-                assertFalse(runBlocking { SuperTokensSessionBridge.doesSessionExist(context) })
-                assertEquals(null, runBlocking { Rownd.getAccessToken() })
+                assertTrue(Rownd.state.value.auth.isAuthenticated)
+                assertEquals(competingEmail, Rownd.state.value.user.data["email"])
+                assertEquals(competingHandle, sessionHandle(runBlocking { SuperTokensSessionBridge.getAccessToken(context) }))
+                assertEquals(competingHandle, sessionHandle(runBlocking { Rownd.getAccessToken() }))
+                assertProtectedRequestSucceeds()
+                println("VERIFICATION_OTHER_USER replacementRevoked=true competingLoginPreserved=true")
             }
         }
     }

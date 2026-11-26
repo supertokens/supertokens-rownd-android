@@ -275,7 +275,7 @@ val refreshed = SuperTokensSessionBridge.attemptRefresh(applicationContext)
 
 #### Known limitations
 
-With SuperTokens Android 0.5.4, if another user signs in while an email verification is in flight, `SuperTokensInterceptor` can overwrite their local tokens with the verification's replacement session before Rownd can check who owns it. Rownd clears and revokes the replacement session and signs out locally. The other user's server session is not revoked, but they must sign in again on this device. The upstream fix is to check session ownership before writing tokens ([supertokens-android #82](https://github.com/supertokens/supertokens-android/pull/82)).
+Email verification uses the initiating session's captured credentials and does not write its replacement over a newer login. With SuperTokens Android 0.5.4, a refresh of the initiating session can still return `front-token: remove` after Rownd installs the replacement and clear it locally. The interceptor and explicit refresh use separate locks; preventing a stale refresh from clearing a newer session requires SDK-level ownership checks ([supertokens-android #82](https://github.com/supertokens/supertokens-android/pull/82)).
 
 ### Example app
 
