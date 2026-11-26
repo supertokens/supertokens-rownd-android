@@ -97,6 +97,7 @@ class ProfileNotFoundSignOutInstrumentedTest {
         release.complete(Unit)
         commitCanFinish.countDown()
         commitHolder?.join(5_000)
+        rownd.closeNativeEmailVerificationTransport()
         rownd.authenticatedApiClient.client.close()
         SuperTokensSessionBridge.clearLocalSession(context)
         SuperTokens.resetForTests()

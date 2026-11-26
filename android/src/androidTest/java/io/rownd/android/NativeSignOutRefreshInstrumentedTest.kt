@@ -59,6 +59,7 @@ class NativeSignOutRefreshInstrumentedTest {
     @After
     fun tearDown() {
         HarnessClient.releaseSignOutGate()
+        rownd.closeNativeEmailVerificationTransport()
         rownd.authRepo.legacyMigrationApiClient.client.close()
         rownd.authenticatedApiClient.client.close()
         SuperTokensSessionBridge.clearLocalSession(context)

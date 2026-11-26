@@ -92,7 +92,23 @@ class RowndClient(
     internal var signInWithGoogle = graph.signInWithGoogle()
     internal var telemetry = graph.telemetry()
     internal var authenticatedApiClient: AuthenticatedApiClient = graph.authenticatedApiClient()
-    internal val nativeEmailVerificationApiClient by lazy { NativeEmailVerificationApiClient(rowndContext) }
+    private var verificationTransport: NativeEmailVerificationApiClient? = null
+    private var verificationTransportClosed = false
+    internal val nativeEmailVerificationApiClient: NativeEmailVerificationApiClient
+        @Synchronized get() {
+            check(!verificationTransportClosed) { "The native email verification transport is closed" }
+            return verificationTransport ?: NativeEmailVerificationApiClient(rowndContext).also {
+                verificationTransport = it
+            }
+        }
+
+    @Synchronized
+    internal fun closeNativeEmailVerificationTransport() {
+        verificationTransportClosed = true
+        verificationTransport?.close()
+        verificationTransport = null
+    }
+
     internal val nativeEmailVerifier = NativeEmailVerifier()
 
     private var pendingHubDisplayRequest: HubDisplayRequest? = null

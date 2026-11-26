@@ -66,6 +66,7 @@ class LegacyRefreshRecoveryInstrumentedTest {
 
     @After
     fun tearDown() {
+        rownd.closeNativeEmailVerificationTransport()
         rownd.authRepo.legacyMigrationApiClient.client.close()
         rownd.authenticatedApiClient.client.close()
         SuperTokensSessionBridge.clearLocalSession(context)

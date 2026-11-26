@@ -67,6 +67,7 @@ class SessionRefreshFailureInstrumentedTest {
             setRefreshUnavailable(false)
         } finally {
             SuperTokensSessionBridge.clearLocalSession(context)
+            rownd.closeNativeEmailVerificationTransport()
             rownd.authenticatedApiClient.client.close()
             rownd.authRepo.legacyMigrationApiClient.client.close()
             rownd.appHandleWrapper?.unregister()

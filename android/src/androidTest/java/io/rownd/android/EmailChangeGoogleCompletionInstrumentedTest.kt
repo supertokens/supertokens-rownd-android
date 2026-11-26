@@ -90,6 +90,7 @@ class EmailChangeGoogleCompletionInstrumentedTest {
         release.complete(Unit)
         releaseProfile.complete(Unit)
         rownd.appHandleWrapper?.unregister()
+        rownd.closeNativeEmailVerificationTransport()
         rownd.authenticatedApiClient.client.close()
         SuperTokensSessionBridge.clearLocalSession(context)
         SuperTokens.resetForTests()

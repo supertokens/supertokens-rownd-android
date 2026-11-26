@@ -77,7 +77,7 @@ class VerificationProfileInstrumentedTest {
     fun tearDown() {
         release.complete(Unit)
         rownd.authenticatedApiClient.client.close()
-        rownd.nativeEmailVerificationApiClient.client.close()
+        rownd.closeNativeEmailVerificationTransport()
     }
 
     @Test
@@ -228,8 +228,7 @@ class VerificationProfileInstrumentedTest {
         val store = rownd.stateRepo.getStore()
         store.dispatch(StateAction.SetAuth(if (restoreLegacyDuringVerify) AuthState() else AuthState(accessToken = originalToken)))
         val beforeRestore = store.currentState
-        rownd.nativeEmailVerificationApiClient.client.close()
-        rownd.nativeEmailVerificationApiClient.client = NativeEmailVerificationApiClient(rownd.rowndContext, MockEngine { request ->
+        val mockTransport = NativeEmailVerificationApiClient(rownd.rowndContext, MockEngine { request ->
             verifications++
             assertEquals("/auth/user/email/verify", request.url.encodedPath)
             assertEquals("Bearer $originalToken", request.headers[HttpHeaders.Authorization])
@@ -245,7 +244,8 @@ class VerificationProfileInstrumentedTest {
                 "st-refresh-token" to listOf("replacement-refresh"),
                 "front-token" to listOf(SuperTokensSessionBridge.buildFrontToken(replacementToken)),
             ))
-        }).client
+        })
+        rownd.nativeEmailVerificationApiClient.client = mockTransport.client
         val url = "https://hub.example.com/account/verify-email?token=test-token&rowndPendingVerificationId=test-pending&apiDomain=https%3A%2F%2Fapi.example.com&apiBasePath=%2Fauth"
         val scenario = ActivityScenario.launch(NewIntentTestActivity::class.java)
         try {
@@ -307,6 +307,7 @@ class VerificationProfileInstrumentedTest {
             release.complete(Unit)
             instrumentation.runOnMainSync { view.get()?.destroy() }
             scenario.close()
+            mockTransport.close()
             Rownd.config.supertokens = previousConfig
             Rownd.config.baseUrl = previousBaseUrl
             SuperTokensSessionBridge.removeSessionEventListener(rownd.nativeSessionEventListener)

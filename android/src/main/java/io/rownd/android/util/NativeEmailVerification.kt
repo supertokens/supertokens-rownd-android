@@ -14,9 +14,11 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.Headers
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.contentType
+import io.ktor.http.content.OutgoingContent
+import io.ktor.utils.io.ByteReadChannel
 import io.rownd.android.views.HubPageSelector
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
@@ -70,6 +72,15 @@ private data class NativeEmailVerificationBody(
 private data class NativeEmailVerificationResponse(
     val status: String,
 )
+
+// Ktor converts channel bodies to one-shot OkHttp bodies, even for an empty POST.
+private class OneShotBody(
+    private val bytes: ByteArray,
+    override val contentType: ContentType? = null,
+) : OutgoingContent.ReadChannelContent() {
+    override val contentLength = bytes.size.toLong()
+    override fun readFrom() = ByteReadChannel(bytes)
+}
 
 private fun effectivePort(scheme: String?, port: Int): Int? = when {
     port >= 0 -> port
@@ -165,8 +176,8 @@ internal suspend fun performNativeEmailVerification(
         capturedSessionRequest(initiatingTokens.accessToken, initiatingTokens.antiCSRF, "emailverification",
             NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS)
         parameter("rowndPendingVerificationId", request.pendingVerificationId)
-        contentType(ContentType.Application.Json)
-        setBody(NativeEmailVerificationBody(method = "token", token = request.token))
+        val body = Json.encodeToString(NativeEmailVerificationBody(method = "token", token = request.token))
+        setBody(OneShotBody(body.encodeToByteArray(), ContentType.Application.Json))
     }
     val issuedSession = response.headers.issuedSession()
     if (response.status.value !in 200..299) {
@@ -198,6 +209,7 @@ internal suspend fun revokeIssuedVerificationSession(
 ) {
     val response = client.post("${request.apiDomain}${request.apiBasePath}/signout") {
         capturedSessionRequest(issued.accessToken, issued.antiCSRF, "session", NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS)
+        setBody(OneShotBody(ByteArray(0)))
     }
     if (response.status.value !in 200..299) {
         throw VerificationSessionRevocationException(response.status.value)

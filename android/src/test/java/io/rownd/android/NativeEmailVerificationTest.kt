@@ -2,6 +2,7 @@ package io.rownd.android
 
 import com.supertokens.session.SuperTokensInterceptor
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.toByteArray
@@ -26,14 +27,21 @@ import io.rownd.android.util.NativeEmailVerificationRejectedException
 import io.rownd.android.util.NativeEmailVerificationRequest
 import io.rownd.android.util.SuperTokensSessionBridge.SessionTokens
 import io.rownd.android.util.VerificationRefreshResult
+import io.rownd.android.util.VerificationSessionRevocationException
 import io.rownd.android.util.revokeIssuedVerificationSession
 import io.rownd.android.util.nativeEmailVerificationRequest
 import io.rownd.android.util.performNativeEmailVerification
 import io.rownd.android.util.probeVerificationSession
 import io.rownd.android.views.HubPageSelector
 import io.rownd.android.views.urlForLogging
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.job
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import okhttp3.ConnectionPool
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -350,6 +358,104 @@ class NativeEmailVerificationTest {
         assertFalse(client.followSslRedirects)
         assertFalse((client.interceptors + client.networkInterceptors).any { it is SuperTokensInterceptor })
     }
+
+    @Test
+    fun `closing the verification transport closes its client and engine only`() = runBlocking {
+        val owner = verificationTransport()
+        val other = verificationTransport()
+        val client = owner.client
+        try {
+            owner.close()
+            owner.close()
+            withTimeout(5_000) {
+                client.coroutineContext.job.join()
+                client.engine.coroutineContext.job.join()
+            }
+            assertTrue(other.client.coroutineContext.job.isActive)
+            assertTrue(other.client.engine.coroutineContext.job.isActive)
+        } finally {
+            other.close()
+        }
+    }
+
+    @Test
+    fun `closing the verification transport evicts its idle OkHttp connection`() = runBlocking {
+        MockWebServer().use { server ->
+            server.start(InetAddress.getLoopbackAddress(), 0)
+            server.enqueue(MockResponse().setResponseCode(200))
+            val pool = ConnectionPool()
+            val okHttp = NativeEmailVerificationApiClient.createOkHttpClient().newBuilder()
+                .connectionPool(pool)
+                .build()
+            val url = server.url("/").toString().trimEnd('/')
+            val transport = verificationTransport(NativeEmailVerificationApiClient.createEngine(okHttp))
+            try {
+                revokeIssuedVerificationSession(transport.client, verificationRequest().copy(apiDomain = url), issued)
+                assertEquals(1, pool.idleConnectionCount())
+            } finally {
+                transport.close()
+            }
+            withTimeout(5_000) {
+                while (pool.connectionCount() != 0) delay(10)
+            }
+        }
+    }
+
+    @Test
+    fun `verification and revocation do not replay after a 503 with immediate retry requested`() = runBlocking {
+        assertNoOkHttpReplay(503)
+    }
+
+    @Test
+    fun `verification and revocation do not replay after a 408 even with OkHttp retries enabled`() = runBlocking {
+        assertNoOkHttpReplay(408)
+    }
+
+    private suspend fun assertNoOkHttpReplay(status: Int) {
+        for (verify in listOf(true, false)) {
+            MockWebServer().use { server ->
+                server.start(InetAddress.getLoopbackAddress(), 0)
+                server.enqueue(MockResponse().setResponseCode(status).setHeader("Retry-After", "0"))
+                server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"status":"OK"}"""))
+                val url = server.url("/").toString().trimEnd('/')
+                val okHttp = NativeEmailVerificationApiClient.createOkHttpClient().newBuilder()
+                    .retryOnConnectionFailure(status == 408)
+                    .build()
+                val engine = NativeEmailVerificationApiClient.createEngine(okHttp)
+                val transport = verificationTransport(engine)
+                val request = verificationRequest().copy(apiDomain = url)
+                try {
+                    val error = runCatching {
+                        if (verify) performNativeEmailVerification(transport.client, request, captured)
+                        else revokeIssuedVerificationSession(transport.client, request, issued)
+                    }.exceptionOrNull()
+                    val path = if (verify) "/auth/user/email/verify?rowndPendingVerificationId=pending-123" else "/auth/signout"
+                    assertEquals("Unexpected request count for $path after HTTP $status", 1, server.requestCount)
+                    val received = server.takeRequest(1, TimeUnit.SECONDS)!!
+                    assertEquals("POST", received.method)
+                    assertEquals(path, received.path)
+                    if (verify) {
+                        assertEquals("Email verification failed with HTTP $status", error?.message)
+                        assertEquals("""{"method":"token","token":"opaque-token"}""",
+                            Json.parseToJsonElement(received.body.readUtf8()).toString())
+                    } else {
+                        assertEquals(status, (error as VerificationSessionRevocationException).statusCode)
+                        assertEquals(0L, received.bodySize)
+                    }
+                } finally {
+                    transport.close()
+                }
+            }
+        }
+    }
+
+    private fun verificationTransport(engine: HttpClientEngine = NativeEmailVerificationApiClient.createEngine()) =
+        NativeEmailVerificationApiClient(engine, HttpClient(engine) {
+            followRedirects = false
+            install(HttpTimeout)
+            install(ContentNegotiation) { json() }
+            install(HttpRequestRetry) { retryOnServerErrors(maxRetries = 3) }
+        })
 
     @Test
     fun `verification does not use Ktor retries even when the client has them enabled`() = runBlocking {

@@ -106,6 +106,7 @@ class LegacyMigrationProductionEngineInstrumentedTest {
     @After
     fun tearDown() {
         SuperTokensSessionBridge.writeSession = originalWriteSession
+        rownd.closeNativeEmailVerificationTransport()
         rownd.authenticatedApiClient.client.close()
         rownd.authRepo.legacyMigrationApiClient.client.close()
         rownd.appHandleWrapper?.unregister()
