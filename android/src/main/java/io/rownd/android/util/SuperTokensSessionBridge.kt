@@ -256,9 +256,9 @@ object SuperTokensSessionBridge {
     }
 
     // The SDK interceptor stores any session a response issues, even one nobody will adopt because
-    // the user signed out or moved to another session during the request. Only that session is
-    // removed; a newer one is kept. Returns the session the Rownd store holds whose native
-    // credentials the issued session overwrote: a sign-in that committed during the request. The
+    // the user signed out or moved to another session during the request. Only the issued session
+    // is removed; a newer one is kept if it is still in SDK storage. Returns the Rownd session
+    // whose native credentials the issued session overwrote during the request. The
     // SDK keeps one session and offers no way to restore the overwritten one, so the caller must
     // sign it out.
     internal fun discardIssuedSession(

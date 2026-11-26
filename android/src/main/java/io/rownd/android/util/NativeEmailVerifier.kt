@@ -195,8 +195,9 @@ internal class NativeEmailVerifier(
     ) {
         val overwritten = session.discardIssuedSession(issuedAccessToken)
         if (overwritten != null) {
-            // A sign-in that completed during the request lost its native session to the issued
-            // one. The SDK keeps one session, so the overwritten one cannot be restored or revoked.
+            // Known 0.5.4 limitation: SuperTokensInterceptor already overwrote the other user's
+            // tokens. Sign out locally; only the issued session is revoked. Restoring the other
+            // login requires upstream owner fencing (supertokens-android #82).
             warn("Native email verification response overwrote a session signed in during the verification; signing it out", null)
             session.signOutIfCurrent(overwritten) { session.storeHoldsSessionOf(overwritten) }
         }
