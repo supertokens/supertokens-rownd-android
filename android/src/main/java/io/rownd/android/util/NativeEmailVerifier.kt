@@ -78,13 +78,10 @@ internal class NativeEmailVerifier(
         verification.exceptionOrNull()?.let { warn("Native email verification failed (${it.javaClass.simpleName})") }
         val issued = verification.getOrNull()?.issuedSession
             ?: (verification.exceptionOrNull() as? NativeEmailVerificationRejectedException)?.issuedSession
-        val priorAccessToken = owner.tokens.accessToken
-        val replacement = issued?.takeUnless {
-            SuperTokensSessionBridge.isSameSession(priorAccessToken, it.accessToken)
+        val replacement = issued?.takeIf {
+            SuperTokensSessionBridge.isOtherSessionOfSameUser(owner.tokens.accessToken, it.accessToken)
         }
-        val tokens = replacement?.completeTokens()?.takeIf {
-            SuperTokensSessionBridge.isOtherSessionOfSameUser(priorAccessToken, it.accessToken)
-        }
+        val tokens = replacement?.completeTokens()
 
         // Even an error response can carry the only usable session after the server revoked S0.
         if (tokens != null && session.install(owner, tokens)) {

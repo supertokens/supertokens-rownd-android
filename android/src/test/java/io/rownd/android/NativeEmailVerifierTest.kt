@@ -330,6 +330,45 @@ class NativeEmailVerifierTest {
         assertEquals(refreshed.accessToken, session.store)
     }
 
+    @Test
+    fun `a verification without an SDK owner does not send or probe`() = runTest {
+        val session = FakeSession().apply { native = null }
+        val result = NativeEmailVerifier(backgroundScope, warn = {}).verify(request, session)
+        assertTrue(runCatching { result.await() }.isFailure)
+        assertTrue(session.sends.isEmpty())
+        assertEquals(0, session.probes)
+    }
+
+    @Test
+    fun `an error response after sign-out can carry an unowned S1 to revoke`() = runTest {
+        val session = FakeSession().apply {
+            response = {
+                signOuts++
+                native = null
+                store = null
+                throw NativeEmailVerificationRejectedException("Request failed", s1.issued())
+            }
+        }
+        val result = NativeEmailVerifier(backgroundScope, warn = {}).verify(request, session)
+        runCurrent()
+        assertTrue(runCatching { result.await() }.exceptionOrNull() is NativeEmailVerificationSupersededException)
+        assertEquals(listOf(request to s1.accessToken), session.revoked)
+        assertNull(session.native)
+        assertEquals(0, session.probes)
+    }
+
+    @Test
+    fun `an unrelated session in a response is neither installed nor revoked as S1`() = runTest {
+        val session = FakeSession().apply {
+            response = { NativeEmailVerificationResult("OK", b.issued()) }
+        }
+        val result = NativeEmailVerifier(backgroundScope, warn = {}).verify(request, session)
+        runCurrent()
+        assertTrue(runCatching { result.await() }.isFailure)
+        assertEquals(s0, session.native)
+        assertTrue(session.revoked.isEmpty())
+    }
+
     private fun tokens(user: String, handle: String): SessionTokens {
         val payload = Base64.getUrlEncoder().withoutPadding().encodeToString(
             """{"sub":"$user","sessionHandle":"$handle","tId":"public"}""".toByteArray()
