@@ -39,7 +39,12 @@ internal class NativeEmailVerifier(
     private val warn: (String) -> Unit = { Log.w(TAG, it) },
     private val recoveryTimeoutMillis: Long = NATIVE_EMAIL_RECOVERY_TIMEOUT_MILLIS,
 ) {
-    private data class Key(val request: NativeEmailVerificationRequest, val identity: SessionIdentity)
+    private data class Key(
+        val request: NativeEmailVerificationRequest,
+        val identity: SessionIdentity,
+        val signOutGeneration: Long,
+        val signInGeneration: Long,
+    )
 
     private val inFlight = HashMap<Key, Deferred<String>>()
 
@@ -48,7 +53,7 @@ internal class NativeEmailVerifier(
             ?: return CompletableDeferred<String>().apply {
                 completeExceptionally(IllegalStateException("Native email verification requires an existing session"))
             }
-        val key = Key(request, owner.identity)
+        val key = Key(request, owner.identity, owner.signOutGeneration, owner.signInGeneration)
         return synchronized(inFlight) {
             inFlight[key]?.let { return@synchronized it }
             val result = CompletableDeferred<String>()

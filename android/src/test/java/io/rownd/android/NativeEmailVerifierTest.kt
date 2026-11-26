@@ -120,7 +120,7 @@ class NativeEmailVerifierTest {
     }
 
     @Test
-    fun `sign in after send preserves B and revokes S1 at the captured endpoint`() = runTest {
+    fun `failed revocation at the captured endpoint is logged without credentials and preserves B`() = runTest {
         val release = CompletableDeferred<Unit>()
         val session = FakeSession().apply {
             response = { release.await(); NativeEmailVerificationResult("OK", s1.issued()) }
@@ -138,8 +138,9 @@ class NativeEmailVerifierTest {
         assertEquals(b, session.native)
         assertEquals(b.accessToken, session.store)
         assertEquals(listOf(request to s1.accessToken), session.revoked)
-        assertTrue(warnings.any { it.endsWith("HTTP 503") })
-        assertFalse(warnings.any { it.contains(s1.accessToken) })
+        assertTrue(session.profileLoads.isEmpty())
+        assertEquals(0, session.probes)
+        assertEquals(listOf("Could not revoke the unadopted email verification session: HTTP 503"), warnings)
     }
 
     @Test
@@ -229,6 +230,35 @@ class NativeEmailVerifierTest {
         runCurrent()
         assertEquals("OK", original.await())
         assertEquals("OK", other.await())
+    }
+
+    @Test
+    fun `reinstalling S0 does not join a flight from an earlier auth generation`() = runTest {
+        for (signOut in listOf(false, true)) {
+            val release = CompletableDeferred<Unit>()
+            val session = FakeSession().apply {
+                response = { release.await(); NativeEmailVerificationResult("OK", s1.issued()) }
+            }
+            val verifier = NativeEmailVerifier(backgroundScope, warn = {})
+            val original = verifier.verify(request, session)
+            runCurrent()
+
+            if (signOut) session.signOuts++ else session.signIn(s0)
+            val s2 = tokens("a", "s2")
+            session.response = { NativeEmailVerificationResult("OK", s2.issued()) }
+            val current = verifier.verify(request, session)
+            assertNotSame(original, current)
+            assertSame(current, verifier.verify(request, session))
+            runCurrent()
+            assertEquals(listOf(request to s0, request to s0), session.sends)
+            assertEquals("OK", current.await())
+            assertFalse(original.isCompleted)
+            release.complete(Unit)
+            runCurrent()
+            assertTrue(runCatching { original.await() }.exceptionOrNull() is NativeEmailVerificationSupersededException)
+            assertEquals(s2, session.native)
+            assertEquals(listOf(request to s1.accessToken), session.revoked)
+        }
     }
 
     @Test
