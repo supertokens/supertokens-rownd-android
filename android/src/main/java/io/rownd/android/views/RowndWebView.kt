@@ -917,12 +917,13 @@ class RowndJavascriptInterface constructor(
     }
 
     private fun authorizedEmailVerificationRequest(requestId: String): NativeEmailVerificationRequest? {
+        val appInfo = Rownd.config.supertokens.appInfo
         val verificationRequest = nativeEmailVerificationRequest(
             targetPage = parentWebView.targetPage,
             currentUrl = parentWebView.url,
             trustedBaseUrl = Rownd.config.baseUrl,
-            trustedApiDomain = Rownd.config.supertokens.appInfo.apiDomain,
-            trustedApiBasePath = Rownd.config.supertokens.appInfo.apiBasePath ?: Rownd.config.apiBasePath,
+            trustedApiDomain = appInfo.apiDomain,
+            trustedApiBasePath = appInfo.apiBasePath ?: Rownd.config.apiBasePath,
         )
         if (
             disposed ||
@@ -1101,6 +1102,7 @@ class RowndJavascriptInterface constructor(
                                     antiCSRF = authenticationMessage.payload.antiCsrf,
                                     replaceExisting = true,
                                     expectedSignOutGeneration = signOutGeneration,
+                                    commitsSignIn = true,
                                     isCurrent = ::isCurrentAuthentication,
                                 )) return@withLock
                             } catch (e: Exception) {

@@ -29,8 +29,15 @@ private object CustomAndroidHttpLogger : Logger {
     }
 }
 
-open class KtorApiClient @Inject constructor(engine: HttpClientEngine, rowndContext: RowndContext)  {
+open class KtorApiClient(
+    engine: HttpClientEngine,
+    rowndContext: RowndContext,
+    followRedirects: Boolean,
+) {
+    @Inject constructor(engine: HttpClientEngine, rowndContext: RowndContext) : this(engine, rowndContext, true)
+
     private val base = HttpClient(engine) {
+        this.followRedirects = followRedirects
         val appFlags = rowndContext.config.applicationContext?.applicationInfo?.flags ?: 0
         val isDebuggableApp = (appFlags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 

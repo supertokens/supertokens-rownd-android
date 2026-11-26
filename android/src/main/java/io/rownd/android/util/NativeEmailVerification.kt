@@ -6,11 +6,13 @@ import io.ktor.client.plugins.expectSuccess
 import io.ktor.client.plugins.retry
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.headers
+import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.Headers
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.rownd.android.views.HubPageSelector
@@ -22,27 +24,40 @@ import java.nio.charset.StandardCharsets
 // The server commits the verification and issues a replacement session in one call that can
 // take several seconds. The Hub waits 50s for the native result, so this must stay below that.
 internal const val NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS = 45_000L
+internal const val NATIVE_EMAIL_RECOVERY_TIMEOUT_MILLIS = 10_000L
 
 internal data class NativeEmailVerificationRequest(
     val token: String,
     val pendingVerificationId: String,
     val apiDomain: String,
     val apiBasePath: String,
-)
-
-// The SDK interceptor stores the issued session before this result exists; its access token is
-// kept so that a session nobody will adopt can be found, cleared and revoked.
-internal class NativeEmailVerificationResult(
-    val status: String,
-    val issuedAccessToken: String?,
 ) {
-    override fun toString() = "NativeEmailVerificationResult(status=$status, issuedSession=${issuedAccessToken != null})"
+    override fun toString() = "NativeEmailVerificationRequest([redacted])"
 }
 
-// The server can reject the verification and still issue a session, which the SDK has then stored.
+internal class IssuedVerificationSession(
+    val accessToken: String,
+    private val refreshToken: String?,
+    private val frontToken: String?,
+    val antiCSRF: String?,
+) {
+    fun completeTokens(): SuperTokensSessionBridge.SessionTokens? =
+        if (refreshToken != null && frontToken != null) {
+            SuperTokensSessionBridge.SessionTokens(accessToken, refreshToken, frontToken, antiCSRF)
+        } else null
+}
+
+internal class NativeEmailVerificationResult(
+    val status: String,
+    val issuedSession: IssuedVerificationSession?,
+) {
+    override fun toString() = "NativeEmailVerificationResult(status=$status, issuedSession=${issuedSession != null})"
+}
+
+// The server can reject the verification and still issue a replacement for the revoked session.
 internal class NativeEmailVerificationRejectedException(
     message: String,
-    val issuedAccessToken: String?,
+    val issuedSession: IssuedVerificationSession?,
 ) : IllegalStateException(message)
 
 @Serializable
@@ -144,56 +159,91 @@ internal fun nativeEmailVerificationRequest(
 internal suspend fun performNativeEmailVerification(
     client: HttpClient,
     request: NativeEmailVerificationRequest,
+    initiatingTokens: SuperTokensSessionBridge.SessionTokens,
 ): NativeEmailVerificationResult {
     val response = client.post("${request.apiDomain}${request.apiBasePath}/user/email/verify") {
-        // Rejections are read here: they can still carry an issued session.
-        expectSuccess = false
-        retry { maxRetries = 0 }
-        timeout {
-            requestTimeoutMillis = NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS
-            // The OkHttp engine bounds the wait for the response by its read timeout (10s by
-            // default) and only replaces that with the socket timeout, not the request timeout.
-            socketTimeoutMillis = NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS
-        }
+        capturedSessionRequest(initiatingTokens.accessToken, initiatingTokens.antiCSRF, "emailverification",
+            NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS)
         parameter("rowndPendingVerificationId", request.pendingVerificationId)
         contentType(ContentType.Application.Json)
         setBody(NativeEmailVerificationBody(method = "token", token = request.token))
     }
-    val issuedAccessToken = response.headers["st-access-token"]?.takeIf { it.isNotBlank() }
-    if (response.status != HttpStatusCode.OK) {
+    val issuedSession = response.headers.issuedSession()
+    if (response.status.value !in 200..299) {
         throw NativeEmailVerificationRejectedException(
-            "Email verification failed with HTTP ${response.status.value}", issuedAccessToken)
+            "Email verification failed with HTTP ${response.status.value}", issuedSession)
     }
     val status = runCatching { response.body<NativeEmailVerificationResponse>().status }.getOrNull()
     if (status != "OK") {
-        throw NativeEmailVerificationRejectedException("Email verification failed with status $status", issuedAccessToken)
+        throw NativeEmailVerificationRejectedException("Email verification did not report success", issuedSession)
     }
-    return NativeEmailVerificationResult(status, issuedAccessToken)
+    return NativeEmailVerificationResult(status, issuedSession)
 }
 
-// Revokes a session issued by a verification that nobody will adopt, using that session's own
-// access token. [client] must not carry the SuperTokens interceptor: it would attach whatever
-// session the SDK holds, possibly another user's, and store the tokens of the response.
+private fun Headers.issuedSession(): IssuedVerificationSession? {
+    val frontToken = get("front-token")?.takeIf { it.isNotBlank() }
+    if (frontToken.equals("remove", ignoreCase = true)) return null
+    return IssuedVerificationSession(
+        get("st-access-token")?.takeIf { it.isNotBlank() } ?: return null,
+        get("st-refresh-token")?.takeIf { it.isNotBlank() },
+        frontToken,
+        get("anti-csrf")?.takeIf { it.isNotBlank() },
+    )
+}
+
 internal suspend fun revokeIssuedVerificationSession(
     client: HttpClient,
     request: NativeEmailVerificationRequest,
-    issuedAccessToken: String,
+    issued: IssuedVerificationSession,
 ) {
     val response = client.post("${request.apiDomain}${request.apiBasePath}/signout") {
-        expectSuccess = false
-        retry { maxRetries = 0 }
-        timeout {
-            requestTimeoutMillis = NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS
-            socketTimeoutMillis = NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS
-        }
-        headers {
-            remove("x-rownd-app-key")
-            set(HttpHeaders.Authorization, "Bearer $issuedAccessToken")
-            set("st-auth-mode", "header")
-            set("rid", "session")
-        }
+        capturedSessionRequest(issued.accessToken, issued.antiCSRF, "session", NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS)
     }
     if (response.status.value !in 200..299) {
-        throw RowndException("Revoking the unadopted verification session failed with HTTP ${response.status.value}")
+        throw VerificationSessionRevocationException(response.status.value)
+    }
+}
+
+internal class VerificationSessionRevocationException(val statusCode: Int) :
+    IllegalStateException("Revoking the unadopted verification session failed with HTTP $statusCode")
+
+internal sealed interface VerificationRefreshResult {
+    data object Revoked : VerificationRefreshResult
+    data object Unknown : VerificationRefreshResult
+    class Refreshed(val tokens: SuperTokensSessionBridge.SessionTokens) : VerificationRefreshResult
+}
+
+internal suspend fun probeVerificationSession(
+    client: HttpClient,
+    request: NativeEmailVerificationRequest,
+    tokens: SuperTokensSessionBridge.SessionTokens,
+): VerificationRefreshResult {
+    val response = client.post("${request.apiDomain}${request.apiBasePath}/session/refresh") {
+        capturedSessionRequest(tokens.refreshToken, tokens.antiCSRF, "session", NATIVE_EMAIL_RECOVERY_TIMEOUT_MILLIS)
+    }
+    return when {
+        response.status == HttpStatusCode.Unauthorized && response.headers["front-token"].equals("remove", ignoreCase = true) ->
+            VerificationRefreshResult.Revoked
+        response.status.value in 200..299 ->
+            response.headers.issuedSession()?.completeTokens()?.let { VerificationRefreshResult.Refreshed(it) }
+                ?: VerificationRefreshResult.Unknown
+        else -> VerificationRefreshResult.Unknown
+    }
+}
+
+private fun HttpRequestBuilder.capturedSessionRequest(token: String, antiCSRF: String?, rid: String, timeoutMillis: Long) {
+    expectSuccess = false
+    retry { maxRetries = 0 }
+    timeout {
+        requestTimeoutMillis = timeoutMillis
+        socketTimeoutMillis = timeoutMillis
+    }
+    headers {
+        remove("x-rownd-app-key")
+        set(HttpHeaders.Authorization, "Bearer $token")
+        set("st-auth-mode", "header")
+        set("rid", rid)
+        set("fdi-version", "1.18")
+        antiCSRF?.takeIf { it.isNotBlank() }?.let { set("anti-csrf", it) }
     }
 }

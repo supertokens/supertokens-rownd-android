@@ -1,468 +1,341 @@
 package io.rownd.android
 
+import io.rownd.android.util.IssuedVerificationSession
+import io.rownd.android.util.NativeEmailVerificationRejectedException
 import io.rownd.android.util.NativeEmailVerificationRequest
 import io.rownd.android.util.NativeEmailVerificationResult
 import io.rownd.android.util.NativeEmailVerificationSession
-import io.rownd.android.util.NativeEmailVerificationRejectedException
 import io.rownd.android.util.NativeEmailVerificationSupersededException
 import io.rownd.android.util.NativeEmailVerifier
-import io.rownd.android.util.NativeSessionValidity
+import io.rownd.android.util.SuperTokensSessionBridge.SessionIdentity
+import io.rownd.android.util.SuperTokensSessionBridge.SessionTokens
+import io.rownd.android.util.SuperTokensSessionBridge.VerificationOwner
+import io.rownd.android.util.VerificationRefreshResult
+import io.rownd.android.util.VerificationSessionRevocationException
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
+import java.util.Base64
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class NativeEmailVerifierTest {
-    private val request = NativeEmailVerificationRequest(
-        token = "opaque-token",
-        pendingVerificationId = "pending-123",
-        apiDomain = "https://api.example.com",
-        apiBasePath = "/auth",
-    )
-    private val warnings = CopyOnWriteArrayList<String>()
-    private val verifierJob = SupervisorJob()
-    private val verifier = NativeEmailVerifier(
-        scope = CoroutineScope(verifierJob + Dispatchers.Default),
-        warn = { message, _ -> warnings.add(message) },
-    )
+    private val request = NativeEmailVerificationRequest("opaque-token", "pending-123", "https://api.example.com", "/auth")
+    private val s0 = tokens("a", "s0")
+    private val s1 = tokens("a", "s1")
+    private val b = tokens("b", "b0")
 
-    // Tokens are "<user>:<session>"; the Rownd store and the SDK each hold one.
-    private class FakeSession(
-        var storedAccessToken: String? = "a:s0",
-        var storeAccessToken: String? = "a:s0",
-        val verifyResponse: suspend FakeSession.() -> NativeEmailVerificationResult = {
-            this.storedAccessToken = "a:s1"
-            NativeEmailVerificationResult("OK", "a:s1")
-        },
-        val validity: NativeSessionValidity = NativeSessionValidity.Valid,
-        val adoptFailures: Int = 0,
-        val revocationError: Exception? = null,
-    ) : NativeEmailVerificationSession {
-        val generation = AtomicLong()
-        val verifyCalls = AtomicInteger()
-        val adoptCalls = AtomicInteger()
-        val adopted = CopyOnWriteArrayList<String?>()
-        val reloadedProfiles = CopyOnWriteArrayList<String>()
-        val discarded = CopyOnWriteArrayList<String>()
-        val revoked = CopyOnWriteArrayList<String>()
-        val validations = AtomicInteger()
-        val signedOut = CopyOnWriteArrayList<String>()
+    private inner class FakeSession : NativeEmailVerificationSession {
+        var native: SessionTokens? = s0
+        var store: String? = s0.accessToken
+        var signOuts = 0L
+        var signIns = 0L
+        var endpoint = request.apiDomain
+        var captured: VerificationOwner? = null
+        val sends = mutableListOf<Pair<NativeEmailVerificationRequest, SessionTokens>>()
+        val revoked = mutableListOf<Pair<NativeEmailVerificationRequest, String>>()
+        val profileLoads = mutableListOf<String>()
+        var response: suspend () -> NativeEmailVerificationResult = { NativeEmailVerificationResult("OK", s1.issued()) }
+        var probeResponse: suspend () -> VerificationRefreshResult = { VerificationRefreshResult.Unknown }
+        var revokeError: Exception? = null
+        var probes = 0
 
-        override fun signOutGeneration(): Long = generation.get()
-        override suspend fun accessToken(): String? = storedAccessToken
-        override suspend fun verify(request: NativeEmailVerificationRequest): NativeEmailVerificationResult {
-            verifyCalls.incrementAndGet()
-            return verifyResponse()
+        fun signIn(tokens: SessionTokens) {
+            signIns++
+            native = tokens
+            store = tokens.accessToken
         }
-        override fun hasCompleteSession(): Boolean = true
-        override suspend fun adopt(isCurrent: () -> Boolean): Boolean {
-            if (adoptCalls.incrementAndGet() <= adoptFailures) throw IllegalStateException("adoption failed")
-            if (!isCurrent()) return false
-            storeAccessToken = storedAccessToken
-            adopted.add(storedAccessToken)
+
+        override fun captureOwner(): VerificationOwner? = native?.let {
+            val identity = if (it == b) SessionIdentity("b0", "b", "public") else SessionIdentity("s0", "a", "public")
+            VerificationOwner(it, identity, signOuts, signIns, store).also { owner -> captured = owner }
+        }
+
+        override fun owns(owner: VerificationOwner) =
+            signOuts == owner.signOutGeneration && signIns == owner.signInGeneration &&
+                (native == null || native?.refreshToken == owner.tokens.refreshToken)
+
+        override suspend fun verify(request: NativeEmailVerificationRequest, tokens: SessionTokens): NativeEmailVerificationResult {
+            sends.add(request to tokens)
+            return response()
+        }
+
+        override fun install(owner: VerificationOwner, tokens: SessionTokens, refreshedFrom: SessionTokens?): Boolean {
+            if (!owns(owner) || (refreshedFrom != null && refreshedFrom != native)) return false
+            native = tokens
+            store = tokens.accessToken
             return true
         }
-        override fun reloadProfile(accessToken: String, isCurrent: () -> Boolean) {
-            reloadedProfiles.add(accessToken)
+
+        override fun reloadProfile(owner: VerificationOwner, accessToken: String) {
+            profileLoads.add(accessToken)
         }
-        override fun storeHoldsSessionOf(accessToken: String): Boolean = storeAccessToken == accessToken
-        override fun storeAccessToken(): String? = storeAccessToken
-        override fun nativeAccessToken(): String? = storedAccessToken
-        override fun isSameSession(first: String, second: String): Boolean = first == second
-        override fun isOtherSessionOfSameUser(first: String, second: String): Boolean =
-            first != second && first.substringBefore(':') == second.substringBefore(':')
-        override suspend fun discardIssuedSession(issuedAccessToken: String): String? {
-            discarded.add(issuedAccessToken)
-            if (storedAccessToken != issuedAccessToken) return null
-            storedAccessToken = null
-            if (storeAccessToken == issuedAccessToken) storeAccessToken = null
-            return storeAccessToken
+
+        override suspend fun revoke(request: NativeEmailVerificationRequest, issued: IssuedVerificationSession) {
+            revoked.add(request to issued.accessToken)
+            revokeError?.let { throw it }
         }
-        override suspend fun revokeIssuedSession(request: NativeEmailVerificationRequest, issuedAccessToken: String) {
-            revoked.add(issuedAccessToken)
-            revocationError?.let { throw it }
+
+        override fun recoveryTokens(owner: VerificationOwner) = native?.takeIf { owns(owner) }
+
+        override suspend fun probe(request: NativeEmailVerificationRequest, tokens: SessionTokens): VerificationRefreshResult {
+            probes++
+            return probeResponse()
         }
-        override suspend fun validate(): NativeSessionValidity {
-            validations.incrementAndGet()
-            return validity
+
+        override fun clearRevoked(owner: VerificationOwner, probedTokens: SessionTokens?): Boolean {
+            if (!owns(owner) || (native != null && probedTokens != native)) return false
+            native = null
+            store = null
+            signOuts++
+            return true
         }
-        override fun signOutIfCurrent(accessToken: String, isCurrent: () -> Boolean): Boolean {
-            val accepted = isCurrent()
-            if (accepted) {
-                signedOut.add(accessToken)
-                storeAccessToken = null
+    }
+
+    @Test
+    fun `verification uses S0 even if B commits before send`() = runTest {
+        val session = FakeSession()
+        val verifier = NativeEmailVerifier(backgroundScope, warn = {})
+        val result = verifier.verify(request, session)
+        session.signIn(b)
+        runCurrent()
+
+        assertTrue(runCatching { result.await() }.exceptionOrNull() is NativeEmailVerificationSupersededException)
+        assertEquals(listOf(request to s0), session.sends)
+        assertEquals(b, session.native)
+        assertEquals(b.accessToken, session.store)
+        assertEquals(listOf(request to s1.accessToken), session.revoked)
+        assertTrue(session.profileLoads.isEmpty())
+    }
+
+    @Test
+    fun `sign in after send preserves B and revokes S1 at the captured endpoint`() = runTest {
+        val release = CompletableDeferred<Unit>()
+        val session = FakeSession().apply {
+            response = { release.await(); NativeEmailVerificationResult("OK", s1.issued()) }
+            revokeError = VerificationSessionRevocationException(503)
+        }
+        val warnings = mutableListOf<String>()
+        val result = NativeEmailVerifier(backgroundScope, warnings::add).verify(request.copy(apiDomain = session.endpoint), session)
+        runCurrent()
+        session.signIn(b)
+        session.endpoint = "https://new.example.com"
+        release.complete(Unit)
+        runCurrent()
+
+        assertTrue(runCatching { result.await() }.exceptionOrNull() is NativeEmailVerificationSupersededException)
+        assertEquals(b, session.native)
+        assertEquals(b.accessToken, session.store)
+        assertEquals(listOf(request to s1.accessToken), session.revoked)
+        assertTrue(warnings.any { it.endsWith("HTTP 503") })
+        assertFalse(warnings.any { it.contains(s1.accessToken) })
+    }
+
+    @Test
+    fun `cold start legacy hydration does not supersede verification`() = runTest {
+        val session = FakeSession().apply {
+            store = null
+            response = {
+                store = "legacy"
+                NativeEmailVerificationResult("OK", s1.issued())
             }
-            return accepted
         }
-    }
+        val result = NativeEmailVerifier(backgroundScope, warn = {}).verify(request, session)
+        runCurrent()
 
-    private fun failingSession(error: Exception, validity: NativeSessionValidity) =
-        FakeSession(verifyResponse = { throw error }, validity = validity)
-
-    // Waits for the verification and everything it does after reporting its result.
-    private suspend fun verifyAndSettle(session: FakeSession): Result<String> {
-        val result = runCatching { withTimeout(5_000) { verifier.verify(request, session).await() } }
-        withTimeout(5_000) { verifierJob.children.toList().joinAll() }
-        return result
-    }
-
-    @Test
-    fun `replacement session is adopted after the waiting Hub page is disposed`() = runBlocking {
-        val responseGate = CompletableDeferred<Unit>()
-        val requestSent = CompletableDeferred<Unit>()
-        val session = FakeSession(verifyResponse = {
-            requestSent.complete(Unit)
-            responseGate.await()
-            storedAccessToken = "a:s1"
-            NativeEmailVerificationResult("OK", "a:s1")
-        })
-        val verification = verifier.verify(request, session)
-        val pageLifecycle = Job()
-        val pageWaiter = CoroutineScope(Dispatchers.Default + pageLifecycle).launch {
-            verification.await()
-        }
-
-        withTimeout(5_000) { requestSent.await() }
-        pageWaiter.cancelAndJoin()
-        pageLifecycle.cancel()
-        responseGate.complete(Unit)
-
-        assertEquals("OK", withTimeout(5_000) { verification.await() })
-        assertEquals(1, session.verifyCalls.get())
-        assertEquals(listOf<String?>("a:s1"), session.adopted)
-        assertEquals(listOf("a:s1"), session.reloadedProfiles)
-        assertEquals(0, session.validations.get())
-    }
-
-    @Test
-    fun `a repeated request for the same token joins the one in flight`() = runBlocking {
-        val responseGate = CompletableDeferred<Unit>()
-        val session = FakeSession(verifyResponse = {
-            responseGate.await()
-            storedAccessToken = "a:s1"
-            NativeEmailVerificationResult("OK", "a:s1")
-        })
-
-        val first = verifier.verify(request, session)
-        val second = verifier.verify(request, session)
-        responseGate.complete(Unit)
-
-        assertEquals("OK", withTimeout(5_000) { first.await() })
-        assertEquals("OK", withTimeout(5_000) { second.await() })
-        assertEquals(1, session.verifyCalls.get())
-    }
-
-    @Test
-    fun `a failure that revoked the session signs the user out`() = runBlocking {
-        val session = failingSession(IOException("timeout"), NativeSessionValidity.Revoked)
-
-        assertTrue(verifyAndSettle(session).isFailure)
-
-        assertEquals(1, session.validations.get())
-        assertEquals(listOf("a:s0"), session.signedOut)
-        assertTrue(warnings.any { it.startsWith("Native email verification failed") })
-        assertTrue(session.adopted.isEmpty())
-    }
-
-    @Test
-    fun `a failure keeps the session when it cannot be validated`() = runBlocking {
-        val session = failingSession(IOException("offline"), NativeSessionValidity.Unknown)
-
-        assertTrue(verifyAndSettle(session).isFailure)
-
-        assertEquals(1, session.validations.get())
-        assertTrue(session.signedOut.isEmpty())
-        assertTrue(session.adopted.isEmpty())
-        assertTrue(warnings.any { it.startsWith("Native email verification failed") })
-    }
-
-    @Test
-    fun `a failure keeps a session the server still accepts`() = runBlocking {
-        val session = failingSession(IllegalStateException("HTTP 400"), NativeSessionValidity.Valid)
-
-        assertTrue(verifyAndSettle(session).isFailure)
-
-        assertEquals(1, session.validations.get())
-        assertTrue(session.signedOut.isEmpty())
-        assertTrue(session.adopted.isEmpty())
-        assertEquals("a:s0", session.storeAccessToken)
-    }
-
-    @Test
-    fun `an error response that restored a session moves the store to it`() = runBlocking {
-        val session = FakeSession(verifyResponse = {
-            storedAccessToken = "a:s2"
-            throw NativeEmailVerificationRejectedException("Email verification failed with status GENERAL_ERROR", "a:s2")
-        })
-
-        assertTrue(verifyAndSettle(session).isFailure)
-
-        assertEquals(listOf<String?>("a:s2"), session.adopted)
-        assertEquals("a:s2", session.storeAccessToken)
-        assertEquals(listOf("a:s2"), session.reloadedProfiles)
-        assertTrue(session.signedOut.isEmpty())
+        assertNull(session.captured!!.storeAccessToken)
+        assertEquals("OK", result.await())
+        assertEquals(s1, session.native)
+        assertEquals(s1.accessToken, session.store)
+        assertEquals(listOf(s1.accessToken), session.profileLoads)
         assertTrue(session.revoked.isEmpty())
     }
 
     @Test
-    fun `a replacement stored before adoption failed is adopted after validation`() = runBlocking {
-        val session = FakeSession(adoptFailures = 1)
+    fun `SDK clearing S0 still allows S1 unless a sign-in committed`() = runTest {
+        for (newSignIn in listOf(false, true)) {
+            val session = FakeSession().apply {
+                response = {
+                    if (newSignIn) signIn(b)
+                    native = null
+                    NativeEmailVerificationResult("OK", s1.issued())
+                }
+            }
+            val result = NativeEmailVerifier(backgroundScope, warn = {}).verify(request, session)
+            runCurrent()
 
-        assertTrue(verifyAndSettle(session).isFailure)
-
-        assertEquals(1, session.validations.get())
-        assertEquals(listOf<String?>("a:s1"), session.adopted)
-        assertEquals("a:s1", session.storeAccessToken)
-        assertEquals(listOf("a:s1"), session.reloadedProfiles)
-    }
-
-    @Test
-    fun `a stored replacement is adopted even when validation is inconclusive`() = runBlocking {
-        val session = FakeSession(
-            verifyResponse = {
-                storedAccessToken = "a:s2"
-                throw IllegalStateException("Email verification failed")
-            },
-            validity = NativeSessionValidity.Unknown,
-        )
-
-        assertTrue(verifyAndSettle(session).isFailure)
-
-        assertEquals("a:s2", session.storeAccessToken)
-        assertEquals(listOf("a:s2"), session.reloadedProfiles)
-    }
-
-    @Test
-    fun `a store already following the stored replacement only reloads the profile`() = runBlocking {
-        val session = FakeSession(verifyResponse = {
-            storedAccessToken = "a:s2"
-            storeAccessToken = "a:s2"
-            throw IllegalStateException("Email verification failed")
-        })
-
-        assertTrue(verifyAndSettle(session).isFailure)
-
-        assertEquals(0, session.adoptCalls.get())
-        assertEquals(listOf("a:s2"), session.reloadedProfiles)
-    }
-
-    @Test
-    fun `a stored session of another user is not adopted`() = runBlocking {
-        val session = FakeSession(verifyResponse = {
-            storedAccessToken = "b:s9"
-            throw IllegalStateException("Email verification failed")
-        })
-
-        assertTrue(verifyAndSettle(session).isFailure)
-
-        assertTrue(session.adopted.isEmpty())
-        assertTrue(session.reloadedProfiles.isEmpty())
-        assertEquals("a:s0", session.storeAccessToken)
-    }
-
-    @Test
-    fun `a response whose session was not installed is validated`() = runBlocking {
-        val session = FakeSession(
-            verifyResponse = { NativeEmailVerificationResult("OK", null) },
-            validity = NativeSessionValidity.Revoked,
-        )
-
-        assertTrue(verifyAndSettle(session).isFailure)
-
-        assertTrue(session.adopted.isEmpty())
-        assertEquals(listOf("a:s0"), session.signedOut)
-    }
-
-    @Test
-    fun `a session issued after sign-out is discarded and revoked instead of adopted`() = runBlocking {
-        val session = FakeSession(verifyResponse = {
-            generation.incrementAndGet()
-            storeAccessToken = null
-            storedAccessToken = "a:s1"
-            NativeEmailVerificationResult("OK", "a:s1")
-        })
-
-        val error = verifyAndSettle(session).exceptionOrNull()
-
-        assertTrue(error is NativeEmailVerificationSupersededException)
-        assertEquals(listOf("a:s1"), session.discarded)
-        assertEquals(null, session.storedAccessToken)
-        assertEquals(listOf("a:s1"), session.revoked)
-        assertTrue(session.adopted.isEmpty())
-        assertEquals(0, session.validations.get())
-        assertTrue(session.signedOut.isEmpty())
-    }
-
-    @Test
-    fun `an error response that issued a session after sign-out is discarded and revoked`() = runBlocking {
-        val session = FakeSession(verifyResponse = {
-            generation.incrementAndGet()
-            storeAccessToken = null
-            storedAccessToken = "a:s2"
-            throw NativeEmailVerificationRejectedException("Email verification failed with status GENERAL_ERROR", "a:s2")
-        })
-
-        assertTrue(verifyAndSettle(session).exceptionOrNull() is NativeEmailVerificationSupersededException)
-
-        assertEquals(null, session.storedAccessToken)
-        assertEquals(listOf("a:s2"), session.revoked)
-        assertEquals(0, session.validations.get())
-    }
-
-    @Test
-    fun `a sign-in that replaced the issued session in the SDK is untouched and the issued one revoked`() = runBlocking {
-        val session = FakeSession(verifyResponse = {
-            storedAccessToken = "b:s5"
-            storeAccessToken = "b:s5"
-            NativeEmailVerificationResult("OK", "a:s1")
-        })
-
-        assertTrue(verifyAndSettle(session).exceptionOrNull() is NativeEmailVerificationSupersededException)
-
-        assertEquals("b:s5", session.storedAccessToken)
-        assertEquals("b:s5", session.storeAccessToken)
-        assertTrue(session.adopted.isEmpty())
-        assertTrue(session.signedOut.isEmpty())
-        assertEquals(listOf("a:s1"), session.revoked)
-    }
-
-    @Test
-    fun `a sign-in overwritten by the issued session is signed out and the issued one revoked`() = runBlocking {
-        val session = FakeSession(verifyResponse = {
-            storeAccessToken = "b:s5"
-            storedAccessToken = "a:s1"
-            NativeEmailVerificationResult("OK", "a:s1")
-        })
-
-        assertTrue(verifyAndSettle(session).exceptionOrNull() is NativeEmailVerificationSupersededException)
-
-        assertTrue(session.adopted.isEmpty())
-        assertEquals(null, session.storedAccessToken)
-        assertEquals(listOf("b:s5"), session.signedOut)
-        assertEquals(null, session.storeAccessToken)
-        assertEquals(listOf("a:s1"), session.revoked)
-        assertTrue(warnings.any { it.contains("overwrote a session signed in during the verification") })
-    }
-
-    @Test
-    fun `a failed revocation is logged and nothing else changes`() = runBlocking {
-        val session = FakeSession(
-            verifyResponse = {
-                generation.incrementAndGet()
-                storeAccessToken = null
-                storedAccessToken = "a:s1"
-                NativeEmailVerificationResult("OK", "a:s1")
-            },
-            revocationError = IOException("offline"),
-        )
-
-        assertTrue(verifyAndSettle(session).exceptionOrNull() is NativeEmailVerificationSupersededException)
-
-        assertEquals(listOf("a:s1"), session.revoked)
-        assertTrue(warnings.contains("Could not revoke the unadopted email verification session"))
-        assertTrue(warnings.none { it.contains("a:s1") })
-        assertEquals(null, session.storedAccessToken)
-    }
-
-    // On a cold start from a magic link the store is reconciled with the SDK only after the app
-    // config loads, so verification can finish while the store holds none of its sessions.
-    @Test
-    fun `a store not yet reconciled adopts the replacement instead of revoking it`() = runBlocking {
-        listOf(null, "", "a:stale", "legacy-credential").forEach { unreconciled ->
-            val session = FakeSession(storeAccessToken = unreconciled)
-
-            assertEquals("Store $unreconciled", "OK", verifyAndSettle(session).getOrNull())
-
-            assertEquals("Store $unreconciled", listOf<String?>("a:s1"), session.adopted)
-            assertEquals("Store $unreconciled", "a:s1", session.storeAccessToken)
-            assertEquals("Store $unreconciled", "a:s1", session.storedAccessToken)
-            assertTrue("Store $unreconciled", session.discarded.isEmpty())
-            assertTrue("Store $unreconciled", session.revoked.isEmpty())
-            assertTrue("Store $unreconciled", session.signedOut.isEmpty())
+            if (newSignIn) {
+                assertTrue(runCatching { result.await() }.exceptionOrNull() is NativeEmailVerificationSupersededException)
+                assertEquals(listOf(request to s1.accessToken), session.revoked)
+            } else {
+                assertEquals("OK", result.await())
+                assertEquals(s1, session.native)
+            }
         }
     }
 
     @Test
-    fun `startup reconciling the store to the initiating session during the request adopts the replacement`() = runBlocking {
-        val session = FakeSession(storeAccessToken = null, verifyResponse = {
-            storeAccessToken = "a:s0"
-            storedAccessToken = "a:s1"
-            NativeEmailVerificationResult("OK", "a:s1")
-        })
-
-        assertEquals("OK", verifyAndSettle(session).getOrNull())
-
-        assertEquals("a:s1", session.storeAccessToken)
-        assertTrue(session.revoked.isEmpty())
-    }
-
-    // Migration bootstraps the SDK before it moves the store off the legacy credential.
-    @Test
-    fun `legacy migration finishing during the request adopts the replacement`() = runBlocking {
-        val session = FakeSession(storeAccessToken = "legacy-credential", verifyResponse = {
-            storeAccessToken = "a:s0"
-            storedAccessToken = "a:s1"
-            NativeEmailVerificationResult("OK", "a:s1")
-        })
-
-        assertEquals("OK", verifyAndSettle(session).getOrNull())
-
-        assertEquals("a:s1", session.storeAccessToken)
-        assertTrue(session.discarded.isEmpty())
-        assertTrue(session.revoked.isEmpty())
+    fun `sign out while verification runs does not resurrect the session`() = runTest {
+        val session = FakeSession().apply {
+            response = {
+                signOuts++
+                native = null
+                store = null
+                NativeEmailVerificationResult("OK", s1.issued())
+            }
+        }
+        val result = NativeEmailVerifier(backgroundScope, warn = {}).verify(request, session)
+        runCurrent()
+        assertTrue(runCatching { result.await() }.exceptionOrNull() is NativeEmailVerificationSupersededException)
+        assertNull(session.native)
+        assertEquals(listOf(request to s1.accessToken), session.revoked)
     }
 
     @Test
-    fun `an error response that restored a session is adopted by a store not yet reconciled`() = runBlocking {
-        val session = FakeSession(storeAccessToken = null, verifyResponse = {
-            storedAccessToken = "a:s2"
-            throw NativeEmailVerificationRejectedException("Email verification failed with status GENERAL_ERROR", "a:s2")
-        })
-
-        assertTrue(verifyAndSettle(session).isFailure)
-
-        assertEquals("a:s2", session.storeAccessToken)
-        assertEquals(listOf("a:s2"), session.reloadedProfiles)
-        assertTrue(session.revoked.isEmpty())
+    fun `identical requests from one owner join and outlive a cancelled waiter but other owners do not join`() = runTest {
+        val release = CompletableDeferred<Unit>()
+        val session = FakeSession().apply {
+            response = { release.await(); NativeEmailVerificationResult("OK", s1.issued()) }
+        }
+        val verifier = NativeEmailVerifier(backgroundScope, warn = {})
+        val original = verifier.verify(request, session)
+        val waiter = launch { original.await() }
+        runCurrent()
+        waiter.cancel()
+        assertSame(original, verifier.verify(request, session))
+        val otherOwner = FakeSession().apply {
+            signIn(b)
+            response = { release.await(); NativeEmailVerificationResult("OK", tokens("b", "b1").issued()) }
+        }
+        val other = verifier.verify(request, otherOwner)
+        val otherEndpoint = verifier.verify(request.copy(apiBasePath = "/other"), session)
+        assertNotSame(original, other)
+        assertNotSame(original, otherEndpoint)
+        runCurrent()
+        assertEquals(listOf(s0, s0), session.sends.map { it.second })
+        assertEquals(listOf(b), otherOwner.sends.map { it.second })
+        release.complete(Unit)
+        runCurrent()
+        assertEquals("OK", original.await())
+        assertEquals("OK", other.await())
     }
 
     @Test
-    fun `a sign-in that overwrote a store not yet reconciled is still detected`() = runBlocking {
-        val session = FakeSession(storeAccessToken = null, verifyResponse = {
-            storeAccessToken = "b:s5"
-            storedAccessToken = "a:s1"
-            NativeEmailVerificationResult("OK", "a:s1")
-        })
+    fun `stalled recovery releases the in-flight request without clearing S0`() = runTest {
+        var probeCancelled = false
+        val session = FakeSession().apply {
+            response = { throw IOException("verify response lost") }
+            probeResponse = {
+                try {
+                    awaitCancellation()
+                } finally {
+                    probeCancelled = true
+                }
+            }
+        }
+        val verifier = NativeEmailVerifier(backgroundScope, warn = {}, recoveryTimeoutMillis = 100)
+        val failed = verifier.verify(request, session)
+        runCurrent()
+        assertTrue(runCatching { failed.await() }.exceptionOrNull() is IOException)
+        assertSame(failed, verifier.verify(request, session))
 
-        assertTrue(verifyAndSettle(session).exceptionOrNull() is NativeEmailVerificationSupersededException)
-
-        assertTrue(session.adopted.isEmpty())
-        assertEquals(listOf("b:s5"), session.signedOut)
-        assertEquals(listOf("a:s1"), session.revoked)
+        advanceTimeBy(100)
+        runCurrent()
+        assertTrue(probeCancelled)
+        assertEquals(s0, session.native)
+        assertEquals(s0.accessToken, session.store)
+        session.response = { NativeEmailVerificationResult("OK", s1.issued()) }
+        val retry = verifier.verify(request, session)
+        assertNotSame(failed, retry)
+        runCurrent()
+        assertEquals("OK", retry.await())
     }
 
     @Test
-    fun `verification without a session sends no request`() = runBlocking {
-        val session = FakeSession(storedAccessToken = null)
-
-        val error = verifyAndSettle(session).exceptionOrNull()
-
-        assertTrue(error is IllegalStateException)
-        assertEquals(0, session.verifyCalls.get())
-        assertEquals(0, session.validations.get())
-        assertTrue(session.adopted.isEmpty())
+    fun `recovery clears only confirmed revocations and never clears B`() = runTest {
+        for (probe in listOf(VerificationRefreshResult.Unknown, VerificationRefreshResult.Revoked)) {
+            for (signInDuringProbe in listOf(false, true)) {
+                val session = FakeSession().apply {
+                    response = { throw IOException("verify response lost") }
+                    probeResponse = {
+                        if (signInDuringProbe) signIn(b)
+                        probe
+                    }
+                }
+                NativeEmailVerifier(backgroundScope, warn = {}).verify(request, session)
+                runCurrent()
+                assertEquals(1, session.probes)
+                val expected = when {
+                    signInDuringProbe -> b
+                    probe == VerificationRefreshResult.Revoked -> null
+                    else -> s0
+                }
+                assertEquals(expected, session.native)
+                assertEquals(expected?.accessToken, session.store)
+            }
+        }
     }
+
+    @Test
+    fun `an error response with a complete S1 reports failure but still adopts S1`() = runTest {
+        val session = FakeSession().apply {
+            response = { throw NativeEmailVerificationRejectedException("Request failed", s1.issued()) }
+        }
+        val result = NativeEmailVerifier(backgroundScope, warn = {}).verify(request, session)
+        runCurrent()
+        assertTrue(runCatching { result.await() }.exceptionOrNull() is NativeEmailVerificationRejectedException)
+        assertEquals(s1, session.native)
+        assertEquals(s1.accessToken, session.store)
+        assertEquals(listOf(s1.accessToken), session.profileLoads)
+        assertEquals(0, session.probes)
+    }
+
+    @Test
+    fun `incomplete replacement is revoked without installing it`() = runTest {
+        val session = FakeSession().apply {
+            response = {
+                NativeEmailVerificationResult("OK", IssuedVerificationSession(s1.accessToken, null, null, null))
+            }
+        }
+        val result = NativeEmailVerifier(backgroundScope, warn = {}).verify(request, session)
+        runCurrent()
+        assertTrue(runCatching { result.await() }.isFailure)
+        assertEquals(s0, session.native)
+        assertEquals(listOf(request to s1.accessToken), session.revoked)
+        assertTrue(session.profileLoads.isEmpty())
+    }
+
+    @Test
+    fun `a successful recovery probe can rotate S0 without changing session ownership`() = runTest {
+        val refreshed = s0.copy(accessToken = s0.accessToken.substringBeforeLast('.') + ".rotated", refreshToken = "rotated-refresh")
+        val session = FakeSession().apply {
+            response = { throw IOException("verify response lost") }
+            probeResponse = { VerificationRefreshResult.Refreshed(refreshed) }
+        }
+        val result = NativeEmailVerifier(backgroundScope, warn = {}).verify(request, session)
+        runCurrent()
+        assertTrue(runCatching { result.await() }.exceptionOrNull() is IOException)
+        assertEquals(refreshed, session.native)
+        assertEquals(refreshed.accessToken, session.store)
+    }
+
+    private fun tokens(user: String, handle: String): SessionTokens {
+        val payload = Base64.getUrlEncoder().withoutPadding().encodeToString(
+            """{"sub":"$user","sessionHandle":"$handle","tId":"public"}""".toByteArray()
+        )
+        return SessionTokens("e30.$payload.signature", "refresh-$handle", "front-$handle", "csrf-$handle")
+    }
+
+    private fun SessionTokens.issued() = IssuedVerificationSession(accessToken, refreshToken, frontToken, antiCSRF)
 }

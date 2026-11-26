@@ -347,7 +347,7 @@ class RowndClient(
     // Signs out only if [isCurrent] still holds where the sign-out commits, and the SDK still
     // holds the session of [accessToken]. A rejected sign-out changes nothing, not even pending
     // sign-ins: they may belong to the session that replaced the one this was decided for.
-    internal fun signOutIfCurrent(accessToken: String?, isCurrent: () -> Boolean): Boolean {
+    internal fun signOutIfCurrent(accessToken: String?, revokeRemote: Boolean = true, isCurrent: () -> Boolean): Boolean {
         val revocationUrl = authRepo.sessionRevocationUrl()
         val context = config.applicationContext ?: appHandleWrapper?.app?.get()?.applicationContext
         var accepted = false
@@ -361,7 +361,7 @@ class RowndClient(
         if (!accepted) return false
         emailChangeContinuation.clear()
         signInHandoffRevision.incrementAndGet()
-        finishSignOut(session, revocationUrl)
+        finishSignOut(session.takeIf { revokeRemote }, revocationUrl)
         return true
     }
 

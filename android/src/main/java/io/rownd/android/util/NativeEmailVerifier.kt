@@ -3,209 +3,145 @@ package io.rownd.android.util
 import android.content.Context
 import android.util.Log
 import io.rownd.android.RowndClient
+import io.rownd.android.util.SuperTokensSessionBridge.SessionIdentity
+import io.rownd.android.util.SuperTokensSessionBridge.SessionTokens
+import io.rownd.android.util.SuperTokensSessionBridge.VerificationOwner
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TAG = "Rownd.hub"
 
-internal enum class NativeSessionValidity { Valid, Revoked, Unknown }
-
 internal interface NativeEmailVerificationSession {
-    fun signOutGeneration(): Long
-    suspend fun accessToken(): String?
-    suspend fun verify(request: NativeEmailVerificationRequest): NativeEmailVerificationResult
-    fun hasCompleteSession(): Boolean
-    suspend fun adopt(isCurrent: () -> Boolean): Boolean
-    fun reloadProfile(accessToken: String, isCurrent: () -> Boolean)
-    fun storeHoldsSessionOf(accessToken: String): Boolean
-    fun storeAccessToken(): String?
-
-    // The access token the SDK stores, read without refreshing it.
-    fun nativeAccessToken(): String?
-    fun isSameSession(first: String, second: String): Boolean
-    fun isOtherSessionOfSameUser(first: String, second: String): Boolean
-
-    // Clears the issued session locally if the SDK holds it. Returns the session the Rownd store
-    // holds whose native credentials it overwrote.
-    suspend fun discardIssuedSession(issuedAccessToken: String): String?
-    suspend fun revokeIssuedSession(request: NativeEmailVerificationRequest, issuedAccessToken: String)
-
-    // Revoked only when the server rejected the session; transport and server errors are Unknown.
-    suspend fun validate(): NativeSessionValidity
-    fun signOutIfCurrent(accessToken: String, isCurrent: () -> Boolean): Boolean
+    fun captureOwner(): VerificationOwner?
+    fun owns(owner: VerificationOwner): Boolean
+    suspend fun verify(request: NativeEmailVerificationRequest, tokens: SessionTokens): NativeEmailVerificationResult
+    fun install(owner: VerificationOwner, tokens: SessionTokens, refreshedFrom: SessionTokens? = null): Boolean
+    fun reloadProfile(owner: VerificationOwner, accessToken: String)
+    suspend fun revoke(request: NativeEmailVerificationRequest, issued: IssuedVerificationSession)
+    fun recoveryTokens(owner: VerificationOwner): SessionTokens?
+    suspend fun probe(request: NativeEmailVerificationRequest, tokens: SessionTokens): VerificationRefreshResult
+    fun clearRevoked(owner: VerificationOwner, probedTokens: SessionTokens?): Boolean
 }
 
-// The user signed out, or moved to another session, while the server issued a session for them.
-internal class NativeEmailVerificationSupersededException(cause: Throwable) :
-    IllegalStateException("The session changed during native email verification", cause)
+internal class NativeEmailVerificationSupersededException :
+    IllegalStateException("The session changed during native email verification")
 
-// The server consumes the token, revokes the current session and issues its replacement in one
-// call. Abandoning that call leaves the app on a revoked session, so the request and adoption of
-// its session run in an SDK-owned scope and outlive the Hub page that asked for them.
-//
-// This does not survive process death: if the process dies after the request is sent but before
-// the SDK stores the replacement, the app relaunches on the revoked session and is signed out when
-// its first refresh fails.
+// The request and adoption outlive the Hub page. They cannot survive process death: if the server
+// revoked S0 but the app didn't install S1, the app signs out when its next refresh fails.
 internal class NativeEmailVerifier(
-    // Must never be cancelled: cancelling would abandon a request the server may have committed.
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
-    private val warn: (String, Throwable?) -> Unit = { message, error -> Log.w(TAG, message, error) },
+    private val warn: (String) -> Unit = { Log.w(TAG, it) },
+    private val recoveryTimeoutMillis: Long = NATIVE_EMAIL_RECOVERY_TIMEOUT_MILLIS,
 ) {
-    private val inFlight = HashMap<NativeEmailVerificationRequest, Deferred<String>>()
+    private data class Key(val request: NativeEmailVerificationRequest, val identity: SessionIdentity)
 
-    // A repeated request for the same token joins the one in flight: a second call would fail on
-    // the consumed token and report a failure for a verification that succeeded.
-    fun verify(request: NativeEmailVerificationRequest, session: NativeEmailVerificationSession): Deferred<String> =
-        synchronized(inFlight) {
-            inFlight[request]?.let { return@synchronized it }
+    private val inFlight = HashMap<Key, Deferred<String>>()
+
+    fun verify(request: NativeEmailVerificationRequest, session: NativeEmailVerificationSession): Deferred<String> {
+        val owner = session.captureOwner()
+            ?: return CompletableDeferred<String>().apply {
+                completeExceptionally(IllegalStateException("Native email verification requires an existing session"))
+            }
+        val key = Key(request, owner.identity)
+        return synchronized(inFlight) {
+            inFlight[key]?.let { return@synchronized it }
             val result = CompletableDeferred<String>()
-            inFlight[request] = result
+            inFlight[key] = result
             scope.launch {
                 try {
-                    run(request, session, result)
+                    run(request, session, owner, result)
                 } catch (error: Exception) {
-                    // Nothing awaits this job, so an escaping exception would crash the host app.
-                    warn("Native email verification failed", error)
+                    warn("Native email verification failed (${error.javaClass.simpleName})")
                     result.completeExceptionally(error)
                 } finally {
-                    synchronized(inFlight) { inFlight.remove(request, result) }
+                    synchronized(inFlight) { inFlight.remove(key, result) }
                 }
             }
             result
         }
+    }
 
     private suspend fun run(
         request: NativeEmailVerificationRequest,
         session: NativeEmailVerificationSession,
+        owner: VerificationOwner,
         result: CompletableDeferred<String>,
     ) {
-        val signOutGeneration = session.signOutGeneration()
-        val isCurrent = { signOutGeneration == session.signOutGeneration() }
-        val storeAccessTokenAtStart = session.storeAccessToken()
-        val previousAccessToken = runCatching { session.accessToken() }.getOrNull()
-        if (previousAccessToken == null) {
-            val error = IllegalStateException("Native email verification requires an existing session")
-            warn("Native email verification failed", error)
-            result.completeExceptionally(error)
+        val verification = runCatching { session.verify(request, owner.tokens) }
+        (verification.exceptionOrNull() as? CancellationException)?.let { throw it }
+        verification.exceptionOrNull()?.let { warn("Native email verification failed (${it.javaClass.simpleName})") }
+        val issued = verification.getOrNull()?.issuedSession
+            ?: (verification.exceptionOrNull() as? NativeEmailVerificationRejectedException)?.issuedSession
+        val priorAccessToken = owner.tokens.accessToken
+        val replacement = issued?.takeUnless {
+            SuperTokensSessionBridge.isSameSession(priorAccessToken, it.accessToken)
+        }
+        val tokens = replacement?.completeTokens()?.takeIf {
+            SuperTokensSessionBridge.isOtherSessionOfSameUser(priorAccessToken, it.accessToken)
+        }
+
+        // Even an error response can carry the only usable session after the server revoked S0.
+        if (tokens != null && session.install(owner, tokens)) {
+            val error = verification.exceptionOrNull()
+            if (error == null) result.complete(verification.getOrThrow().status)
+            else result.completeExceptionally(error)
+            session.reloadProfile(owner, tokens.accessToken)
             return
         }
 
-        // Whether the user signed out or signed in to another session while the request ran, so
-        // that nobody will adopt the session it issued. Decided only from what changed during the
-        // request: on a cold start the store may not reflect the SDK's session yet, and a store
-        // that is empty, stale or legacy is no sign that someone else signed in.
-        fun isSuperseded(issuedAccessToken: String?): Boolean {
-            if (!isCurrent()) return true
-            fun isAnotherSession(token: String) = !session.isSameSession(token, previousAccessToken) &&
-                (issuedAccessToken?.let { !session.isSameSession(token, it) }
-                    // Without the issued token, a new session of the same user may be its replacement.
-                    ?: !session.isOtherSessionOfSameUser(previousAccessToken, token))
-            // The SDK holds the session of a sign-in that replaced the issued one.
-            if (session.nativeAccessToken()?.let(::isAnotherSession) == true) return true
-            // The store moved to a sign-in whose native session the issued one overwrote.
-            val storeAccessToken = session.storeAccessToken() ?: return false
-            return storeAccessToken != storeAccessTokenAtStart &&
-                (storeAccessTokenAtStart == null || !session.isSameSession(storeAccessToken, storeAccessTokenAtStart)) &&
-                isAnotherSession(storeAccessToken)
-        }
-
-        val verification = runCatching { session.verify(request) }
-        val issuedAccessToken = verification.getOrNull()?.issuedAccessToken
-            ?: (verification.exceptionOrNull() as? NativeEmailVerificationRejectedException)?.issuedAccessToken
-        val outcome = verification.mapCatching { response ->
-            check(!isSuperseded(issuedAccessToken)) { "The session changed during native email verification" }
-            val replacementAccessToken = session.accessToken()
-            check(
-                replacementAccessToken != null &&
-                    replacementAccessToken != previousAccessToken &&
-                    (issuedAccessToken == null || session.isSameSession(issuedAccessToken, replacementAccessToken)) &&
-                    session.hasCompleteSession()
-            ) { "Native replacement session was not adopted" }
-            check(session.adopt { !isSuperseded(issuedAccessToken) }) { "Native session was not adopted" }
-            // The result must neither wait for profile I/O nor depend on it.
-            session.reloadProfile(replacementAccessToken, isCurrent)
-            response.status
-        }
-
-        outcome.onSuccess { result.complete(it) }
-        val error = outcome.exceptionOrNull() ?: return
-        warn("Native email verification failed", error)
-
-        if (isSuperseded(issuedAccessToken)) {
-            result.completeExceptionally(NativeEmailVerificationSupersededException(error))
-            if (issuedAccessToken != null) {
-                warn("Discarding the session issued by a superseded email verification", null)
-                discard(session, request, issuedAccessToken)
-            }
-            return
-        }
-        result.completeExceptionally(error)
-
-        // The server may have revoked this session even though the response never arrived. Settle
-        // that now, rather than leave the app signed in until a refresh fails on the next launch.
-        // This is a point-in-time check: if the server is still committing the verification when
-        // the refresh runs, the session can be revoked moments after it passed.
-        when (session.validate()) {
-            NativeSessionValidity.Valid -> adoptStoredSession(session, previousAccessToken, isCurrent, ::isSuperseded)
-            NativeSessionValidity.Unknown -> {
-                warn("Native session could not be validated after a failed email verification; keeping it", null)
-                adoptStoredSession(session, previousAccessToken, isCurrent, ::isSuperseded)
-            }
-            NativeSessionValidity.Revoked ->
-                if (session.signOutIfCurrent(previousAccessToken, isCurrent)) {
-                    warn("Native session was revoked during a failed email verification; signed out", null)
+        if (replacement != null) {
+            scope.launch {
+                try {
+                    session.revoke(request, replacement)
+                } catch (error: VerificationSessionRevocationException) {
+                    warn("Could not revoke the unadopted email verification session: HTTP ${error.statusCode}")
+                } catch (error: Exception) {
+                    warn("Could not revoke the unadopted email verification session (${error.javaClass.simpleName})")
                 }
+            }
         }
-    }
-
-    // A failed verification can still leave a replacement session in the SDK: the server can
-    // answer an error while issuing one, or adoption can fail after the SDK stored it. The Rownd
-    // store would stay on the session the server revoked, or on none if it was not yet reconciled,
-    // so it follows the SDK as it does elsewhere. This holds even when validation was
-    // inconclusive: the SDK's session is the newer.
-    private suspend fun adoptStoredSession(
-        session: NativeEmailVerificationSession,
-        previousAccessToken: String,
-        isCurrent: () -> Boolean,
-        isSuperseded: (String?) -> Boolean,
-    ) {
-        val storedAccessToken = runCatching { session.accessToken() }.getOrNull() ?: return
-        if (!session.isOtherSessionOfSameUser(previousAccessToken, storedAccessToken)) return
-        // The SDK's own session events may already have moved the store to the stored session.
-        if (!session.storeHoldsSessionOf(storedAccessToken) &&
-            !session.adopt { !isSuperseded(storedAccessToken) }) {
-            warn("Native email verification left a replacement session the store could not adopt", null)
+        if (!session.owns(owner)) {
+            result.completeExceptionally(NativeEmailVerificationSupersededException())
             return
         }
-        if (!session.storeHoldsSessionOf(storedAccessToken)) return
-        session.reloadProfile(storedAccessToken, isCurrent)
-        warn("Adopted the replacement session stored during a failed email verification", null)
+
+        result.completeExceptionally(verification.exceptionOrNull()
+            ?: IllegalStateException("Native replacement session was not adopted"))
+        recover(request, session, owner)
     }
 
-    // Nobody will adopt the issued session, so it must survive neither in the SDK, where it would
-    // resurrect the user or be attached to another user's requests, nor on the server.
-    private suspend fun discard(
-        session: NativeEmailVerificationSession,
+    private suspend fun recover(
         request: NativeEmailVerificationRequest,
-        issuedAccessToken: String,
+        session: NativeEmailVerificationSession,
+        owner: VerificationOwner,
     ) {
-        val overwritten = session.discardIssuedSession(issuedAccessToken)
-        if (overwritten != null) {
-            // Known 0.5.4 limitation: SuperTokensInterceptor already overwrote the other user's
-            // tokens. Sign out locally; only the issued session is revoked. Restoring the other
-            // login requires upstream owner fencing (supertokens-android #82).
-            warn("Native email verification response overwrote a session signed in during the verification; signing it out", null)
-            session.signOutIfCurrent(overwritten) { session.storeHoldsSessionOf(overwritten) }
+        if (session.clearRevoked(owner, probedTokens = null)) return
+        val tokens = session.recoveryTokens(owner) ?: return
+        // Probe only S0 and never call the SDK's blocking refresh here. A late response must
+        // not write, or clear, credentials after a sign-in or after another refresh rotated S0.
+        val probe = try {
+            withTimeoutOrNull(recoveryTimeoutMillis) { session.probe(request, tokens) }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
         }
-        scope.launch {
-            try {
-                session.revokeIssuedSession(request, issuedAccessToken)
-            } catch (error: Exception) {
-                warn("Could not revoke the unadopted email verification session", error)
+        when (probe) {
+            is VerificationRefreshResult.Refreshed -> {
+                if (!SuperTokensSessionBridge.sameSession(tokens.accessToken, probe.tokens.accessToken) ||
+                    !session.install(owner, probe.tokens, refreshedFrom = tokens)) {
+                    session.clearRevoked(owner, probedTokens = null)
+                }
+            }
+            VerificationRefreshResult.Revoked -> session.clearRevoked(owner, probedTokens = tokens)
+            else -> if (!session.clearRevoked(owner, probedTokens = null)) {
+                warn("Native session could not be validated after a failed email verification; keeping it")
             }
         }
     }
@@ -215,57 +151,38 @@ internal class RowndNativeEmailVerificationSession(
     private val client: RowndClient,
     private val context: Context,
 ) : NativeEmailVerificationSession {
-    override fun signOutGeneration(): Long = SuperTokensSessionBridge.currentSignOutGeneration()
+    private val store = client.stateRepo.getStore()
+    private val transport = client.authRepo.legacyMigrationApiClient.client
 
-    override suspend fun accessToken(): String? = SuperTokensSessionBridge.getAccessToken(context)
+    override fun captureOwner() = SuperTokensSessionBridge.captureVerificationOwner(context, store)
 
-    override suspend fun verify(request: NativeEmailVerificationRequest): NativeEmailVerificationResult =
-        performNativeEmailVerification(client.authenticatedApiClient.client, request)
+    override fun owns(owner: VerificationOwner) = SuperTokensSessionBridge.ownsVerification(context, owner)
 
-    override fun hasCompleteSession(): Boolean =
-        !SuperTokensSessionBridge.getRefreshToken(context).isNullOrEmpty() &&
-            !SuperTokensSessionBridge.getFrontToken(context).isNullOrEmpty()
+    override suspend fun verify(request: NativeEmailVerificationRequest, tokens: SessionTokens) =
+        performNativeEmailVerification(transport, request, tokens)
 
-    override suspend fun adopt(isCurrent: () -> Boolean): Boolean =
-        SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
-            context = context,
-            store = client.stateRepo.getStore(),
-            isCurrent = isCurrent,
-        )
+    override fun install(owner: VerificationOwner, tokens: SessionTokens, refreshedFrom: SessionTokens?) =
+        SuperTokensSessionBridge.installVerificationSession(context, store, owner, tokens, refreshedFrom)
 
-    override fun reloadProfile(accessToken: String, isCurrent: () -> Boolean) {
+    override fun reloadProfile(owner: VerificationOwner, accessToken: String) {
         client.userRepo.loadUserAsync {
-            isCurrent() && SuperTokensSessionBridge.isSameSession(accessToken, client.stateRepo.state.value.auth.accessToken)
+            SuperTokensSessionBridge.ownsVerificationProfile(context, owner, accessToken) &&
+                SuperTokensSessionBridge.isSameSession(accessToken, store.currentState.auth.accessToken)
         }
     }
 
-    override fun storeHoldsSessionOf(accessToken: String): Boolean =
-        SuperTokensSessionBridge.isSameSession(accessToken, client.stateRepo.state.value.auth.accessToken)
+    override suspend fun revoke(request: NativeEmailVerificationRequest, issued: IssuedVerificationSession) =
+        revokeIssuedVerificationSession(transport, request, issued)
 
-    override fun storeAccessToken(): String? = client.stateRepo.state.value.auth.accessToken
+    override fun recoveryTokens(owner: VerificationOwner) =
+        SuperTokensSessionBridge.verificationRecoveryTokens(context, owner)
 
-    override fun nativeAccessToken(): String? = SuperTokensSessionBridge.nativeAccessToken(context)
+    override suspend fun probe(request: NativeEmailVerificationRequest, tokens: SessionTokens) =
+        probeVerificationSession(transport, request, tokens)
 
-    override fun isSameSession(first: String, second: String): Boolean =
-        SuperTokensSessionBridge.isSameSession(first, second)
-
-    override fun isOtherSessionOfSameUser(first: String, second: String): Boolean =
-        SuperTokensSessionBridge.isOtherSessionOfSameUser(first, second)
-
-    override suspend fun discardIssuedSession(issuedAccessToken: String): String? =
-        SuperTokensSessionBridge.discardIssuedSession(context, client.stateRepo.getStore(), issuedAccessToken)
-
-    override suspend fun revokeIssuedSession(request: NativeEmailVerificationRequest, issuedAccessToken: String) =
-        revokeIssuedVerificationSession(client.authRepo.legacyMigrationApiClient.client, request, issuedAccessToken)
-
-    override suspend fun validate(): NativeSessionValidity = try {
-        if (SuperTokensSessionBridge.attemptRefresh(context)) NativeSessionValidity.Valid
-        else NativeSessionValidity.Revoked
-    } catch (error: Exception) {
-        Log.w(TAG, "Native session validation failed", error)
-        NativeSessionValidity.Unknown
-    }
-
-    override fun signOutIfCurrent(accessToken: String, isCurrent: () -> Boolean): Boolean =
-        client.signOutIfCurrent(accessToken, isCurrent)
+    override fun clearRevoked(owner: VerificationOwner, probedTokens: SessionTokens?): Boolean =
+        client.signOutIfCurrent(owner.tokens.accessToken, revokeRemote = false) {
+            SuperTokensSessionBridge.isVerificationSessionRevoked(context, owner) ||
+                (probedTokens != null && recoveryTokens(owner) == probedTokens)
+        }
 }

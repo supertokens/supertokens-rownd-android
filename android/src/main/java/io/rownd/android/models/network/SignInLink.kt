@@ -19,13 +19,13 @@ import io.rownd.android.Rownd
 import io.rownd.android.RowndSignInType
 import io.rownd.android.RowndSignInUserType
 import io.rownd.android.models.domain.AuthState
-import io.rownd.android.models.repos.StateAction
 import io.rownd.android.models.repos.UserRepo
 import io.rownd.android.util.AuthenticatedApiClient
 import io.rownd.android.util.KtorApiClient
 import io.rownd.android.util.RowndContext
 import io.rownd.android.util.RowndEvent
 import io.rownd.android.util.RowndEventType
+import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.signInCompletedEventData
 import io.rownd.android.views.HubPageSelector
 import kotlinx.serialization.SerialName
@@ -92,13 +92,9 @@ class SignInLinkApi @Inject constructor() {
         try {
             val authBody = authenticateWithSignInLink(signInUrl)
 
-            Rownd.store.dispatch(
-                StateAction.SetAuth(
-                    AuthState(
-                        accessToken = authBody.accessToken,
-                        refreshToken = authBody.refreshToken
-                    )
-                )
+            SuperTokensSessionBridge.commitLegacySignIn(
+                Rownd.store,
+                AuthState(accessToken = authBody.accessToken, refreshToken = authBody.refreshToken),
             )
 
             rowndContext.eventEmitter?.emit(

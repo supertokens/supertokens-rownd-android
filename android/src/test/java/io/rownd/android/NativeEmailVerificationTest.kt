@@ -18,12 +18,17 @@ import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import io.rownd.android.models.VerifyEmailMessage
 import io.rownd.android.models.RowndHubInteropMessage
+import io.rownd.android.util.IssuedVerificationSession
+import io.rownd.android.util.LegacyMigrationApiClient
 import io.rownd.android.util.NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS
 import io.rownd.android.util.NativeEmailVerificationRejectedException
 import io.rownd.android.util.NativeEmailVerificationRequest
+import io.rownd.android.util.SuperTokensSessionBridge.SessionTokens
+import io.rownd.android.util.VerificationRefreshResult
 import io.rownd.android.util.revokeIssuedVerificationSession
 import io.rownd.android.util.nativeEmailVerificationRequest
 import io.rownd.android.util.performNativeEmailVerification
+import io.rownd.android.util.probeVerificationSession
 import io.rownd.android.views.HubPageSelector
 import io.rownd.android.views.urlForLogging
 import kotlinx.coroutines.runBlocking
@@ -37,9 +42,13 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 class NativeEmailVerificationTest {
+    private val captured = SessionTokens("captured-access", "captured-refresh", "captured-front", "captured-csrf")
+    private val issued = IssuedVerificationSession("issued-access", "issued-refresh", "issued-front", null)
     @Test
     fun `verify email message decodes with its request id`() {
         val message = Json.decodeFromString(
@@ -140,7 +149,8 @@ class NativeEmailVerificationTest {
                     HttpHeaders.ContentType to listOf("application/json"),
                     "st-access-token" to listOf("replacement-access"),
                     "st-refresh-token" to listOf("replacement-refresh"),
-                    "anti-csrf" to listOf(""),
+                    "front-token" to listOf("replacement-front"),
+                    "anti-csrf" to listOf("replacement-csrf"),
                 ),
             )
         }
@@ -156,10 +166,14 @@ class NativeEmailVerificationTest {
                 apiDomain = "https://api.example.com",
                 apiBasePath = "/auth",
             ),
+            captured,
         )
 
         assertEquals("OK", result.status)
-        assertEquals("replacement-access", result.issuedAccessToken)
+        assertEquals(
+            SessionTokens("replacement-access", "replacement-refresh", "replacement-front", "replacement-csrf"),
+            result.issuedSession?.completeTokens(),
+        )
         assertTrue("Results must not print tokens", !result.toString().contains("replacement-access"))
         assertEquals(NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS, requestTimeoutMillis)
         assertEquals(NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS, socketTimeoutMillis)
@@ -186,10 +200,10 @@ class NativeEmailVerificationTest {
         }
         val client = HttpClient(engine) { install(ContentNegotiation) { json() } }
 
-        val error = runCatching { performNativeEmailVerification(client, verificationRequest()) }.exceptionOrNull()
+        val error = runCatching { performNativeEmailVerification(client, verificationRequest(), captured) }.exceptionOrNull()
 
         assertTrue(error is NativeEmailVerificationRejectedException)
-        assertEquals("restored-access", (error as NativeEmailVerificationRejectedException).issuedAccessToken)
+        assertEquals("restored-access", (error as NativeEmailVerificationRejectedException).issuedSession?.accessToken)
         assertTrue(!error.toString().contains("restored-access"))
         client.close()
     }
@@ -207,7 +221,7 @@ class NativeEmailVerificationTest {
         }
         val client = HttpClient(engine)
 
-        revokeIssuedVerificationSession(client, verificationRequest(), "issued-access")
+        revokeIssuedVerificationSession(client, verificationRequest(), issued)
 
         assertEquals("https://api.example.com/auth/signout", requestUrl)
         assertEquals(HttpMethod.Post, requestMethod)
@@ -232,7 +246,7 @@ class NativeEmailVerificationTest {
         }
 
         val error = runCatching {
-            revokeIssuedVerificationSession(client, verificationRequest(), "issued-access")
+            revokeIssuedVerificationSession(client, verificationRequest(), issued)
         }.exceptionOrNull()
 
         assertTrue(error?.message.orEmpty().contains("HTTP 500"))
@@ -252,7 +266,7 @@ class NativeEmailVerificationTest {
     // engine's read timeout. The engine here times out after 250ms; the server answers after 1s.
     @Test
     fun `verification waits for a response slower than the engine read timeout`() = runBlocking {
-        withSlowServer { url ->
+        withLoopbackServer(::respondSlowly) { url ->
             val client = slowEngineClient()
             try {
                 val result = performNativeEmailVerification(client, NativeEmailVerificationRequest(
@@ -260,9 +274,9 @@ class NativeEmailVerificationTest {
                     pendingVerificationId = "pending-123",
                     apiDomain = url,
                     apiBasePath = "/auth",
-                ))
+                ), captured)
                 assertEquals("OK", result.status)
-                assertEquals("replacement-access", result.issuedAccessToken)
+                assertEquals("replacement-access", result.issuedSession?.accessToken)
             } finally {
                 client.close()
             }
@@ -272,7 +286,7 @@ class NativeEmailVerificationTest {
     // Shows that the server above is slow enough to fail a request that keeps the engine timeout.
     @Test
     fun `a request without the verification timeout fails on the same slow response`() = runBlocking {
-        withSlowServer { url ->
+        withLoopbackServer(::respondSlowly) { url ->
             val client = slowEngineClient()
             try {
                 val error = runCatching { client.post("$url/auth/user/email/verify").bodyAsText() }.exceptionOrNull()
@@ -289,13 +303,71 @@ class NativeEmailVerificationTest {
         install(ContentNegotiation) { json() }
     }
 
-    // Answers every request after 1s with an OK verification and a replacement access token.
-    private suspend fun withSlowServer(block: suspend (String) -> Unit) {
+    @Test
+    fun `production verification transport sends captured headers without SuperTokens interceptor or redirects`() = runBlocking {
+        val calls = AtomicInteger()
+        val received = AtomicReference<Map<String, String>>()
+        withLoopbackServer({ socket ->
+            calls.incrementAndGet()
+            received.set(readRequestHeaders(socket))
+            socket.getOutputStream().write(
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: /redirected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray()
+            )
+        }) { endpoint ->
+            // SuperTokensInterceptor refuses calls without initialized Android SDK context.
+            val engine = LegacyMigrationApiClient.createEngine()
+            val client = HttpClient(engine) {
+                followRedirects = false
+                install(HttpTimeout)
+                install(ContentNegotiation) { json() }
+            }
+            try {
+                val error = runCatching {
+                    performNativeEmailVerification(client, verificationRequest().copy(apiDomain = endpoint), captured)
+                }.exceptionOrNull()
+                assertEquals("Email verification failed with HTTP 307", error?.message)
+                assertEquals(1, calls.get())
+                val headers = received.get()
+                assertEquals("Bearer captured-access", headers["authorization"])
+                assertEquals("header", headers["st-auth-mode"])
+                assertEquals("emailverification", headers["rid"])
+                assertEquals("captured-csrf", headers["anti-csrf"])
+                assertNull(headers["cookie"])
+            } finally {
+                client.close()
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `isolated recovery probes S0 refresh and only a 401 with front-token remove confirms revocation`() = runBlocking {
+        for ((status, frontToken, expected) in listOf(
+            Triple(HttpStatusCode.Unauthorized, "remove", VerificationRefreshResult.Revoked),
+            Triple(HttpStatusCode.Unauthorized, "", VerificationRefreshResult.Unknown),
+            Triple(HttpStatusCode.InternalServerError, "remove", VerificationRefreshResult.Unknown),
+        )) {
+            val client = HttpClient(MockEngine { request ->
+                assertEquals("https://api.example.com/auth/session/refresh", request.url.toString())
+                assertEquals("Bearer captured-refresh", request.headers[HttpHeaders.Authorization])
+                assertEquals("captured-csrf", request.headers["anti-csrf"])
+                assertEquals("session", request.headers["rid"])
+                respond("", status, headersOf("front-token", frontToken))
+            })
+            try {
+                assertEquals(expected, probeVerificationSession(client, verificationRequest(), captured))
+            } finally {
+                client.close()
+            }
+        }
+    }
+
+    private suspend fun withLoopbackServer(respond: (Socket) -> Unit, block: suspend (String) -> Unit) {
         val server = ServerSocket(0, 0, InetAddress.getLoopbackAddress())
         val acceptor = thread(isDaemon = true) {
             while (!server.isClosed) {
                 val socket = runCatching { server.accept() }.getOrNull() ?: break
-                thread(isDaemon = true) { socket.use(::respondSlowly) }
+                thread(isDaemon = true) { socket.use(respond) }
             }
         }
         try {
@@ -306,15 +378,18 @@ class NativeEmailVerificationTest {
         }
     }
 
-    private fun respondSlowly(socket: Socket) {
+    private fun readRequestHeaders(socket: Socket): Map<String, String> {
         val input = socket.getInputStream().bufferedReader()
-        val contentLength = generateSequence { input.readLine() }
+        input.readLine()
+        val headers = generateSequence { input.readLine() }
             .takeWhile { it.isNotEmpty() }
-            .firstNotNullOfOrNull { line ->
-                line.takeIf { it.startsWith("Content-Length:", ignoreCase = true) }
-                    ?.substringAfter(':')?.trim()?.toInt()
-            } ?: 0
-        repeat(contentLength) { input.read() }
+            .associate { it.substringBefore(':').lowercase() to it.substringAfter(':').trim() }
+        repeat(headers["content-length"]?.toInt() ?: 0) { input.read() }
+        return headers
+    }
+
+    private fun respondSlowly(socket: Socket) {
+        readRequestHeaders(socket)
         Thread.sleep(1_000)
         val body = "{\"status\":\"OK\"}"
         runCatching {
