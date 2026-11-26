@@ -273,6 +273,10 @@ val sessionExists = SuperTokensSessionBridge.doesSessionExist(applicationContext
 val refreshed = SuperTokensSessionBridge.attemptRefresh(applicationContext)
 ```
 
+#### Known limitations
+
+Email verification uses the initiating session's captured credentials and does not write its replacement over a newer login. With SuperTokens Android 0.5.4, a refresh of the initiating session can still return `front-token: remove` after Rownd installs the replacement and clear it locally. The interceptor and explicit refresh use separate locks; preventing a stale refresh from clearing a newer session requires SDK-level ownership checks ([supertokens-android #82](https://github.com/supertokens/supertokens-android/pull/82)).
+
 ### Example app
 
 See the sample app in this repository for a standalone Android app that follows these steps. From the repository root, run:

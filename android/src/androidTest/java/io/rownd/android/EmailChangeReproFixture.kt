@@ -272,6 +272,7 @@ internal class EmailChangeReproFixture {
             activity?.close()
             activity = null
             client.appHandleWrapper?.unregister()
+            client.closeNativeEmailVerificationTransport()
             client.authenticatedApiClient.client.close()
         }
     }

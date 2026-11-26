@@ -38,6 +38,8 @@ import io.rownd.android.util.AppLifecycleListener
 import io.rownd.android.util.AuthenticatedApiClient
 import io.rownd.android.util.HubSessionStorage
 import io.rownd.android.util.InvalidRefreshTokenException
+import io.rownd.android.util.NativeEmailVerifier
+import io.rownd.android.util.NativeEmailVerificationApiClient
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.NoAccessTokenPresentException
 import io.rownd.android.util.NoRefreshTokenPresentException
@@ -90,6 +92,24 @@ class RowndClient(
     internal var signInWithGoogle = graph.signInWithGoogle()
     internal var telemetry = graph.telemetry()
     internal var authenticatedApiClient: AuthenticatedApiClient = graph.authenticatedApiClient()
+    private var verificationTransport: NativeEmailVerificationApiClient? = null
+    private var verificationTransportClosed = false
+    internal val nativeEmailVerificationApiClient: NativeEmailVerificationApiClient
+        @Synchronized get() {
+            check(!verificationTransportClosed) { "The native email verification transport is closed" }
+            return verificationTransport ?: NativeEmailVerificationApiClient(rowndContext).also {
+                verificationTransport = it
+            }
+        }
+
+    @Synchronized
+    internal fun closeNativeEmailVerificationTransport() {
+        verificationTransportClosed = true
+        verificationTransport?.close()
+        verificationTransport = null
+    }
+
+    internal val nativeEmailVerifier = NativeEmailVerifier()
 
     private var pendingHubDisplayRequest: HubDisplayRequest? = null
     private var isWaitingForAppConfig = false
@@ -345,7 +365,7 @@ class RowndClient(
     // Signs out only if [isCurrent] still holds where the sign-out commits, and the SDK still
     // holds the session of [accessToken]. A rejected sign-out changes nothing, not even pending
     // sign-ins: they may belong to the session that replaced the one this was decided for.
-    internal fun signOutIfCurrent(accessToken: String?, isCurrent: () -> Boolean): Boolean {
+    internal fun signOutIfCurrent(accessToken: String?, revokeRemote: Boolean = true, isCurrent: () -> Boolean): Boolean {
         val revocationUrl = authRepo.sessionRevocationUrl()
         val context = config.applicationContext ?: appHandleWrapper?.app?.get()?.applicationContext
         var accepted = false
@@ -359,7 +379,7 @@ class RowndClient(
         if (!accepted) return false
         emailChangeContinuation.clear()
         signInHandoffRevision.incrementAndGet()
-        finishSignOut(session, revocationUrl)
+        finishSignOut(session.takeIf { revokeRemote }, revocationUrl)
         return true
     }
 

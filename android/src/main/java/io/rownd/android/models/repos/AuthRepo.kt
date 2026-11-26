@@ -350,7 +350,9 @@ class AuthRepo @Inject constructor() {
 
         if (emailChangeSignIn) check(response.status == "OK") { "Provider sign-in did not succeed" }
         if (!isCurrent()) throw kotlinx.coroutines.CancellationException("Sign-in presentation was superseded")
-        val adopted = SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(context, stateRepo.getStore(), isCurrent)
+        val adopted = SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
+            context, stateRepo.getStore(), isCurrent, commitsSignIn = true,
+        )
         if (emailChangeSignIn) check(adopted) { "Native session was not adopted" }
         signInRepo.setLastSignInMethod("google")
 

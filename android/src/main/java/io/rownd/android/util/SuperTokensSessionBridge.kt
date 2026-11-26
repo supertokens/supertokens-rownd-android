@@ -3,7 +3,6 @@ package io.rownd.android.util
 import android.content.Context
 import android.os.Looper
 import android.util.Log
-import com.auth0.android.jwt.JWT
 import java.util.Base64
 import com.supertokens.session.EventHandler
 import com.supertokens.session.FrontToken
@@ -48,6 +47,7 @@ object SuperTokensSessionBridge {
     internal var writeSession: (() -> Unit) -> Unit = { write -> write() }
     private val sessionCommitLock = Any()
     private val signOutGeneration = AtomicLong()
+    private var signInGeneration = 0L
 
     internal fun currentSignOutGeneration(): Long = signOutGeneration.get()
 
@@ -61,7 +61,7 @@ object SuperTokensSessionBridge {
             if (!isCurrent()) return@synchronized null
             signOutGeneration.incrementAndGet()
             val session = context?.let {
-                sharedPrefs(it).getString(ACCESS_TOKEN_STORAGE_KEY, null)?.let { token ->
+                storedAccessToken(it)?.let { token ->
                     SignedOutSession(token, getRefreshToken(it), getAntiCSRF(it))
                 }
             }
@@ -217,21 +217,20 @@ object SuperTokensSessionBridge {
     }
 
     private fun storedAccessToken(context: Context): String? =
-        sharedPrefs(context).getString(ACCESS_TOKEN_STORAGE_KEY, null)
+        sharedPrefs(context).getString(ACCESS_TOKEN_STORAGE_KEY, null)?.takeIf { it.isNotBlank() }
 
-    private fun sessionHandle(token: String?): String? =
-        token?.let { runCatching { JWT(it).getClaim("sessionHandle").asString() }.getOrNull() }
+    internal data class SessionIdentity(val handle: String, val userId: String?, val tenantId: String?)
 
-    internal fun sameSession(first: String?, second: String?): Boolean {
-        val old = first?.let(::claims) ?: return false
-        val current = second?.let(::claims) ?: return false
-        fun JsonObject.claim(vararg names: String) =
-            names.firstNotNullOfOrNull { (this[it] as? JsonPrimitive)?.takeIf { value -> value.isString }?.content }
-        val handle = old.claim("sessionHandle")
-        return !handle.isNullOrBlank() && handle == current.claim("sessionHandle") &&
-            old.claim("sub", "userId") == current.claim("sub", "userId") &&
-            old.claim("tId", "tenantId") == current.claim("tId", "tenantId")
+    private fun sessionIdentity(token: String?): SessionIdentity? {
+        val payload = token?.let(::claims) ?: return null
+        val handle = payload.claim("sessionHandle")?.takeIf { it.isNotBlank() } ?: return null
+        return SessionIdentity(handle, payload.claim("sub", "userId"), payload.claim("tId", "tenantId"))
     }
+
+    private fun sessionHandle(token: String?) = sessionIdentity(token)?.handle
+
+    internal fun sameSession(first: String?, second: String?): Boolean =
+        sessionIdentity(first)?.let { it == sessionIdentity(second) } ?: false
 
     // A sign-out clears whatever the SDK holds, so one decided for a session must not run once
     // the SDK holds another.
@@ -245,11 +244,23 @@ object SuperTokensSessionBridge {
         lenientJson.parseToJsonElement(String(Base64.getUrlDecoder().decode(padBase64(token.split(".")[1])))).jsonObject
     }.getOrNull()
 
+    private fun JsonObject.claim(vararg names: String) =
+        names.firstNotNullOfOrNull { (this[it] as? JsonPrimitive)?.takeIf { value -> value.isString }?.content }
+
     internal fun isLikelySuperTokensToken(token: String): Boolean {
         val payload = claims(token) ?: return false
         return listOf("sessionHandle", "tId", "refreshTokenHash1", "parentRefreshTokenHash1").any {
             (payload[it] as? JsonPrimitive)?.isString == true
         }
+    }
+
+    // A session the server issued to replace another for the same user, such as after an email
+    // verification. Legacy tokens carry no session handle and never qualify.
+    internal fun isOtherSessionOfSameUser(first: String?, second: String?): Boolean {
+        val old = sessionIdentity(first) ?: return false
+        val current = sessionIdentity(second) ?: return false
+        return old.handle != current.handle && !old.userId.isNullOrBlank() &&
+            old.userId == current.userId && old.tenantId == current.tenantId
     }
 
     // When the SDK cannot reach the server to verify a stored session, keep the user signed in
@@ -274,7 +285,72 @@ object SuperTokensSessionBridge {
         val refreshToken: String,
         val frontToken: String?,
         val antiCSRF: String?,
+    ) {
+        override fun toString() = "SessionTokens([redacted])"
+    }
+
+    internal class VerificationOwner(
+        val tokens: SessionTokens,
+        val identity: SessionIdentity,
+        val signOutGeneration: Long,
+        val signInGeneration: Long,
+        val storeAccessToken: String?,
     )
+
+    internal fun captureVerificationOwner(context: Context, store: Store<GlobalState, StateAction>): VerificationOwner? =
+        synchronized(sessionCommitLock) {
+            val tokens = readSessionTokens(context) ?: return@synchronized null
+            val identity = sessionIdentity(tokens.accessToken) ?: return@synchronized null
+            VerificationOwner(tokens, identity, currentSignOutGeneration(), signInGeneration, store.currentState.auth.accessToken)
+        }
+
+    private fun authGenerationsMatch(owner: VerificationOwner) =
+        owner.signOutGeneration == currentSignOutGeneration() && owner.signInGeneration == signInGeneration
+
+    // Startup reconciliation may populate a previously empty store. Only an actual sign-in
+    // commit invalidates a captured owner, including when the SDK has already cleared S0.
+    internal fun ownsVerification(context: Context, owner: VerificationOwner): Boolean =
+        synchronized(sessionCommitLock) {
+            authGenerationsMatch(owner) && (storedAccessToken(context)?.let { sessionIdentity(it) == owner.identity } ?: true)
+        }
+
+    internal fun verificationRecoveryTokens(context: Context, owner: VerificationOwner): SessionTokens? =
+        synchronized(sessionCommitLock) {
+            if (!ownsVerification(context, owner)) return@synchronized null
+            readSessionTokens(context)?.takeIf { sessionIdentity(it.accessToken) == owner.identity }
+        }
+
+    internal fun isVerificationSessionRevoked(context: Context, owner: VerificationOwner): Boolean =
+        synchronized(sessionCommitLock) {
+            ownsVerification(context, owner) && storedAccessToken(context) == null && getRefreshToken(context).isNullOrBlank()
+        }
+
+    internal fun installVerificationSession(
+        context: Context,
+        store: Store<GlobalState, StateAction>,
+        owner: VerificationOwner,
+        tokens: SessionTokens,
+        refreshedFrom: SessionTokens? = null,
+    ): Boolean = bootstrapSessionIfCurrent(
+        context, tokens.accessToken, tokens.refreshToken, tokens.frontToken, tokens.antiCSRF,
+        replaceExisting = true, expectedSignOutGeneration = owner.signOutGeneration,
+        isCurrent = {
+            ownsVerification(context, owner) && (refreshedFrom == null || readSessionTokens(context) == refreshedFrom)
+        },
+        onCommitted = { store.dispatch(StateAction.AdoptNativeSession(tokens.accessToken)) },
+    )
+
+    internal fun ownsVerificationProfile(context: Context, owner: VerificationOwner, accessToken: String): Boolean =
+        synchronized(sessionCommitLock) {
+            authGenerationsMatch(owner) && sameSession(accessToken, storedAccessToken(context))
+        }
+
+    internal fun commitLegacySignIn(store: Store<GlobalState, StateAction>, auth: AuthState) {
+        synchronized(sessionCommitLock) {
+            signInGeneration++
+            store.dispatch(StateAction.SetAuth(auth))
+        }
+    }
 
     // The SDK writes each token separately, so a read racing a refresh or a session replacement can
     // mix two sessions. Only a read that a second read confirms is returned.
@@ -358,7 +434,7 @@ object SuperTokensSessionBridge {
         replaceExisting: Boolean = false,
     ) {
         bootstrapSessionIfCurrent(context, accessToken, refreshToken, frontToken, antiCSRF,
-            replaceExisting, currentSignOutGeneration())
+            replaceExisting, currentSignOutGeneration(), commitsSignIn = true)
     }
 
     internal fun bootstrapSessionIfCurrent(
@@ -369,6 +445,8 @@ object SuperTokensSessionBridge {
         antiCSRF: String?,
         replaceExisting: Boolean,
         expectedSignOutGeneration: Long,
+        commitsSignIn: Boolean = false,
+        onCommitted: () -> Unit = {},
         isCurrent: () -> Boolean = { true },
     ): Boolean {
         check(Looper.myLooper() != Looper.getMainLooper()) {
@@ -398,6 +476,8 @@ object SuperTokensSessionBridge {
 
                 editor.apply()
                 FrontToken.setToken(context, resolvedFrontToken)
+                if (commitsSignIn) signInGeneration++
+                onCommitted()
                 committed = true
             }
         }
@@ -408,14 +488,22 @@ object SuperTokensSessionBridge {
 
     suspend fun syncRowndAuthStateFromSuperTokens(
         context: Context,
-        store: io.rownd.android.models.Store<io.rownd.android.models.repos.GlobalState, StateAction>,
+        store: Store<GlobalState, StateAction>,
         isCurrent: () -> Boolean = { true },
+    ): Boolean = syncRowndAuthStateFromSuperTokens(context, store, isCurrent, commitsSignIn = false)
+
+    internal suspend fun syncRowndAuthStateFromSuperTokens(
+        context: Context,
+        store: Store<GlobalState, StateAction>,
+        isCurrent: () -> Boolean,
+        commitsSignIn: Boolean,
     ): Boolean {
         val generation = currentSignOutGeneration()
         val accessToken = getAccessToken(context) ?: return false
         return synchronized(sessionCommitLock) {
             if (!isCurrent() || generation != currentSignOutGeneration() ||
-                sharedPrefs(context).getString(ACCESS_TOKEN_STORAGE_KEY, null) != accessToken) return@synchronized false
+                storedAccessToken(context) != accessToken) return@synchronized false
+            if (commitsSignIn) signInGeneration++
             store.dispatch(StateAction.AdoptNativeSession(accessToken))
             true
         }

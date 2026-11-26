@@ -10,9 +10,11 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import com.supertokens.session.SuperTokens
 import com.supertokens.session.EventHandler
+import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockEngineConfig
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.HttpRequestRetry
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.rownd.android.di.module.FakeNetworkModule
@@ -22,6 +24,7 @@ import io.rownd.android.models.domain.SuperTokensAppInfo
 import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.repos.StateAction
 import io.rownd.android.util.JwtGenerator
+import io.rownd.android.util.NativeEmailVerificationApiClient
 import io.rownd.android.util.NewIntentTestActivity
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.views.HubPageSelector
@@ -49,19 +52,12 @@ class VerificationProfileInstrumentedTest {
     private val release = CompletableDeferred<Unit>()
     private var status = HttpStatusCode.OK
     private var currentVerification = true
-    private var onVerification: suspend () -> Unit = {}
     private var verifications = 0
 
     @Before
     fun setUp() {
         val engine = MockEngineConfig().apply {
-            addHandler { request ->
-                if (request.url.encodedPath.endsWith("/email/verify")) {
-                    verifications++
-                    onVerification()
-                    return@addHandler respond("""{"status":"OK"}""", HttpStatusCode.OK,
-                        headersOf("Content-Type", "application/json"))
-                }
+            addHandler {
                 requested.complete(Unit)
                 release.await()
                 respond("""{"data":{"email":"verified@example.com"}}""", status,
@@ -81,6 +77,7 @@ class VerificationProfileInstrumentedTest {
     fun tearDown() {
         release.complete(Unit)
         rownd.authenticatedApiClient.client.close()
+        rownd.closeNativeEmailVerificationTransport()
     }
 
     @Test
@@ -196,7 +193,17 @@ class VerificationProfileInstrumentedTest {
         assertVerificationAckWithDelayedProfile(HttpStatusCode.OK, refreshDuringLoad = true, differentSession = true)
     }
 
-    private fun assertVerificationAckWithDelayedProfile(profileStatus: HttpStatusCode, refreshDuringLoad: Boolean = false, differentSession: Boolean = false) = runBlocking {
+    @Test
+    fun coldStartVerificationAdoptsReplacementDespiteLegacyStoreRestore() {
+        assertVerificationAckWithDelayedProfile(HttpStatusCode.OK, restoreLegacyDuringVerify = true)
+    }
+
+    private fun assertVerificationAckWithDelayedProfile(
+        profileStatus: HttpStatusCode,
+        refreshDuringLoad: Boolean = false,
+        differentSession: Boolean = false,
+        restoreLegacyDuringVerify: Boolean = false,
+    ) = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val previousConfig = Rownd.config.supertokens
@@ -218,9 +225,27 @@ class VerificationProfileInstrumentedTest {
         Rownd.config.baseUrl = "https://hub.example.com"
         Rownd.config.supertokens = SuperTokensConfig(appInfo = SuperTokensAppInfo(apiDomain = "https://api.example.com", apiBasePath = "/auth"))
         SuperTokensSessionBridge.bootstrapSession(context, originalToken, "original-refresh", replaceExisting = true)
-        onVerification = {
-            SuperTokensSessionBridge.bootstrapSession(context, replacementToken, "replacement-refresh", replaceExisting = true)
-        }
+        val store = rownd.stateRepo.getStore()
+        store.dispatch(StateAction.SetAuth(if (restoreLegacyDuringVerify) AuthState() else AuthState(accessToken = originalToken)))
+        val beforeRestore = store.currentState
+        val mockTransport = NativeEmailVerificationApiClient(rownd.rowndContext, MockEngine { request ->
+            verifications++
+            assertEquals("/auth/user/email/verify", request.url.encodedPath)
+            assertEquals("Bearer $originalToken", request.headers[HttpHeaders.Authorization])
+            if (restoreLegacyDuringVerify) {
+                store.dispatch(StateAction.RestorePersistedState(
+                    beforeRestore, beforeRestore.copy(auth = AuthState(accessToken = "legacy-token")),
+                ))
+                assertEquals("legacy-token", store.currentState.auth.accessToken)
+            }
+            respond("""{"status":"OK"}""", HttpStatusCode.OK, headersOf(
+                HttpHeaders.ContentType to listOf("application/json"),
+                "st-access-token" to listOf(replacementToken),
+                "st-refresh-token" to listOf("replacement-refresh"),
+                "front-token" to listOf(SuperTokensSessionBridge.buildFrontToken(replacementToken)),
+            ))
+        })
+        rownd.nativeEmailVerificationApiClient.client = mockTransport.client
         val url = "https://hub.example.com/account/verify-email?token=test-token&rowndPendingVerificationId=test-pending&apiDomain=https%3A%2F%2Fapi.example.com&apiBasePath=%2Fauth"
         val scenario = ActivityScenario.launch(NewIntentTestActivity::class.java)
         try {
@@ -248,7 +273,12 @@ class VerificationProfileInstrumentedTest {
             assertEquals(1, verifications)
             assertTrue(replacementToken == rownd.state.value.auth.accessToken)
             if (refreshDuringLoad) {
-                SuperTokensSessionBridge.bootstrapSession(context, refreshedToken, "refreshed-refresh", replaceExisting = true)
+                SuperTokensSessionBridge.bootstrapSessionIfCurrent(
+                    context, refreshedToken, "refreshed-refresh", frontToken = null, antiCSRF = null,
+                    replaceExisting = true,
+                    expectedSignOutGeneration = SuperTokensSessionBridge.currentSignOutGeneration(),
+                    commitsSignIn = differentSession,
+                )
                 SuperTokensSessionBridge.sessionEventHandler.handleEvent(EventHandler.EventType.REFRESH_SESSION)
                 assertTrue("refresh event must update the store", withTimeoutOrNull(5_000) {
                     while (rownd.state.value.auth.accessToken != refreshedToken) delay(10)
@@ -277,6 +307,7 @@ class VerificationProfileInstrumentedTest {
             release.complete(Unit)
             instrumentation.runOnMainSync { view.get()?.destroy() }
             scenario.close()
+            mockTransport.close()
             Rownd.config.supertokens = previousConfig
             Rownd.config.baseUrl = previousBaseUrl
             SuperTokensSessionBridge.removeSessionEventListener(rownd.nativeSessionEventListener)

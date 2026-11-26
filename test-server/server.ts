@@ -785,6 +785,7 @@ async function initializeIntegrationHarness(): Promise<AndroidIntegrationHarness
       hubUrl,
       appId: APP_ID,
       appKey: APP_KEY,
+      realEmailChanges,
       emailChangeSessionMaxAgeSeconds: process.env.EMAIL_CHANGE_SESSION_AGE_POLICY === "null" ? null : 600,
       supertokens: {
         appInfo: {
@@ -910,6 +911,11 @@ async function initializeIntegrationHarness(): Promise<AndroidIntegrationHarness
       loginMethods: user?.loginMethods.map((method) => ({ recipeId: method.recipeId, email: method.email, verified: method.verified })),
       pending: (metadata.rownd_pending_verification as any[] | undefined)?.map(({ value, status }) => ({ value, status })) ?? [],
     });
+  });
+
+  app.get("/test/email-change-session-handles", async (req, res) => {
+    const handles = await Session.getAllSessionHandlesForUser(String(req.query.userId));
+    res.json({ handles });
   });
 
   app.get("/auth/plugin/rownd/user", verifySession() as any, (req, res) => {

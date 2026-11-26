@@ -16,7 +16,7 @@ import io.rownd.android.util.NativeEmailVerificationRequest
 import io.rownd.android.util.RowndEvent
 import io.rownd.android.util.RowndEventType
 import io.rownd.android.util.SuperTokensSessionBridge
-import io.rownd.android.util.performNativeEmailVerification
+import io.rownd.android.util.RowndNativeEmailVerificationSession
 import io.rownd.android.views.HubPageSelector
 import io.rownd.android.views.RowndJavascriptInterface
 import io.rownd.android.views.RowndWebView
@@ -525,25 +525,24 @@ class RowndWebViewAuthenticationInstrumentedTest {
             original.refreshToken,
         )
 
-        val status = performNativeEmailVerification(
-            Rownd.authenticatedApiClient.client,
+        val result = Rownd.nativeEmailVerifier.verify(
             NativeEmailVerificationRequest(
                 token = pending.token,
                 pendingVerificationId = pending.pendingVerificationId,
                 apiDomain = harnessConfig.androidUrl,
                 apiBasePath = "/auth",
             ),
-        )
+            RowndNativeEmailVerificationSession(Rownd, context),
+        ).await()
         val replacementAccessToken = SuperTokensSessionBridge.getAccessToken(context)
 
-        assertEquals("OK", status)
+        assertEquals("OK", result)
         assertNotNull("Verification response must install a replacement access token", replacementAccessToken)
         assertTrue("Verification must replace the existing access token", replacementAccessToken != original.accessToken)
         val replacementRefreshToken = SuperTokensSessionBridge.getRefreshToken(context)
         assertNotNull("Verification response must install a replacement refresh token", replacementRefreshToken)
         assertTrue("Verification must replace the existing refresh token", replacementRefreshToken != original.refreshToken)
         assertNotNull("Verification response must install a front token", SuperTokensSessionBridge.getFrontToken(context))
-        assertTrue(SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(context, Rownd.store))
         assertEquals(replacementAccessToken, Rownd.stateRepo.state.value.auth.accessToken)
     }
 

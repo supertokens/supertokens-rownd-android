@@ -7,6 +7,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import java.util.Base64
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -69,5 +70,24 @@ class SuperTokensSessionBridgeTest {
         val json = Json.parseToJsonElement(decoded).jsonObject
 
         assertEquals("fallback-id", json["uid"]!!.jsonPrimitive.content)
+    }
+
+    private fun sessionJwt(sub: String, handle: String?, tenant: String = "public"): String {
+        val header = b64.encodeToString("""{"alg":"HS256"}""".toByteArray())
+        val handleClaim = handle?.let { ""","sessionHandle":"$it"""" } ?: ""
+        val payload = b64.encodeToString("""{"sub":"$sub","tId":"$tenant"$handleClaim}""".toByteArray())
+        return "$header.$payload.sig"
+    }
+
+    @Test
+    fun `a replacement session of the same user is recognized only across distinct sessions`() {
+        val original = sessionJwt("user-a", "s0")
+
+        assertTrue(SuperTokensSessionBridge.isOtherSessionOfSameUser(original, sessionJwt("user-a", "s1")))
+        assertFalse(SuperTokensSessionBridge.isOtherSessionOfSameUser(original, sessionJwt("user-a", "s0")))
+        assertFalse(SuperTokensSessionBridge.isOtherSessionOfSameUser(original, sessionJwt("user-b", "s1")))
+        assertFalse(SuperTokensSessionBridge.isOtherSessionOfSameUser(original, sessionJwt("user-a", "s1", tenant = "other")))
+        assertFalse(SuperTokensSessionBridge.isOtherSessionOfSameUser(sessionJwt("user-a", null), sessionJwt("user-a", "s1")))
+        assertFalse(SuperTokensSessionBridge.isOtherSessionOfSameUser(original, "legacy-token"))
     }
 }

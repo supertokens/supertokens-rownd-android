@@ -101,6 +101,7 @@ class LegacyMigrationTerminalInstrumentedTest {
     @After
     fun tearDown() {
         releaseUser.complete(Unit)
+        rownd.closeNativeEmailVerificationTransport()
         rownd.authRepo.legacyMigrationApiClient.client.close()
         rownd.authenticatedApiClient.client.close()
         clearSession()

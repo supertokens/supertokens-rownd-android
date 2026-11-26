@@ -57,8 +57,8 @@ import io.rownd.android.util.RowndEventType
 import io.rownd.android.util.SignInCompletedEventDeduper
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.util.NativeEmailVerificationRequest
+import io.rownd.android.util.RowndNativeEmailVerificationSession
 import io.rownd.android.util.nativeEmailVerificationRequest
-import io.rownd.android.util.performNativeEmailVerification
 import io.rownd.android.util.redactSensitiveKeys
 import io.rownd.android.util.signInCompletedEventData
 import io.rownd.android.views.html.noInternetHTML
@@ -917,12 +917,13 @@ class RowndJavascriptInterface constructor(
     }
 
     private fun authorizedEmailVerificationRequest(requestId: String): NativeEmailVerificationRequest? {
+        val appInfo = Rownd.config.supertokens.appInfo
         val verificationRequest = nativeEmailVerificationRequest(
             targetPage = parentWebView.targetPage,
             currentUrl = parentWebView.url,
             trustedBaseUrl = Rownd.config.baseUrl,
-            trustedApiDomain = Rownd.config.supertokens.appInfo.apiDomain,
-            trustedApiBasePath = Rownd.config.supertokens.appInfo.apiBasePath ?: Rownd.config.apiBasePath,
+            trustedApiDomain = appInfo.apiDomain,
+            trustedApiBasePath = appInfo.apiBasePath ?: Rownd.config.apiBasePath,
         )
         if (
             disposed ||
@@ -943,43 +944,25 @@ class RowndJavascriptInterface constructor(
         emailVerificationJob?.cancel()
         emailVerificationRequestId = requestId
         val requestedNavigationGeneration = emailVerificationNavigationGeneration
-        val requestedAuthenticationGeneration = authenticationGeneration.get()
-        val requestedSignOutGeneration = SuperTokensSessionBridge.currentSignOutGeneration()
-        fun isCurrentSession() = requestedAuthenticationGeneration == authenticationGeneration.get() &&
-            requestedSignOutGeneration == SuperTokensSessionBridge.currentSignOutGeneration()
+        fun isAwaitedByPage() = !disposed && emailVerificationRequestId == requestId &&
+            emailVerificationNavigationGeneration == requestedNavigationGeneration
+        // Only the report to this page belongs to the WebView; the verifier finishes the request
+        // and adopts the replacement session even if the page closes or navigates away first.
+        val verification = parentWebView.rowndClient.nativeEmailVerifier.verify(
+            verificationRequest,
+            RowndNativeEmailVerificationSession(parentWebView.rowndClient, parentWebView.context.applicationContext),
+        )
         emailVerificationJob = bridgeScope.launch {
-            val result = runCatching {
-                val appContext = parentWebView.context.applicationContext
-                val previousAccessToken = SuperTokensSessionBridge.getAccessToken(appContext)
-                    ?: error("Native email verification requires an existing session")
-                val status = performNativeEmailVerification(parentWebView.rowndClient.authenticatedApiClient.client, verificationRequest)
-                val replacementAccessToken = SuperTokensSessionBridge.getAccessToken(appContext)
-                check(
-                    replacementAccessToken != null &&
-                        replacementAccessToken != previousAccessToken &&
-                        !SuperTokensSessionBridge.getRefreshToken(appContext).isNullOrEmpty() &&
-                        !SuperTokensSessionBridge.getFrontToken(appContext).isNullOrEmpty()
-                ) { "Native replacement session was not adopted" }
-                check(SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens(
-                    context = appContext,
-                    store = parentWebView.rowndClient.stateRepo.getStore(),
-                )) { "Native session was not adopted" }
-                if (isCurrentSession() && !disposed && emailVerificationRequestId == requestId &&
-                    emailVerificationNavigationGeneration == requestedNavigationGeneration) {
-                    // ACK means verification consumed and S1 adopted. Profile I/O must neither delay
-                    // that ACK nor retry verification, and must survive the Hub closing on success.
-                    parentWebView.rowndClient.userRepo.loadUserAsync {
-                        isCurrentSession() &&
-                            SuperTokensSessionBridge.isSameSession(replacementAccessToken, parentWebView.rowndClient.stateRepo.state.value.auth.accessToken)
-                    }
-                }
-                status
+            val result = try {
+                Result.success(verification.await())
+            } catch (error: CancellationException) {
+                Log.w("Rownd.hub", "Dropping native email verification result: the Hub page closed or navigated away")
+                throw error
+            } catch (error: Exception) {
+                Result.failure(error)
             }
-            if (
-                disposed ||
-                emailVerificationRequestId != requestId ||
-                emailVerificationNavigationGeneration != requestedNavigationGeneration
-            ) {
+            if (!isAwaitedByPage()) {
+                Log.w("Rownd.hub", "Dropping native email verification result: the Hub page is no longer waiting for it")
                 return@launch
             }
 
@@ -987,7 +970,6 @@ class RowndJavascriptInterface constructor(
             if (result.isSuccess) {
                 detail.put("status", result.getOrThrow())
             } else {
-                Log.w("Rownd.hub", "Native email verification failed", result.exceptionOrNull())
                 detail.put("error", "Email verification failed")
             }
             val script = """
@@ -998,9 +980,7 @@ class RowndJavascriptInterface constructor(
 
             parentWebView.post {
                 if (
-                    !disposed &&
-                    emailVerificationRequestId == requestId &&
-                    emailVerificationNavigationGeneration == requestedNavigationGeneration &&
+                    isAwaitedByPage() &&
                     parentWebView.url == requestedUrl &&
                     nativeEmailVerificationRequest(
                         targetPage = parentWebView.targetPage,
@@ -1013,6 +993,8 @@ class RowndJavascriptInterface constructor(
                     parentWebView.evaluateJavascript(script, null)
                     emailVerificationRequestId = null
                     emailVerificationJob = null
+                } else {
+                    Log.w("Rownd.hub", "Dropping native email verification result: the Hub page changed before it could be reported")
                 }
             }
         }
@@ -1120,6 +1102,7 @@ class RowndJavascriptInterface constructor(
                                     antiCSRF = authenticationMessage.payload.antiCsrf,
                                     replaceExisting = true,
                                     expectedSignOutGeneration = signOutGeneration,
+                                    commitsSignIn = true,
                                     isCurrent = ::isCurrentAuthentication,
                                 )) return@withLock
                             } catch (e: Exception) {
