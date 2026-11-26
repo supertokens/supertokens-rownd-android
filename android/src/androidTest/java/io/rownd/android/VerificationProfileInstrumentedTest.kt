@@ -24,7 +24,7 @@ import io.rownd.android.models.domain.SuperTokensAppInfo
 import io.rownd.android.models.domain.SuperTokensConfig
 import io.rownd.android.models.repos.StateAction
 import io.rownd.android.util.JwtGenerator
-import io.rownd.android.util.LegacyMigrationApiClient
+import io.rownd.android.util.NativeEmailVerificationApiClient
 import io.rownd.android.util.NewIntentTestActivity
 import io.rownd.android.util.SuperTokensSessionBridge
 import io.rownd.android.views.HubPageSelector
@@ -77,7 +77,7 @@ class VerificationProfileInstrumentedTest {
     fun tearDown() {
         release.complete(Unit)
         rownd.authenticatedApiClient.client.close()
-        rownd.authRepo.legacyMigrationApiClient.client.close()
+        rownd.nativeEmailVerificationApiClient.client.close()
     }
 
     @Test
@@ -228,8 +228,8 @@ class VerificationProfileInstrumentedTest {
         val store = rownd.stateRepo.getStore()
         store.dispatch(StateAction.SetAuth(if (restoreLegacyDuringVerify) AuthState() else AuthState(accessToken = originalToken)))
         val beforeRestore = store.currentState
-        rownd.authRepo.legacyMigrationApiClient.client.close()
-        rownd.authRepo.legacyMigrationApiClient = LegacyMigrationApiClient(rownd.rowndContext, MockEngine { request ->
+        rownd.nativeEmailVerificationApiClient.client.close()
+        rownd.nativeEmailVerificationApiClient.client = NativeEmailVerificationApiClient(rownd.rowndContext, MockEngine { request ->
             verifications++
             assertEquals("/auth/user/email/verify", request.url.encodedPath)
             assertEquals("Bearer $originalToken", request.headers[HttpHeaders.Authorization])
@@ -245,7 +245,7 @@ class VerificationProfileInstrumentedTest {
                 "st-refresh-token" to listOf("replacement-refresh"),
                 "front-token" to listOf(SuperTokensSessionBridge.buildFrontToken(replacementToken)),
             ))
-        })
+        }).client
         val url = "https://hub.example.com/account/verify-email?token=test-token&rowndPendingVerificationId=test-pending&apiDomain=https%3A%2F%2Fapi.example.com&apiBasePath=%2Fauth"
         val scenario = ActivityScenario.launch(NewIntentTestActivity::class.java)
         try {

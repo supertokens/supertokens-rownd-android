@@ -1,5 +1,6 @@
 package io.rownd.android
 
+import com.supertokens.session.SuperTokensInterceptor
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -19,7 +20,7 @@ import io.ktor.serialization.kotlinx.json.json
 import io.rownd.android.models.VerifyEmailMessage
 import io.rownd.android.models.RowndHubInteropMessage
 import io.rownd.android.util.IssuedVerificationSession
-import io.rownd.android.util.LegacyMigrationApiClient
+import io.rownd.android.util.NativeEmailVerificationApiClient
 import io.rownd.android.util.NATIVE_EMAIL_VERIFICATION_TIMEOUT_MILLIS
 import io.rownd.android.util.NativeEmailVerificationRejectedException
 import io.rownd.android.util.NativeEmailVerificationRequest
@@ -34,9 +35,11 @@ import io.rownd.android.views.urlForLogging
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.BufferedReader
 import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -304,6 +307,70 @@ class NativeEmailVerificationTest {
     }
 
     @Test
+    fun `production verification and revocation do not reuse an idle connection`() = runBlocking {
+        val connections = AtomicInteger()
+        val calls = AtomicInteger()
+        withLoopbackServer({ socket ->
+            connections.incrementAndGet()
+            val input = socket.getInputStream().bufferedReader()
+            while (input.readLine() != null) {
+                readRequestHeaders(input)
+                calls.incrementAndGet()
+                socket.getOutputStream().write(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"status\":\"OK\"}".toByteArray()
+                )
+            }
+        }) { endpoint ->
+            val okHttp = NativeEmailVerificationApiClient.createOkHttpClient()
+            val engine = NativeEmailVerificationApiClient.createEngine(okHttp)
+            val client = HttpClient(engine) {
+                followRedirects = false
+                install(HttpTimeout)
+                install(ContentNegotiation) { json() }
+            }
+            try {
+                val request = verificationRequest().copy(apiDomain = endpoint)
+                assertEquals("OK", performNativeEmailVerification(client, request, captured).status)
+                revokeIssuedVerificationSession(client, request, issued)
+                assertEquals(2, calls.get())
+                assertEquals("An idle verification socket must not be reused for revocation", 2, connections.get())
+                assertEquals(0, okHttp.connectionPool.idleConnectionCount())
+            } finally {
+                client.close()
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `production verification OkHttp client does not intercept retry or follow redirects`() {
+        val client = NativeEmailVerificationApiClient.createOkHttpClient()
+        assertFalse(client.retryOnConnectionFailure)
+        assertFalse(client.followRedirects)
+        assertFalse(client.followSslRedirects)
+        assertFalse((client.interceptors + client.networkInterceptors).any { it is SuperTokensInterceptor })
+    }
+
+    @Test
+    fun `verification does not use Ktor retries even when the client has them enabled`() = runBlocking {
+        var attempts = 0
+        val client = HttpClient(MockEngine {
+            attempts++
+            respond("", HttpStatusCode.ServiceUnavailable)
+        }) {
+            install(ContentNegotiation) { json() }
+            install(HttpRequestRetry) { retryOnServerErrors(maxRetries = 3) }
+        }
+        try {
+            val error = runCatching { performNativeEmailVerification(client, verificationRequest(), captured) }.exceptionOrNull()
+            assertEquals("Email verification failed with HTTP 503", error?.message)
+            assertEquals(1, attempts)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun `production verification transport sends captured headers without SuperTokens interceptor or redirects`() = runBlocking {
         val calls = AtomicInteger()
         val received = AtomicReference<Map<String, String>>()
@@ -315,7 +382,7 @@ class NativeEmailVerificationTest {
             )
         }) { endpoint ->
             // SuperTokensInterceptor refuses calls without initialized Android SDK context.
-            val engine = LegacyMigrationApiClient.createEngine()
+            val engine = NativeEmailVerificationApiClient.createEngine()
             val client = HttpClient(engine) {
                 followRedirects = false
                 install(HttpTimeout)
@@ -381,6 +448,10 @@ class NativeEmailVerificationTest {
     private fun readRequestHeaders(socket: Socket): Map<String, String> {
         val input = socket.getInputStream().bufferedReader()
         input.readLine()
+        return readRequestHeaders(input)
+    }
+
+    private fun readRequestHeaders(input: BufferedReader): Map<String, String> {
         val headers = generateSequence { input.readLine() }
             .takeWhile { it.isNotEmpty() }
             .associate { it.substringBefore(':').lowercase() to it.substringAfter(':').trim() }

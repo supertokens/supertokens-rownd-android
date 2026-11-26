@@ -154,7 +154,7 @@ internal class RowndNativeEmailVerificationSession(
     private val context: Context,
 ) : NativeEmailVerificationSession {
     private val store = client.stateRepo.getStore()
-    private val transport = client.authRepo.legacyMigrationApiClient.client
+    private val transport = client.nativeEmailVerificationApiClient.client
 
     override fun captureOwner() = SuperTokensSessionBridge.captureVerificationOwner(context, store)
 
