@@ -41,7 +41,6 @@ import org.json.JSONTokener
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -147,12 +146,9 @@ class RealHubE2ETest {
         assertTrue(System.currentTimeMillis() - original.getLong("timeCreated") >= minimumAge * 1000)
         println("DRAFT_EMAIL_INITIATION coreCreatedAt=${original.getLong("timeCreated")} ageMs=${System.currentTimeMillis() - original.getLong("timeCreated")}")
         clickResource("e2e.action.manage-account")
-        val emailField = "[data-testid='rownd-ui-profile-field-email']"
-        waitForWebElement(emailField)
-        evaluateInHub("""
-            const input = document.querySelector(${JSONObject.quote(emailField)});
-            input.value = ${JSONObject.quote(destination)};
-            input.dispatchEvent(new Event('input', { bubbles: true }));
+        actOnWebElement("[data-testid='rownd-ui-profile-field-email']", """
+            element.value = ${JSONObject.quote(destination)};
+            element.dispatchEvent(new Event('input', { bubbles: true }));
         """.trimIndent())
         clickHubButton("[data-testid='rownd-ui-profile-save']")
         waitForWebElement(
@@ -240,14 +236,8 @@ class RealHubE2ETest {
             println("DRAFT_EMAIL_EXPLICIT_PUBLIC_REFRESH profileMatches=true")
         }
         waitUntil("verified canonical email in native profile", 30_000) { Rownd.state.value.user.data["email"] == destination }
-        waitForWebElement("[data-testid='rownd-ui-email-verification-close']")
-        val verificationWebView = requireNotNull(activeHubWebView())
-        instrumentation.runOnMainSync {
-            // Closing destroys this WebView, which may be outside Espresso's default root after Chrome dispatch.
-            verificationWebView.evaluateJavascript(
-                "document.querySelector('[data-testid=\"rownd-ui-email-verification-close\"]').click()",
-                null,
-            )
+        clickHubButton("[data-testid='rownd-ui-email-verification-close']") {
+            !hasActiveBottomSheetActivity()
         }
         scenario?.close()
         scenario = ActivityScenario.launch(MainActivity::class.java)
@@ -420,15 +410,9 @@ class RealHubE2ETest {
     fun signedOutManageAccountHandsOffToNewWebViewAndCompletesNativeSignIn() {
         launchApp()
         instrumentation.runOnMainSync { Rownd.manageAccount() }
-        val signInButtons = "form.rph-account-fields-form button"
-        waitForWebElement(signInButtons, text = "Sign in or sign up")
-        val source = requireNotNull(activeHubWebView())
-
-        // The handoff destroys this WebView; evaluate the click without waiting for a callback.
-        evaluateInHub("${hubElement(signInButtons, "Sign in or sign up")}?.click();", source)
-
-        waitUntil("replacement Hub WebView") { activeHubWebView()?.let { it !== source } == true }
-        assertNotSame(source, activeHubWebView())
+        clickHubButton("form.rph-account-fields-form button", text = "Sign in or sign up") { source ->
+            activeHubWebView()?.let { it !== source } == true
+        }
         val email = uniqueEmail("manage-recovery")
         enterEmailChallenge(email)
         submitOtp(waitForCapture(email).getString("userInputCode"))
@@ -447,29 +431,36 @@ class RealHubE2ETest {
         openEmailChallenge(email)
         submitOtp(waitForCapture(email).getString("userInputCode"))
         waitForSignedInApp()
-        val original = getHarness("/test/email-change-session?handle=${sessionHandle(requireNotNull(runBlocking { Rownd.getAccessToken() }))}")
+        val originalHandle = requireNotNull(sessionHandle(runBlocking { Rownd.getAccessToken() }))
+        val original = getHarness("/test/email-change-session?handle=$originalHandle")
         clickResource("e2e.action.manage-account")
-        waitForWebElement("[data-testid='rownd-ui-profile-field-email']")
         val envelope = JSONObject().put("version", 2).put("request_id", "diagnostic-request-123456")
             .put("expires_at", System.currentTimeMillis() + 60_000)
             .put("local_draft", JSONObject().put("owner_id", original.getString("userId")).put("tenant_id", "public")
                 .put("configuration", "").put("changes", JSONObject().put("email", destination)))
         val message = JSONObject().put("type", "sign_in").put("payload", JSONObject().put("was_user_initiated", true).put("email_change", envelope))
-        val source = requireNotNull(activeHubWebView())
-        instrumentation.runOnMainSync {
-            source.evaluateJavascript("""
-                const message = $message;
-                message.payload.email_change.local_draft.configuration = JSON.stringify([${JSONObject.quote(BuildConfig.API_URL)}, '/auth', 'public', '', ${JSONObject.quote(BuildConfig.APP_KEY)}]);
-                window.rowndAndroidSDK.postMessage(JSON.stringify(message));
-            """.trimIndent(), null)
+        actOnWebElement("[data-testid='rownd-ui-profile-field-email']", """
+            const message = $message;
+            message.payload.email_change.local_draft.configuration = JSON.stringify([${JSONObject.quote(BuildConfig.API_URL)}, '/auth', 'public', '', ${JSONObject.quote(BuildConfig.APP_KEY)}]);
+            window.rowndAndroidSDK.postMessage(JSON.stringify(message));
+        """.trimIndent()) { source ->
+            !Rownd.state.value.auth.isAuthenticated && activeHubWebView()?.let { it !== source } == true
         }
-        waitUntil("S0 cleared") { !Rownd.state.value.auth.isAuthenticated }
-        waitUntil("reauthentication Hub WebView") { activeHubWebView()?.let { it !== source } == true }
         waitForWebElement("[data-testid='rownd-ui-email-change-sign-in-explanation']")
         enterEmailChallenge(email)
         submitOtp(waitForCapture(email, passwordlessEmailCount = 2).getString("userInputCode"))
         waitForWebElement("[data-testid='rownd-ui-profile-email-verification-pending']")
         assertTrue(waitForCapture(destination).has("emailVerifyLink"))
+        waitUntil("native adoption of the reauthenticated session") {
+            Rownd.state.value.auth.isAuthenticated &&
+                runBlocking { SuperTokensSessionBridge.doesSessionExist(context) }
+        }
+        val resumedHandle = requireNotNull(sessionHandle(runBlocking { Rownd.getAccessToken() }))
+        assertFalse("reauthentication must create a new session", originalHandle == resumedHandle)
+        val resumed = getHarness("/test/email-change-session?handle=$resumedHandle")
+        assertEquals(original.getString("userId"), resumed.getString("userId"))
+        assertEquals(original.getString("tenantId"), resumed.getString("tenantId"))
+        assertProtectedRequestSucceeds()
     }
 
     @Test
@@ -518,9 +509,7 @@ class RealHubE2ETest {
         assertProtectedRequestSucceeds()
 
         clickResource("e2e.action.manage-account")
-        clickHubButton("[data-testid='rownd-ui-profile-sign-out']")
-
-        waitUntil("Hub sign-out to clear native session") {
+        clickHubButton("[data-testid='rownd-ui-profile-sign-out']") {
             !Rownd.state.value.auth.isAuthenticated &&
                 !runBlocking { SuperTokensSessionBridge.doesSessionExist(context) }
         }
@@ -871,26 +860,58 @@ class RealHubE2ETest {
         """.trimIndent()
     }
 
-    private fun evaluateInHub(script: String, webView: RowndWebView = requireNotNull(activeHubWebView())) {
-        instrumentation.runOnMainSync { webView.evaluateJavascript(script, null) }
+    private fun clickHubButton(
+        selector: String,
+        text: String? = null,
+        transition: ((RowndWebView) -> Boolean)? = null,
+    ) {
+        actOnWebElement(selector, "element.click();", text, transition)
     }
 
-    private fun clickHubButton(selector: String, text: String? = null) {
-        waitForWebElement(selector, text = text)
-        evaluateInHub("${hubElement(selector, text)}?.click();")
+    private fun actOnWebElement(
+        selector: String,
+        action: String,
+        text: String? = null,
+        transition: ((RowndWebView) -> Boolean)? = null,
+    ) {
+        val script = """
+            (() => {
+                const element = ${hubElement(selector, text)};
+                if (!element) return false;
+                $action
+                return true;
+            })()
+        """.trimIndent()
+        val description = "act on Hub element '$selector'${text?.let { " with text '$it'" }.orEmpty()}"
+        probeHubElement(description, script, 15_000, isAction = true, transition = transition)
     }
 
     private fun waitForWebElement(selector: String, timeoutMs: Long = 15_000, text: String? = null) {
-        // Off-screen controls may not appear in UIAutomator, and a retired WebView may never answer.
-        data class Probe(val view: RowndWebView, @Volatile var result: String? = null)
-        var probe: Probe? = null
         val script = "Boolean(${hubElement(selector, text)})"
         val description = text?.let { "Hub element '$selector' with text '$it'" } ?: "Hub element '$selector'"
+        probeHubElement(description, script, timeoutMs)
+    }
+
+    private fun probeHubElement(
+        description: String,
+        script: String,
+        timeoutMs: Long,
+        isAction: Boolean = false,
+        transition: ((RowndWebView) -> Boolean)? = null,
+    ) {
+        data class Probe(val view: RowndWebView, @Volatile var result: String? = null)
+        var probe: Probe? = null
         waitUntil(description, timeoutMs) {
-            val webView = activeHubWebView() ?: return@waitUntil false
+            val webView = activeHubWebView()
             val current = probe
-            if (current?.view === webView && current.result == "true") return@waitUntil true
-            if (current?.view !== webView || current.result != null) {
+            val result = current?.result
+            if (transition != null && current != null && result != "false") {
+                // A click that retires its WebView may lose its JS callback; require the intended effect.
+                return@waitUntil (result == "true" || (result == null && current.view !== webView)) &&
+                    transition(current.view)
+            }
+            if (result == "true" && (isAction || current?.view === webView)) return@waitUntil true
+            if (webView != null && (current?.view !== webView || result != null)) {
                 val next = Probe(webView)
                 probe = next
                 instrumentation.runOnMainSync {
